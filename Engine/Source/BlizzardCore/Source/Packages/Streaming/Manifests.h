@@ -8,6 +8,9 @@
 #include "Engine/Source/BlizzardCore/Source/System/Time/Types.h"
 #include "Engine/Source/BlizzardCore/Source/System/URL/URL.h"
 #include "Engine/Source/Storm/H/Types.h"
+#if !defined(_WIN32)
+#include "Engine/Source/BlizzardCore/Source/System/Lock/Lock.h"
+#endif
 
 namespace Blizzard {
 namespace Streaming {
@@ -261,7 +264,11 @@ class HttpCallback : public Blizzard::URL::DownloadCallback {
     /* 0020 */ uint32_t m_received;
     /* 0024 */ Blizzard::URL::DownloadCallback::Status m_status;
     /* 0028 */ uint32_t m_timeout;
+#if defined(_WIN32)
     /* 002C */ void* m_event;
+#else
+    Blizzard::Lock::Event m_event;
+#endif
 
     ~HttpCallback() override;
     int32_t GetTimeout() override;

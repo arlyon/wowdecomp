@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <cstdlib>
-#include <windows.h>
+#include "Engine/Source/BlizzardCore/Source/System/WindowsIncludes.h"
 #include "Engine/Source/BlizzardCore/Source/System/Hardware/Hardware.h"
 #include "Engine/Source/BlizzardCore/Source/System/Lock/Lock.h"
 #include "Engine/Source/BlizzardCore/Source/System/Thread/Thread.h"
@@ -15,7 +15,11 @@ System_Thread::ThreadWorker::~ThreadWorker() {
 
     if (this->m_thread) {
         Blizzard::Lock::EventSet(this->m_wakeEvent.m_event);
+#if defined(_WIN32)
         WaitForSingleObject(this->m_thread->m_handle, INFINITE);
+#else
+        Blizzard::Thread::WaitForever(this->m_thread);
+#endif
         Blizzard::Thread::Close(this->m_thread);
         this->m_thread = nullptr;
     }
@@ -40,12 +44,20 @@ uint32_t System_Thread::ThreadWorker::Executive(void* param) {
             int32_t affinity = worker->m_affinity;
 
             if (affinity > 0) {
+#if defined(_WIN32)
                 SetThreadAffinityMask(worker->m_thread->m_handle, affinity);
+#else
+                System_Thread::SetWorkerAffinity(worker->m_thread, affinity);
+#endif
             } else {
                 Blizzard::Hardware::GetProcessorFeatures();
 
                 if (affinity <= static_cast<int32_t>(System_Hardware::s_processorFeatures.m_processorCount)) {
+#if defined(_WIN32)
                     SetThreadAffinityMask(worker->m_thread->m_handle, affinity);
+#else
+                    System_Thread::SetWorkerAffinity(worker->m_thread, affinity);
+#endif
                 }
             }
         }
@@ -81,10 +93,14 @@ bool System_Thread::ThreadWorker::Start(Blizzard::Thread::ThreadPoolRecord* pool
     }
 
     if (this->m_thread) {
+#if defined(_WIN32)
         DWORD_PTR processMask;
         DWORD_PTR systemMask;
         GetProcessAffinityMask(this->m_thread->m_handle, &processMask, &systemMask);
         this->m_affinity = static_cast<int32_t>(systemMask);
+#else
+        this->m_affinity = System_Thread::GetWorkerAffinity(this->m_thread);
+#endif
     }
 
     this->m_pool = pool;

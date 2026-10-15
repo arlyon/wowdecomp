@@ -139,6 +139,11 @@ void RunExternalTLSDestructors(HANDLE thread);
 void RunExternalTLSDestructors(void* thread);
 #endif
 bool SetPriorityLevel(Blizzard::Thread::ThreadRecord* thread, int32_t level);
+#if !defined(_WIN32)
+// Platform leaves used by the shared worker algorithm.
+void SetWorkerAffinity(Blizzard::Thread::ThreadRecord* thread, int32_t mask);
+int32_t GetWorkerAffinity(Blizzard::Thread::ThreadRecord* thread);
+#endif
 void SetStackTraceEntryPoint(void* entryPoint);
 void ShutdownThreadLocalStorage();
 void ShutdownThreadSystem();

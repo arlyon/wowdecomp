@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <string>
-#include <windows.h>
+#include "Engine/Source/BlizzardCore/Source/System/WindowsIncludes.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Manifests.h"
 #include "Engine/Source/BlizzardCore/Source/System/File/File.h"
 #include "Engine/Source/BlizzardCore/Source/System/String/String.h"
@@ -10,7 +10,11 @@
 // OFFSET: 0x0042E100
 void System_Streaming::HttpCallback::Completed(Blizzard::URL::DownloadCallback::Status status) {
     this->m_status = status;
+#if defined(_WIN32)
     SetEvent(this->m_event);
+#else
+    Blizzard::Lock::EventSet(this->m_event);
+#endif
 }
 
 // OFFSET: 0x00439ED0
@@ -20,12 +24,20 @@ System_Streaming::HttpCallback::HttpCallback() {
     this->m_received = 0;
     this->m_status = Blizzard::URL::DownloadCallback::DOWNLOAD_SUCCESS;
     this->m_timeout = 3000;
+#if defined(_WIN32)
     this->m_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+#else
+    Blizzard::Lock::EventCreate(this->m_event);
+#endif
 }
 
 // OFFSET: 0x00439F80
 System_Streaming::HttpCallback::~HttpCallback() {
+#if defined(_WIN32)
     CloseHandle(this->m_event);
+#else
+    Blizzard::Lock::EventDestroy(this->m_event);
+#endif
 }
 
 // OFFSET: 0x004567A0
@@ -39,7 +51,11 @@ bool Blizzard::Streaming::FileManifest::ReadIndirectFile(const char* url) {
         result = Blizzard::URL::DownloadURL(url, callback);
 
         if (result) {
+#if defined(_WIN32)
             WaitForSingleObject(callback->m_event, INFINITE);
+#else
+            Blizzard::Lock::EventWaitForever(callback->m_event);
+#endif
 
             if (callback->m_status) {
                 result = false;
@@ -85,7 +101,11 @@ bool Blizzard::Streaming::Transport::ReadIndirectFile(const char* url) {
         result = Blizzard::URL::DownloadURL(url, callback);
 
         if (result) {
+#if defined(_WIN32)
             WaitForSingleObject(callback->m_event, INFINITE);
+#else
+            Blizzard::Lock::EventWaitForever(callback->m_event);
+#endif
 
             if (callback->m_status) {
                 result = false;
@@ -132,7 +152,11 @@ bool Blizzard::Streaming::SourceManifest::ReadIndirectFile(const char* url) {
         result = Blizzard::URL::DownloadURL(url, callback);
 
         if (result) {
+#if defined(_WIN32)
             WaitForSingleObject(callback->m_event, INFINITE);
+#else
+            Blizzard::Lock::EventWaitForever(callback->m_event);
+#endif
 
             if (callback->m_status) {
                 result = false;
@@ -179,7 +203,11 @@ bool Blizzard::Streaming::ManifestInfo::ReadIndirectFile(const char* url) {
         result = Blizzard::URL::DownloadURL(url, callback);
 
         if (result) {
+#if defined(_WIN32)
             WaitForSingleObject(callback->m_event, INFINITE);
+#else
+            Blizzard::Lock::EventWaitForever(callback->m_event);
+#endif
 
             if (callback->m_status) {
                 result = false;

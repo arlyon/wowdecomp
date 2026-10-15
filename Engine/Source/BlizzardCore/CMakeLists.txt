@@ -3,7 +3,11 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/(Win32|Win64)/")
     # This file contains shared throttling logic, despite its original location.
     if (CMAKE_SIZEOF_VOID_P EQUAL 8)
-        list(APPEND PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/File/Win64/File.cpp")
+        list(APPEND PRIVATE_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/File/Win64/File.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/Thread/Win64/ThreadPools.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Source/Packages/Streaming/Win64/Manifests.cpp"
+        )
     endif ()
 else ()
     list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Linux/")
