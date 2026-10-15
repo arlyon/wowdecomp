@@ -66,7 +66,7 @@ struct CGxAppRenderState {
     /* 0014 */ int32_t m_dirty;
 };
 
-typedef void (__fastcall* GxDeviceCallback)();
+typedef void (STORM_FASTCALL* GxDeviceCallback)();
 
 class CGxDevice {
     public:

@@ -3,8 +3,14 @@
 
 #if defined(_WIN32)
 #define STORMAPI __stdcall
+#define STORM_FASTCALL __fastcall
+#define STORM_ALLOCA(size) _alloca(size)
+#define STORM_VSNPRINTF _vsnprintf
 #else
 #define STORMAPI
+#define STORM_FASTCALL
+#define STORM_ALLOCA(size) __builtin_alloca(size)
+#define STORM_VSNPRINTF std::vsnprintf
 #endif
 
 // Expand to the original MSVC expression without adding a helper call or

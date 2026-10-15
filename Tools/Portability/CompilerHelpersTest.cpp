@@ -1,10 +1,13 @@
 #include <array>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 #include "Engine/Source/Event/Types.h"
+#include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Storm/H/stpl.h"
 #include "Engine/Source/Tempest/CMath.h"
 #include "Engine/Source/Tempest/CRandom.h"
@@ -22,6 +25,35 @@ void Check(bool condition, const char* message) {
         std::fprintf(stderr, "FAIL: %s\n", message);
         ++failures;
     }
+}
+
+bool callbackCalled;
+
+void STORM_FASTCALL Callback() {
+    callbackCalled = true;
+}
+
+static_assert(std::is_same<GxDeviceCallback, decltype(&Callback)>::value,
+              "renderer callback calling convention changed");
+
+int Format(char* output, size_t capacity, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    const int result = STORM_VSNPRINTF(output, capacity, format, args);
+    va_end(args);
+    return result;
+}
+
+void CheckCompilerBoundary() {
+    GxDeviceCallback callback = Callback;
+    callback();
+    Check(callbackCalled, "renderer callback ABI");
+    auto memory = static_cast<uint8_t*>(STORM_ALLOCA(17));
+    for (unsigned i = 0; i < 17; ++i) memory[i] = static_cast<uint8_t>(i);
+    for (unsigned i = 0; i < 17; ++i) Check(memory[i] == i, "native stack allocation");
+    char text[8]{};
+    Format(text, sizeof(text), "%s %u", "abcdefg", 42u);
+    Check(text[7] == '\0' && std::strcmp(text, "abcdefg") == 0, "native bounded log formatting");
 }
 
 void CheckNaN() {
@@ -78,6 +110,7 @@ int main() {
     TSBaseArray<int> array{};
     Check(std::strcmp(array.MemFileName(), typeid(int).name()) == 0,
           "native RTTI diagnostic type name");
+    CheckCompilerBoundary();
     CheckNaN();
     CheckRandom();
     if (!failures) {

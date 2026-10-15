@@ -3,7 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include "Engine/Source/BlizzardCore/SFile2-Core.h"
+#include "Engine/Source/BlizzardCore/SFile2-IO.h"
 #include "Engine/Source/Storm/H/stpl.h"
 
 class CGxShader : public TSHashObject<CGxShader, HASHKEY_STRI> {
