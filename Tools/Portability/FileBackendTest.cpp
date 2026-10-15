@@ -7,6 +7,7 @@
 #include <vector>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include "Engine/Source/BlizzardCore/Source/Packages/iounit/IOPlatform.h"
 #include "Engine/Source/BlizzardCore/Source/System/File/File.h"
 #include "Engine/Source/Storm/H/storm.h"
 
@@ -66,6 +67,9 @@ int main() {
     Check(System_File::WriteP(nullptr, &parms), "sparse file position exceeds 32 bits");
     parms.m_buffer = buffer;
     Check(System_File::ReadP(nullptr, &parms) && buffer[0] == 'Z', "64-bit positioned read");
+    uint32_t boundaryRead = 0;
+    Check(System_File::Native::ReadUnbuffered(UINT32_MAX, path.c_str(), buffer, 2, &boundaryRead) &&
+          boundaryRead == 2 && !buffer[0] && !buffer[1], "direct read can cross the 4-GiB boundary without wrapping");
     parms.m_path = nullptr;
     Check(System_File::GetFileInfo(nullptr, &parms) && parms.m_info->m_size == (int64_t{1} << 33) + 18,
           "file metadata retains 64-bit size");
@@ -97,6 +101,20 @@ int main() {
     Check(System_File::GetFileInfo(nullptr, &parms) && info.m_size == 3 && info.m_modTime == 1123456789 && info.m_accessTime == 7,
           "native timestamps use nanoseconds since the Blizzard 2000 epoch");
     Check(System_File::Exists(nullptr, &parms) && info.m_existence == 1, "file existence result");
+    uint32_t alignment = 0;
+    Check(System_File::Native::GetFileAlignment(path.c_str(), alignment) && alignment >= sizeof(void*) && !(alignment & (alignment - 1)),
+          "native direct-I/O alignment is a nonzero power of two");
+    std::memset(buffer, 0x5A, sizeof(buffer));
+    uint32_t received = 99;
+    Check(System_File::Native::ReadUnbuffered(1, path.c_str(), buffer + 1, 20, &received) && received == 2 &&
+          buffer[0] == 0x5A && buffer[1] == 'b' && buffer[2] == 'X' && buffer[3] == 0x5A,
+          "unaligned direct read copies only available bytes and preserves guards");
+    Check(System_File::Native::ReadUnbuffered(100, path.c_str(), buffer, sizeof(buffer), &received) && !received,
+          "direct read beyond EOF does not underflow prefix subtraction");
+    Check(System_File::Native::ReadUnbuffered(0, path.c_str(), nullptr, 0, &received) && !received,
+          "zero-length direct read accepts a null buffer");
+    Check(!System_File::Native::ReadUnbuffered(0, path.c_str(), nullptr, 1, &received) && errno == EINVAL && !received,
+          "nonempty direct read rejects null output");
     parms.m_has.m_all = 4;
     info.m_attributes = 1;
     Check(System_File::SetAttributes(nullptr, &parms) && System_File::IsReadOnly(nullptr, &parms), "read-only attribute maps to native permissions");
