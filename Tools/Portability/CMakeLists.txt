@@ -20,6 +20,8 @@ target_include_directories(Tempest PUBLIC "${WOWDECOMP_ROOT}")
 add_library(StormLocks STATIC "${WOWDECOMP_ROOT}/Engine/Source/Storm/Source/Linux/SCritSect.cpp")
 target_include_directories(StormLocks PUBLIC "${WOWDECOMP_ROOT}")
 target_link_libraries(StormLocks PUBLIC Threads::Threads)
+add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Storm" Storm)
+target_include_directories(Storm PUBLIC "${WOWDECOMP_ROOT}")
 
 add_library(NativeLibraryFixture SHARED LibraryFixture.cpp)
 
@@ -31,6 +33,11 @@ add_executable(ProcessorTest ProcessorTest.cpp)
 target_link_libraries(ProcessorTest PRIVATE Os Threads::Threads)
 add_test(NAME Processor COMMAND ProcessorTest)
 set_tests_properties(Processor PROPERTIES TIMEOUT 20)
+
+add_executable(StormStringCrtTest StormStringCrtTest.cpp)
+target_link_libraries(StormStringCrtTest PRIVATE Storm Threads::Threads)
+add_test(NAME StormStringCrt COMMAND StormStringCrtTest)
+set_tests_properties(StormStringCrt PROPERTIES TIMEOUT 20)
 
 add_executable(OsServicesTest OsServicesTest.cpp)
 target_link_libraries(OsServicesTest PRIVATE Os Threads::Threads)

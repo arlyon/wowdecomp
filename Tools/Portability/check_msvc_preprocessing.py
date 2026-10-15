@@ -21,6 +21,7 @@ DEFAULT_PATHS = [
     "Engine/Source/Os/Gui.h",
     "Engine/Source/Storm/H/Types.h",
     "Engine/Source/Storm/H/stpl.h",
+    "Engine/Source/Storm/Source/SStr.cpp",
     "Engine/Source/Tempest/CMath.cpp",
     "Engine/Source/Tempest/CRandom.cpp",
     "Engine/Source/Tempest/CRandom.h",
