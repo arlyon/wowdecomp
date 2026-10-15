@@ -3,11 +3,7 @@
 
 #include <cstdint>
 
-#if defined(_WIN32)
-#define STORMAPI __stdcall
-#else
-#define STORMAPI
-#endif
+#include "Engine/Source/Storm/H/Compiler.h"
 
 struct _CMDPARAMS {
     /* 0000 */ uint32_t flags;
