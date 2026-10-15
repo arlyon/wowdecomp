@@ -1,11 +1,15 @@
+#include <cerrno>
 #include <cstdio>
 #include <SDL.h>
 #include "Engine/Source/Os/Window.h"
 #include "Engine/Source/Os/Input.h"
+#include "Engine/Source/Os/Linux/Window.h"
 
 namespace {
 SDL_Window* s_window;
 bool s_resizeLock;
+OsNativeWindowEventProc s_windowProc;
+void* s_windowContext;
 }
 
 void* OsGuiGetWindow(int32_t type) {
@@ -18,8 +22,33 @@ void* OsGuiGetWindow(int32_t type) {
 }
 
 void OsGuiSetGxWindow(void* window) {
+    if (s_window != window) {
+        s_windowProc = nullptr;
+        s_windowContext = nullptr;
+    }
     s_window = static_cast<SDL_Window*>(window);
     if (s_window) SDL_SetWindowResizable(s_window, s_resizeLock ? SDL_FALSE : SDL_TRUE);
+}
+
+void OsGuiSetNativeWindowEventProc(OsNativeWindowEventProc proc, void* context) {
+    s_windowProc = proc;
+    s_windowContext = proc ? context : nullptr;
+}
+
+void OsGuiDispatchNativeWindowEvent(const SDL_WindowEvent& event) {
+    if (s_windowProc) s_windowProc(s_windowContext, event);
+}
+
+int32_t OsGetDefaultWindowRect(tagRECT* rect) {
+    if (!rect || !s_window) {
+        errno = EINVAL;
+        return 0;
+    }
+    int width, height;
+    SDL_GetWindowSize(s_window, &width, &height);
+    if (width <= 0 || height <= 0) return 0;
+    *rect = {0, 0, width, height};
+    return 1;
 }
 
 void OsInputSetWindowResizeLock(int32_t resizeLock) {

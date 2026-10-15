@@ -6,6 +6,7 @@
 #include <cstring>
 #include <SDL.h>
 #include "Engine/Source/Os/Window.h"
+#include "Engine/Source/Os/Linux/Window.h"
 #include "Engine/Source/Os/Input.h"
 #include "Engine/Source/Os/TimeManager.h"
 
@@ -151,6 +152,7 @@ int32_t OsGuiProcessMessage(void* message) {
             return 1;
         case SDL_WINDOWEVENT:
             if (!GameWindow(event.window.windowID)) return 0;
+            OsGuiDispatchNativeWindowEvent(event.window);
             switch (event.window.event) {
                 case SDL_WINDOWEVENT_CLOSE:
                     OsQueuePut(OS_INPUT_CLOSE, 0, 0, 0, 0);

@@ -10,6 +10,7 @@
 #include "Engine/Source/Os/Input.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Os/Window.h"
+#include "Engine/Source/Os/Linux/Window.h"
 
 namespace {
 int failures;
@@ -204,6 +205,39 @@ void CheckWindows(SDL_Window* window) {
     SDL_SetModState(KMOD_NONE);
 }
 
+void CheckRendererWindowBridge(SDL_Window* window) {
+    struct State {
+        std::thread::id owner;
+        unsigned count;
+        bool wrongThread;
+    } state{std::this_thread::get_id(), 0, false};
+    OsGuiSetNativeWindowEventProc([](void* context, const SDL_WindowEvent&) {
+        auto& current = *static_cast<State*>(context);
+        ++current.count;
+        current.wrongThread |= std::this_thread::get_id() != current.owner;
+    }, &state);
+    int pushed = 0;
+    std::thread producer([&] {
+        auto event = Window(SDL_WINDOWEVENT_FOCUS_GAINED);
+        pushed = SDL_PushEvent(&event);
+    });
+    producer.join();
+    Check(pushed == 1 && state.count == 0, "producer must not invoke renderer callback");
+    Check(Next().id == OS_INPUT_FOCUS && state.count == 1 && !state.wrongThread,
+          "input pump invokes renderer callback on its owner thread");
+    OsGuiSetGxWindow(window); // Console registration of the same window is harmless.
+    Push(Window(SDL_WINDOWEVENT_FOCUS_LOST));
+    Check(Next().id == OS_INPUT_FOCUS && state.count == 2, "same-window registration preserves renderer callback");
+    tagRECT rect{};
+    Check(OsGetDefaultWindowRect(&rect) && rect.left == 0 && rect.top == 0 && rect.right == 64 && rect.bottom == 64,
+          "native client rectangle");
+    Check(!OsGetDefaultWindowRect(nullptr), "null rectangle is rejected");
+    OsGuiSetGxWindow(nullptr);
+    OsGuiDispatchNativeWindowEvent(Window(SDL_WINDOWEVENT_FOCUS_GAINED).window);
+    Check(state.count == 2 && !OsGetDefaultWindowRect(&rect), "window detachment clears callback and rectangle access");
+    OsGuiSetGxWindow(window);
+}
+
 void CheckQueue() {
     OsInputInitialize();
     const uint32_t before = OsGetAsyncTimeMs();
@@ -288,6 +322,7 @@ int main() {
     CheckWindows(window);
     CheckQueue();
     CheckAsyncState();
+    CheckRendererWindowBridge(window);
     OsInputDestroy();
     OsGuiSetGxWindow(nullptr);
     SDL_DestroyWindow(window);
