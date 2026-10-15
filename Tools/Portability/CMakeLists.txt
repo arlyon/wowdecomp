@@ -27,6 +27,11 @@ add_executable(CompilerHelpersTest CompilerHelpersTest.cpp)
 target_link_libraries(CompilerHelpersTest PRIVATE Tempest)
 add_test(NAME CompilerHelpers COMMAND CompilerHelpersTest)
 
+add_executable(ProcessorTest ProcessorTest.cpp)
+target_link_libraries(ProcessorTest PRIVATE Os Threads::Threads)
+add_test(NAME Processor COMMAND ProcessorTest)
+set_tests_properties(Processor PROPERTIES TIMEOUT 20)
+
 add_executable(OsServicesTest OsServicesTest.cpp)
 target_link_libraries(OsServicesTest PRIVATE Os Threads::Threads)
 add_test(NAME OsServices COMMAND OsServicesTest $<TARGET_FILE:NativeLibraryFixture>)
