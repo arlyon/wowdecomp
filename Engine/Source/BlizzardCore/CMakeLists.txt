@@ -33,9 +33,10 @@ if(WIN32)
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Threads REQUIRED)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET GLOBAL vorbisfile)
-    target_link_libraries(BlizzardCore PUBLIC PkgConfig::VORBISFILE bzip2)
+    target_link_libraries(BlizzardCore PUBLIC PkgConfig::VORBISFILE bzip2 Threads::Threads)
 else ()
     target_include_directories(BlizzardCore
         PRIVATE
