@@ -82,6 +82,21 @@ logger off in `WowClient` with `-DWOWCLIENT_CRASH_LOG=OFF`.
 | `WOWCLIENT_CRASH_LOG` | `ON` | Build `WowClient` with the crash logger |
 | `WOWCLIENT_OUTPUT_OVERRIDE` | empty | Name the `WowClient` executable something other than `WowClient64` / `WowClient32` |
 
+### Linux portability regression tests
+
+The native OS and maths tests are independent of the client build and need no game data or graphics
+libraries. They require a C++17 compiler and CMake 3.13 or newer:
+
+```sh
+cmake -S Tools/Portability -B out/portability-tests -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build out/portability-tests --parallel
+ctest --test-dir out/portability-tests --output-on-failure
+```
+
+Optionally set `WOWDECOMP_MSVC_BASE` to an explicit Git revision to register the preprocessing
+preservation check in CTest (requires Python 3). This checks active MSVC-macro source, not Windows
+binary matching or decompilation coverage. These test targets do not build or launch the game.
+
 ## Running
 
 1. Copy the `Data` folder of your 3.3.5a client into `bin/Win/`, so you have `bin/Win/Data/`.
