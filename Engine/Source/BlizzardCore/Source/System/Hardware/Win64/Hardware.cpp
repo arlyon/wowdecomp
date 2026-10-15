@@ -2,8 +2,10 @@
 
 #include <cstdint>
 #include <cstring>
+#if defined(_WIN32)
 #include <intrin.h>
 #include <windows.h>
+#endif
 #include "Engine/Source/BlizzardCore/Source/System/Hardware/Hardware.h"
 #include "Engine/Source/BlizzardCore/Source/System/Lock/Lock.h"
 
@@ -16,6 +18,7 @@ bool System_Hardware::s_initialized;
 // STATIC: 0x00B33FF0
 Blizzard::Lock::Atomic System_Hardware::s_initCount;
 
+#if defined(_WIN32)
 // OFFSET: 0x0042E120
 bool System_Hardware::ReadCPUID(CPUIDInfo* info) {
     memset(info, sizeof(info), 0);
@@ -78,9 +81,11 @@ bool System_Hardware::ReadCPUID(CPUIDInfo* info) {
 
     return result;
 }
+#endif
 
 // OFFSET: 0x00432D90
 void System_Hardware::InitProcessorFeatures() {
+#if defined(_WIN32)
     SYSTEM_INFO systemInfo = {};
     uint32_t features = 0;
 
@@ -90,6 +95,11 @@ void System_Hardware::InitProcessorFeatures() {
     if (!systemInfo.dwNumberOfProcessors) {
         s_processorFeatures.m_processorCount = 1;
     }
+#else
+    uint32_t features = 0;
+    s_processorFeatures.m_processorCount = GetProcessorCount();
+    if (!s_processorFeatures.m_processorCount) s_processorFeatures.m_processorCount = 1;
+#endif
 
     s_processorFeatures.m_coreCount = 1;
 
@@ -153,6 +163,7 @@ void System_Hardware::InitProcessorFeatures() {
     s_processorFeatures.m_features = features;
 }
 
+#if defined(_WIN32)
 // OFFSET: 0x00435BB0
 uint32_t Blizzard::Hardware::GetProcessorFeatures() {
     if (!System_Hardware::s_initialized) {
@@ -169,5 +180,6 @@ uint32_t Blizzard::Hardware::GetProcessorFeatures() {
 
     return System_Hardware::s_processorFeatures.m_features;
 }
+#endif
 
 #endif

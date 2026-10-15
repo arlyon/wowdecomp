@@ -40,6 +40,9 @@ extern Blizzard::Lock::Atomic s_initCount;
 
 void InitProcessorFeatures();
 bool ReadCPUID(CPUIDInfo* info);
+#if !defined(_WIN32)
+uint32_t GetProcessorCount();
+#endif
 
 }
 

@@ -5,6 +5,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     if (CMAKE_SIZEOF_VOID_P EQUAL 8)
         list(APPEND PRIVATE_SOURCES
             "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/File/Win64/File.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/Hardware/Win64/Hardware.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/Thread/Win64/ThreadPools.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/Source/Packages/Streaming/Win64/Manifests.cpp"
         )
