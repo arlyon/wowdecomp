@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <windows.h>
+#include "Engine/Source/BlizzardCore/Source/System/WindowsIncludes.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Streaming.h"
 #include "Engine/Source/BlizzardCore/Source/System/Debug/ErrorStack.h"
 #include "Engine/Source/BlizzardCore/Source/System/File/File.h"

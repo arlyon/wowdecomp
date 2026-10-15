@@ -1,5 +1,6 @@
 #include <array>
 #include <cmath>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -54,6 +55,15 @@ void CheckCompilerBoundary() {
     char text[8]{};
     Format(text, sizeof(text), "%s %u", "abcdefg", 42u);
     Check(text[7] == '\0' && std::strcmp(text, "abcdefg") == 0, "native bounded log formatting");
+    Check(_stricmp("Shaders", "SHADERS") == 0 && _strnicmp("prefixA", "PREFIXz", 6) == 0,
+          "shared archive CRT comparison spellings");
+    Check(_atoi64(" -9223372036854775808tail") == INT64_MIN && _atoi64("invalid") == 0,
+          "shared manifest signed 64-bit parsing");
+    FILE* file = nullptr;
+    Check(fopen_s(&file, "/dev/null", "r") == 0 && file, "native checked file-open binding");
+    if (file) std::fclose(file);
+    Check(fopen_s(&file, nullptr, "r") == EINVAL && !file && errno == EINVAL,
+          "checked file-open rejects invalid input and clears output");
 }
 
 void CheckNaN() {

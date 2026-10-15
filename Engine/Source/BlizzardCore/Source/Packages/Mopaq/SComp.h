@@ -2,6 +2,7 @@
 #define ENGINE_SOURCE_BLIZZARDCORE_SOURCE_PACKAGES_MOPAQ_SCOMP_H
 
 #include <cstdint>
+#include "Engine/Source/Storm/H/Compiler.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Mopaq/Types.h"
 #include "Engine/Source/BlizzardCore/Source/System/Thread/ThreadLocalStorage.h"
 
@@ -46,7 +47,7 @@ void* alloc_wrap(uint32_t size);
 void Bzip2Compress(void* dest, uint32_t* destSize, const void* source, uint32_t sourceSize, uint32_t* hint, uint8_t level);
 bool Compress(void* dst, uint32_t* dstSize, bool* checksum, const void* src, uint32_t srcSize, uint32_t count, const Blizzard::Mopaq::CompressionAlgorithm* algorithms);
 bool Decompress(void* dst, uint32_t* dstSize, const void* src, uint32_t srcSize);
-bool __stdcall DecompressBlock(void* dst, uint32_t* dstSize, const void* src, uint32_t srcSize, Decompressor* decompressors);
+bool STORMAPI DecompressBlock(void* dst, uint32_t* dstSize, const void* src, uint32_t srcSize, Decompressor* decompressors);
 void free_wrap(void* address);
 int32_t LzmaDecompress(void* dest, uint32_t* destSize, const void* source, uint32_t sourceSize);
 void PkwareCompress(void* dest, uint32_t* destSize, const void* source, uint32_t sourceSize, uint32_t* hint, uint8_t level);

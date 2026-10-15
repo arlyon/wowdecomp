@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
-project(wowdecomp_portability_tests LANGUAGES CXX)
+project(wowdecomp_portability_tests LANGUAGES C CXX)
 
 if (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "These OS portability tests exercise the Linux implementations.")
@@ -22,6 +22,14 @@ target_include_directories(StormLocks PUBLIC "${WOWDECOMP_ROOT}")
 target_link_libraries(StormLocks PUBLIC Threads::Threads)
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Storm" Storm)
 target_include_directories(Storm PUBLIC "${WOWDECOMP_ROOT}")
+add_subdirectory("${WOWDECOMP_ROOT}/ThirdParty" ThirdParty EXCLUDE_FROM_ALL)
+add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/BlizzardCore" BlizzardCore)
+target_include_directories(BlizzardCore PUBLIC "${WOWDECOMP_ROOT}")
+if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+    target_compile_definitions(BlizzardCore PRIVATE WOWDECOMP_ARCH_64=1)
+else ()
+    target_compile_definitions(BlizzardCore PRIVATE WOWDECOMP_ARCH_32=1)
+endif ()
 
 add_library(NativeLibraryFixture SHARED LibraryFixture.cpp)
 

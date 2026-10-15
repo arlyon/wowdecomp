@@ -6,6 +6,12 @@
 #include <vector>
 #include "Engine/Source/BlizzardCore/Source/System/Memory/TempBuffer.h"
 
+#if defined(_WIN32)
+#define BLIZZARD_OGG_TELL_TYPE ogg_int32_t
+#else
+#define BLIZZARD_OGG_TELL_TYPE decltype(ov_callbacks{}.tell_func(nullptr))
+#endif
+
 typedef Blizzard::Memory::TempBuffer<uint8_t, 0x400000> OggDecompressBuffer;
 
 struct OggMemoryStream {

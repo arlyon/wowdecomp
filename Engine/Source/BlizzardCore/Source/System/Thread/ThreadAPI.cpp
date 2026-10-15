@@ -1,6 +1,6 @@
 #include <cstdint>
 #include <cstdlib>
-#include <windows.h>
+#include "Engine/Source/BlizzardCore/Source/System/WindowsIncludes.h"
 #include "Engine/Source/BlizzardCore/Source/System/Thread/Thread.h"
 
 // STATIC: 0x00B38334

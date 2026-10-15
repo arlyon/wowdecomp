@@ -32,7 +32,7 @@ static int OggSeek(void* source, ogg_int64_t offset, int whence) {
 
 // VERIFY: 4c4b1c84 auto
 // OFFSET: 0x0041D190
-static ogg_int32_t OggTell(void* source) {
+static BLIZZARD_OGG_TELL_TYPE OggTell(void* source) {
     return static_cast<OggMemoryStream*>(source)->m_position;
 }
 

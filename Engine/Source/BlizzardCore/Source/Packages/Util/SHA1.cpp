@@ -1,6 +1,6 @@
 #include <cstdint>
 #include <cstring>
-#include <malloc.h>
+#include "Engine/Source/BlizzardCore/Source/System/Memory/Stack.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Util/SHA1.h"
 
 // STATIC: 0x00A505D8

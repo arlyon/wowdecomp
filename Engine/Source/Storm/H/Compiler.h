@@ -10,7 +10,23 @@
 #define STORMAPI
 #define STORM_FASTCALL
 #define STORM_ALLOCA(size) __builtin_alloca(size)
+#include <strings.h>
+#include <cstdio>
+#include <cerrno>
+#include <cstdlib>
+inline int fopen_s(FILE** result, const char* path, const char* mode) {
+    if (!result) { errno = EINVAL; return EINVAL; }
+    *result = nullptr;
+    if (!path || !mode) { errno = EINVAL; return EINVAL; }
+    *result = std::fopen(path, mode);
+    return *result ? 0 : errno;
+}
 #define STORM_VSNPRINTF std::vsnprintf
+// Legacy CRT spellings used by shared archive/string algorithms.
+#define _stricmp ::strcasecmp
+#define _strnicmp ::strncasecmp
+#define _alloca __builtin_alloca
+#define _atoi64(value) std::strtoll((value), nullptr, 10)
 #endif
 
 // Expand to the original MSVC expression without adding a helper call or

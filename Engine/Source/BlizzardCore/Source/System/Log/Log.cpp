@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <windows.h>
+#include "Engine/Source/BlizzardCore/Source/System/WindowsIncludes.h"
 #include "Engine/Source/BlizzardCore/Source/System/File/File.h"
 #include "Engine/Source/BlizzardCore/Source/System/Lock/Lock.h"
 #include "Engine/Source/BlizzardCore/Source/System/Log/Log.h"
@@ -472,7 +472,11 @@ void System_Log::Init(int32_t logClass) {
         s_Prefs[0].m_maxOpenTime = 30000;
         s_Prefs[0].m_maxIdleTime = 15000;
 
+#if defined(_WIN32)
         char directory[MAX_PATH];
+#else
+        char directory[260];
+#endif
         Blizzard::Process::GetProcessDirectory(directory, sizeof(directory));
         s_Prefs[0].m_directory = static_cast<char*>(malloc(strlen(directory) + 1));
         Blizzard::String::MakeUnivPath(directory, s_Prefs[0].m_directory, static_cast<int32_t>(strlen(directory) + 1));

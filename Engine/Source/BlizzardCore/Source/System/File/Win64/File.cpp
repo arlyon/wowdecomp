@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <windows.h>
+#include "Engine/Source/BlizzardCore/Source/System/WindowsIncludes.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Streaming.h"
 #include "Engine/Source/BlizzardCore/Source/System/Debug/ErrorStack.h"
 #include "Engine/Source/BlizzardCore/Source/System/File/File.h"
@@ -17,7 +17,7 @@
 // OFFSET: 0x0042D500
 void System_File::Stacked::Throttle(int64_t bytes, int64_t elapsed) {
     if (s_throttleDelay > 0) {
-        Sleep(s_throttleDelay);
+        BLIZZARD_PLATFORM_SLEEP(s_throttleDelay);
     }
 
     s_throttleDebt += static_cast<int64_t>(static_cast<double>(bytes) / static_cast<double>(s_throttleRate) * 1000000000.0f) - elapsed;
@@ -30,7 +30,7 @@ void System_File::Stacked::Throttle(int64_t bytes, int64_t elapsed) {
     if (s_throttleDebt > 10000000) {
         int32_t milliseconds = static_cast<int32_t>(s_throttleDebt / 1000000);
         s_throttleDebt -= milliseconds * 1000000;
-        Sleep(milliseconds);
+        BLIZZARD_PLATFORM_SLEEP(milliseconds);
     }
 }
 

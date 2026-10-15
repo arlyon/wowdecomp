@@ -121,7 +121,7 @@ void System_SComp::ZlibFree(voidpf opaque, voidpf address) {
 
 // VERIFY: 6e3399c3 manual
 // OFFSET: 0x00431380
-bool __stdcall System_SComp::DecompressBlock(void* dst, uint32_t* dstSize, const void* src, uint32_t srcSize, Decompressor* decompressors) {
+bool STORMAPI System_SComp::DecompressBlock(void* dst, uint32_t* dstSize, const void* src, uint32_t srcSize, Decompressor* decompressors) {
     uint32_t capacity = *dstSize;
 
     if (!decompressors || !decompressors[0]) {

@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "Engine/Source/Storm/H/Compiler.h"
 
 namespace Blizzard {
 namespace Memory {

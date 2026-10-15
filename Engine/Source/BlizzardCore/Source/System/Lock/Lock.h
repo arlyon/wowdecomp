@@ -3,18 +3,34 @@
 
 #include <cstdint>
 #include <new>
-#include <windows.h>
+#include "Engine/Source/BlizzardCore/Source/System/WindowsIncludes.h"
+#if !defined(_WIN32)
+#include <atomic>
+#include <mutex>
+#endif
 #include "Engine/Source/BlizzardCore/Source/System/Process/Process.h"
 
 namespace Blizzard {
 namespace Lock {
 
+#if defined(_WIN32)
 typedef HANDLE Event;
 typedef CRITICAL_SECTION Mutex;
+#else
+struct NativeEvent;
+typedef NativeEvent* Event;
+struct Mutex {
+    alignas(std::recursive_mutex) uint8_t m_storage[sizeof(std::recursive_mutex)];
+};
+#endif
 
 class Atomic {
     public:
+#if defined(_WIN32)
     /* 0000 */ volatile int32_t m_value;
+#else
+    volatile int32_t m_value = 0;
+#endif
 
     int32_t Decrement();
     int32_t Increment();
@@ -25,7 +41,11 @@ class ConstructOnce {
     public:
     static void Construct(void* param);
 
+#if defined(_WIN32)
     /* 0000 */ bool m_constructed;
+#else
+    std::atomic<bool> m_constructed{false};
+#endif
     /* 0001 */ uint8_t unused_0001[3];
     /* 0004 */ Atomic m_count;
     /* 0008 */ alignas(T) uint8_t m_storage[sizeof(T)];
