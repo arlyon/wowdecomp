@@ -17,6 +17,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATHS = [
+    "Engine/Source/Event/Types.h",
+    "Engine/Source/Os/Gui.h",
     "Engine/Source/Storm/H/Types.h",
     "Engine/Source/Storm/H/stpl.h",
     "Engine/Source/Tempest/CMath.cpp",

@@ -4,9 +4,15 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include "Engine/Source/Event/Types.h"
 #include "Engine/Source/Storm/H/stpl.h"
 #include "Engine/Source/Tempest/CMath.h"
 #include "Engine/Source/Tempest/CRandom.h"
+
+static_assert(sizeof(KEY) == 4 && sizeof(MOUSEBUTTON) == 4 && sizeof(SCHEDSTATE) == 4,
+              "input enum widths changed");
+static_assert(KEY_NONE == UINT32_MAX && MOUSE_BUTTON_ALL == UINT32_MAX &&
+              _UNIQUE_SYMBOL_SCHEDSTATE_96 == UINT32_MAX, "input sentinel values changed");
 
 namespace {
 int failures = 0;

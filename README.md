@@ -84,8 +84,10 @@ logger off in `WowClient` with `-DWOWCLIENT_CRASH_LOG=OFF`.
 
 ### Linux portability regression tests
 
-The native OS and maths tests are independent of the client build and need no game data or graphics
-libraries. They require a C++17 compiler and CMake 3.13 or newer:
+The native OS and maths tests are independent of the client build and need no game data, Vulkan,
+or working display. They require a C++17 compiler, CMake 3.13 or newer, pkg-config and SDL2 development
+files (2.0.22 or newer, for extended text-event ownership). Input tests use SDL's dummy video driver
+without touching the desktop:
 
 ```sh
 cmake -S Tools/Portability -B out/portability-tests -G Ninja -DCMAKE_BUILD_TYPE=Release
