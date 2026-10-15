@@ -2,7 +2,11 @@
 #define ENGINE_SOURCE_OS_OSFILE_H
 
 #include <cstdint>
+#if defined(_WIN32)
 #include "Engine/Source/BlizzardCore/Source/System/File/Types.h"
+#else
+namespace Blizzard { namespace File { struct ProcessDirParms; }}
+#endif
 
 struct HOSFILE__;
 typedef HOSFILE__* HOSFILE;

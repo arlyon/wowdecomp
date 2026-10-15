@@ -18,7 +18,7 @@ target_include_directories(Os
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET GLOBAL sdl2>=2.0.22)
-    target_link_libraries(Os PRIVATE Threads::Threads ${CMAKE_DL_LIBS} PkgConfig::SDL2)
+    target_link_libraries(Os PRIVATE Threads::Threads ${CMAKE_DL_LIBS} PkgConfig::SDL2 Storm)
 endif ()
 
 if(WIN32)

@@ -1,6 +1,6 @@
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     file(GLOB PRIVATE_SOURCES CONFIGURE_DEPENDS "Source/Linux/*.cpp")
-    list(APPEND PRIVATE_SOURCES Source/SStr.cpp Source/SOption.cpp)
+    list(APPEND PRIVATE_SOURCES Source/SStr.cpp Source/SOption.cpp Source/soprintf.cpp)
 else ()
     file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
     list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Linux/")
@@ -16,7 +16,12 @@ target_include_directories(Storm
 )
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(Storm PUBLIC Threads::Threads)
+    find_package(Threads REQUIRED)
+    if (NOT TARGET PkgConfig::SDL2)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET GLOBAL sdl2>=2.0.22)
+    endif ()
+    target_link_libraries(Storm PUBLIC Threads::Threads PRIVATE PkgConfig::SDL2)
 else ()
     target_link_libraries(Storm
         PUBLIC

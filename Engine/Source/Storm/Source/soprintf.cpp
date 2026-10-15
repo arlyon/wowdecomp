@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include "Engine/Source/Storm/H/storm.h"
+#include "Engine/Source/Storm/Source/OrderedPrint.h"
 
 #define MAX_ARGUMENTS 64
 #define MAX_SPECIFIER_LENGTH 64
@@ -33,6 +34,9 @@ static int32_t ParseFormatSpecifier(const char** format, ArgumentSize* size, int
         char ch = *curr++;
 
         if (ch >= '0' && ch <= '9') {
+#if !defined(_WIN32)
+            if (currentNumber > (INT32_MAX - (ch - '0')) / 10) return -1;
+#endif
             currentNumber = 10 * currentNumber + ch - '0';
             continue;
         }
@@ -121,12 +125,20 @@ static int32_t ParseFormatSpecifier(const char** format, ArgumentSize* size, int
 // VERIFY: 7c8d9894 manual
 // OFFSET: 0x00773E10
 static void FixUpLongLongFormatSpecifier(char* specifier) {
+#if defined(_WIN32)
     char* ll = strstr(specifier, "ll");
 
     if (ll) {
         memmove(ll + 3, ll + 2, strlen(ll) - 1);
         memcpy(ll, "I64", 3);
     }
+#else
+    char* i64 = strstr(specifier, "I64");
+    if (i64) {
+        memcpy(i64, "ll", 2);
+        memmove(i64 + 2, i64 + 3, strlen(i64 + 3) + 1);
+    }
+#endif
 }
 
 // VERIFY: 33f0aefe manual
@@ -175,6 +187,12 @@ int32_t vsnoprintf(char* out, size_t outSize, const char* format, va_list argume
         spec->start = start;
         spec->length = curr - start;
 
+#if !defined(_WIN32)
+        if (result > 0 && (orderingPtr < 0 || orderingPtr >= MAX_ARGUMENTS)) {
+            *dest = 0;
+            return 0;
+        }
+#endif
         if (result > 0) {
             if (sizes[orderingPtr] && sizes[orderingPtr] != size) {
                 *dest = 0;
@@ -254,20 +272,20 @@ int32_t vsnoprintf(char* out, size_t outSize, const char* format, va_list argume
 
         switch (sizes[argument]) {
         case e_intSized:
-            written = _snprintf(dest, avail, specifier, values[argument].intValue);
+            written = STORM_ORDERED_PRINT(dest, avail, specifier, values[argument].intValue);
             break;
         case e_pointerSized:
-            written = _snprintf(dest, avail, specifier, values[argument].pointerValue);
+            written = STORM_ORDERED_PRINT(dest, avail, specifier, values[argument].pointerValue);
             break;
         case e_longLongSized:
             FixUpLongLongFormatSpecifier(specifier);
-            written = _snprintf(dest, avail, specifier, values[argument].longLongValue);
+            written = STORM_ORDERED_PRINT(dest, avail, specifier, values[argument].longLongValue);
             break;
         case e_doubleSized:
-            written = _snprintf(dest, avail, specifier, values[argument].doubleValue);
+            written = STORM_ORDERED_PRINT(dest, avail, specifier, values[argument].doubleValue);
             break;
         case e_takesNoSpace:
-            written = _snprintf(dest, avail, specifier);
+            written = STORM_ORDERED_PRINT(dest, avail, specifier);
             break;
         }
 

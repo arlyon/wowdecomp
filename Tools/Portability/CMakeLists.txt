@@ -39,6 +39,21 @@ target_link_libraries(StormStringCrtTest PRIVATE Storm Threads::Threads)
 add_test(NAME StormStringCrt COMMAND StormStringCrtTest)
 set_tests_properties(StormStringCrt PROPERTIES TIMEOUT 20)
 
+add_executable(OrderedPrintTest OrderedPrintTest.cpp)
+target_link_libraries(OrderedPrintTest PRIVATE Storm)
+add_test(NAME OrderedPrint COMMAND OrderedPrintTest)
+set_tests_properties(OrderedPrint PROPERTIES TIMEOUT 20)
+
+add_executable(StormRuntimeTest StormRuntimeTest.cpp)
+target_link_libraries(StormRuntimeTest PRIVATE Storm)
+add_test(NAME StormRuntime COMMAND StormRuntimeTest)
+set_tests_properties(StormRuntime PROPERTIES TIMEOUT 20)
+
+add_executable(LogDirectoryTest LogDirectoryTest.cpp)
+target_link_libraries(LogDirectoryTest PRIVATE Os Storm Threads::Threads)
+add_test(NAME LogDirectory COMMAND LogDirectoryTest)
+set_tests_properties(LogDirectory PROPERTIES TIMEOUT 20)
+
 add_executable(OsServicesTest OsServicesTest.cpp)
 target_link_libraries(OsServicesTest PRIVATE Os Threads::Threads)
 add_test(NAME OsServices COMMAND OsServicesTest $<TARGET_FILE:NativeLibraryFixture>)
