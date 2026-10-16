@@ -38,4 +38,17 @@ if (WOWDECOMP_SLANGC)
     add_dependencies(VulkanShaderTest GxSlangShaders)
     target_compile_definitions(VulkanShaderTest PRIVATE
         WOWDECOMP_SLANG_TEST_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    find_package(Vulkan 1.1 QUIET)
+    if (Vulkan_FOUND)
+        add_executable(FixedFunctionTest FixedFunctionTest.cpp
+            "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/ResidentBuffer.cpp")
+        target_link_libraries(FixedFunctionTest PRIVATE Vulkan::Vulkan GxVulkanShaders)
+        target_compile_definitions(FixedFunctionTest PRIVATE
+            WOWDECOMP_SLANG_TEST_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+        add_dependencies(FixedFunctionTest GxSlangShaders)
+        add_test(NAME FixedFunctionGpu COMMAND FixedFunctionTest)
+        add_test(NAME BufferResidencyGpu COMMAND FixedFunctionTest --residency)
+        set_tests_properties(FixedFunctionGpu BufferResidencyGpu PROPERTIES TIMEOUT 30
+            ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+    endif ()
 endif ()

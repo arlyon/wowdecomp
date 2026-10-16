@@ -23,6 +23,7 @@ public:
     void IRsSendToHw(EGxRenderState which) override;
     void PoolSizeSet(CGxPool* pool, uint32_t size) override;
     void PoolDestroy(CGxPool* pool) override;
+    void BufDestroy(CGxBuf*& buf) override;
     char* BufLock(CGxBuf* buf) override;
     int32_t BufUnlock(CGxBuf* buf, uint32_t size) override;
     void BufData(CGxBuf* buf, const void* data, uint32_t size, uint32_t offset) override;

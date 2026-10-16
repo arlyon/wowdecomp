@@ -1,6 +1,7 @@
 #include "CGxDeviceVulkan.h"
 #include "Shader.h"
 #include "Slang.h"
+#include "ResidentBuffer.h"
 #include "Engine/Source/Gx/Blit.h"
 #include "Engine/Source/Gx/Buffer.h"
 #include "Engine/Source/Gx/CGxPool.h"
@@ -53,11 +54,11 @@ VkFormat TextureFormat(EGxTexFormat format) {
     return format > GxTex_Unknown && format < GxTexFormats_Last ? formats[format] : VK_FORMAT_UNDEFINED;
 }
 
-struct NativeBuffer {
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    uint8_t* mapped = nullptr;
-    VkDeviceSize size = 0;
+using NativeBuffer = GxVulkan::Buffer;
+struct CachedGeometry {
+    CGxPool* pool = nullptr;
+    uint32_t index = 0, bytes = 0;
+    GxVulkan::ResidentBuffer resident;
 };
 struct NativeImage {
     VkImage image = VK_NULL_HANDLE;
@@ -127,6 +128,9 @@ struct CGxDeviceVulkan::State {
     VkDeviceSize uploadOffset = 0;
     NativeImage depth, white;
     std::map<CGxPool*, std::vector<uint8_t>> pools;
+    std::map<CGxBuf*, CachedGeometry> geometry;
+    std::vector<NativeBuffer> retiredBuffers;
+    uint64_t bufferFrame = 0, residentUploadBytes = 0;
     std::map<CGxTex*, NativeImage> textures;
     // Samplers describe filtering, not texture identity. In particular Metal
     // permits far fewer live sampler objects than a world has textures.
@@ -136,8 +140,6 @@ struct CGxDeviceVulkan::State {
     std::map<CGxShader*, NativeShader> shaders;
     uint64_t nextShader = 1;
     GxVulkan::SlangCompiler shaderCompiler;
-    CGxShader* defaultVertex[2]{};
-    CGxShader* defaultPixel = nullptr;
     std::vector<uint32_t> fixedVertex, fixedPixel;
     std::map<std::vector<uint64_t>, Pipeline> pipelines;
     std::map<std::pair<VkFormat, VkFormat>, VkRenderPass> renderPasses;
@@ -155,6 +157,8 @@ struct CGxDeviceVulkan::State {
     void Barrier(VkImage image, VkImageAspectFlags aspect, uint32_t levels, uint32_t layers,
         VkImageLayout oldLayout, VkImageLayout newLayout);
     VkDeviceSize Upload(const void* bytes, size_t size, size_t alignment = 16);
+    std::pair<VkBuffer, VkDeviceSize> Geometry(CGxBuf* buffer);
+    void RetireGeometry(CGxBuf* buffer);
     void Initialize();
     void Destroy();
     void RecreateSwapchain();
@@ -173,29 +177,11 @@ uint32_t CGxDeviceVulkan::State::MemoryType(uint32_t mask, VkMemoryPropertyFlags
     throw std::runtime_error("Vulkan device has no suitable memory type");
 }
 NativeBuffer CGxDeviceVulkan::State::MakeBuffer(VkDeviceSize size, VkBufferUsageFlags usage) {
-    NativeBuffer result;
-    result.size = size;
-    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    info.size = size; info.usage = usage; info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    GX_VK(vkCreateBuffer(device, &info, nullptr, &result.buffer));
-    try {
-        VkMemoryRequirements requirements;
-        vkGetBufferMemoryRequirements(device, result.buffer, &requirements);
-        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocation.allocationSize = requirements.size;
-        allocation.memoryTypeIndex = MemoryType(requirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        GX_VK(vkAllocateMemory(device, &allocation, nullptr, &result.memory));
-        GX_VK(vkBindBufferMemory(device, result.buffer, result.memory, 0));
-        GX_VK(vkMapMemory(device, result.memory, 0, size, 0, reinterpret_cast<void**>(&result.mapped)));
-    } catch (...) { DestroyBuffer(result); throw; }
-    return result;
+    return GxVulkan::CreateBuffer(device, memoryProperties, size, usage,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 }
 void CGxDeviceVulkan::State::DestroyBuffer(NativeBuffer& buffer) {
-    if (buffer.mapped) vkUnmapMemory(device, buffer.memory);
-    if (buffer.buffer) vkDestroyBuffer(device, buffer.buffer, nullptr);
-    if (buffer.memory) vkFreeMemory(device, buffer.memory, nullptr);
-    buffer = {};
+    GxVulkan::DestroyBuffer(device, buffer);
 }
 NativeImage CGxDeviceVulkan::State::MakeImage(uint32_t width, uint32_t height, uint32_t levels,
     uint32_t layers, VkFormat format, VkImageAspectFlags aspect, VkImageUsageFlags usage) {
@@ -261,8 +247,12 @@ void CGxDeviceVulkan::State::Barrier(VkImage image, VkImageAspectFlags aspect,
 }
 VkDeviceSize CGxDeviceVulkan::State::Upload(const void* bytes, size_t size, size_t alignment) {
     const VkDeviceSize offset = (uploadOffset + alignment - 1) / alignment * alignment;
-    if (size > upload.size || offset > upload.size - size)
+    if (size > upload.size || offset > upload.size - size) {
+        GxLog("Native Vulkan upload budget exhausted: requested=%llu used=%llu capacity=%llu resident_upload=%llu",
+            static_cast<unsigned long long>(size), static_cast<unsigned long long>(uploadOffset),
+            static_cast<unsigned long long>(upload.size), static_cast<unsigned long long>(residentUploadBytes));
         throw std::runtime_error("Vulkan per-frame upload budget exhausted");
+    }
     if (size) std::memcpy(upload.mapped + offset, bytes, size);
     uploadOffset = offset + size;
     return offset;
@@ -457,6 +447,8 @@ bool CGxDeviceVulkan::State::BeginFrame() {
     framebuffers.clear();
     for (auto& image : retiredImages) DestroyImage(image);
     retiredImages.clear();
+    for (auto& buffer : retiredBuffers) DestroyBuffer(buffer);
+    retiredBuffers.clear();
     if (resize) RecreateSwapchain();
     VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE, &imageIndex);
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -468,6 +460,8 @@ bool CGxDeviceVulkan::State::BeginFrame() {
     GX_VK(vkResetCommandPool(device, commandPool, 0));
     GX_VK(vkResetDescriptorPool(device, descriptorPool, 0));
     uploadOffset = 0;
+    residentUploadBytes = 0;
+    ++bufferFrame;
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     GX_VK(vkBeginCommandBuffer(command, &begin));
@@ -561,6 +555,10 @@ void CGxDeviceVulkan::State::Destroy() {
         textures.clear();
         for (auto& image : retiredImages) DestroyImage(image);
         retiredImages.clear();
+        for (auto& entry : geometry) entry.second.resident.Destroy(device);
+        geometry.clear();
+        for (auto& buffer : retiredBuffers) DestroyBuffer(buffer);
+        retiredBuffers.clear();
         DestroyImage(white); DestroyImage(depth); DestroyBuffer(upload);
         for (const auto& entry : samplers) vkDestroySampler(device, entry.second, nullptr);
         samplers.clear();
@@ -717,29 +715,54 @@ int InputLocation(MOJOSHADER_usage usage, int index) {
 }
 }
 
+std::pair<VkBuffer, VkDeviceSize> CGxDeviceVulkan::State::Geometry(CGxBuf* buffer) {
+    auto& data = pools[buffer->m_pool];
+    if (!buffer->m_size || buffer->m_index > data.size() || buffer->m_size > data.size() - buffer->m_index)
+        throw std::runtime_error("Geometry buffer lies outside its pool");
+    if (buffer->m_pool->m_usage == GxPoolUsage_Stream)
+        return {upload.buffer, Upload(data.data() + buffer->m_index, buffer->m_size)};
+    auto& cached = geometry[buffer];
+    if (cached.pool != buffer->m_pool || cached.index != buffer->m_index || cached.bytes != buffer->m_size) {
+        cached.resident.MarkDirty();
+        cached.pool = buffer->m_pool; cached.index = buffer->m_index; cached.bytes = buffer->m_size;
+    }
+    if (cached.resident.NeedsUpload(buffer->m_size)) EndPass();
+    return {cached.resident.Resolve(device, memoryProperties, command, bufferFrame,
+        data.data() + buffer->m_index, buffer->m_size, retiredBuffers, residentUploadBytes), 0};
+}
+void CGxDeviceVulkan::State::RetireGeometry(CGxBuf* buffer) {
+    auto found = geometry.find(buffer);
+    if (found != geometry.end()) {
+        found->second.resident.Retire(retiredBuffers);
+        geometry.erase(found);
+    }
+}
+
 void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     if (!batch.m_count || !BeginFrame()) return;
     gx.IRsSync(0);
     auto* vertexShader = static_cast<CGxShader*>(gx.m_appRenderStates[GxRs_VertexShader].m_value.m_data.p);
     auto* pixelShader = static_cast<CGxShader*>(gx.m_appRenderStates[GxRs_PixelShader].m_value.m_data.p);
-    const bool fixed = !vertexShader && !pixelShader;
+    const bool fixedVertexStage = !vertexShader;
+    const bool fixedPixelStage = !pixelShader;
     NativeShader *v = nullptr, *p = nullptr;
-    if (!fixed) {
+    {
         auto load = [&](CGxShader* shader) -> NativeShader* {
-            if (!shader) throw std::runtime_error("Missing fallback Gx shader");
             if (!shader->m_loaded) gx.IShaderCreate(shader);
             auto found = shaders.find(shader);
             if (!shader->m_valid || found == shaders.end()) throw std::runtime_error("Vulkan shader compilation failed; see Gx log");
             return &found->second;
         };
-        v = load(vertexShader ? vertexShader : defaultVertex[0]);
-        p = load(pixelShader ? pixelShader : defaultPixel);
+        if (vertexShader) v = load(vertexShader);
+        if (pixelShader) p = load(pixelShader);
     }
-    const auto& vertexCode = fixed ? fixedVertex : v->code;
-    const auto& pixelCode = fixed ? fixedPixel : p->code;
+    const auto& vertexCode = fixedVertexStage ? fixedVertex : v->code;
+    const auto& pixelCode = fixedPixelStage ? fixedPixel : p->code;
     std::vector<int> required;
-    if (fixed) required = {GxVA_Position, GxVA_Color0, GxVA_TexCoord0};
-    else for (int i = 0; i < v->reflection->attribute_count; ++i)
+    if (fixedVertexStage) {
+        required = {GxVA_Position, GxVA_Normal, GxVA_Color0};
+        for (int i = 0; i < 8; ++i) required.push_back(GxVA_TexCoord0 + i);
+    } else for (int i = 0; i < v->reflection->attribute_count; ++i)
         required.push_back(InputLocation(v->reflection->attributes[i].usage, v->reflection->attributes[i].index));
     std::array<const CGxVertexAttrib*, GxVAs_Last> declarations{};
     std::array<CGxBuf*, GxVAs_Last> buffers{};
@@ -761,6 +784,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     std::vector<VkVertexInputAttributeDescription> attributes;
     std::vector<VkVertexInputBindingDescription> bindings;
     std::vector<VkDeviceSize> offsets;
+    std::vector<VkBuffer> vertexBuffers;
     std::map<CGxBuf*, uint32_t> streams;
     for (int location : required) {
         const auto* declaration = declarations[location];
@@ -775,6 +799,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
             // every vertex without a zero stride forbidden by portability_subset.
             bindings.push_back({binding, sizeof(value), VK_VERTEX_INPUT_RATE_INSTANCE});
             offsets.push_back(Upload(value.data(), sizeof(value)));
+            vertexBuffers.push_back(upload.buffer);
             attributes.push_back({static_cast<uint32_t>(location), binding, VK_FORMAT_R32G32B32A32_SFLOAT, 0});
             continue;
         }
@@ -783,11 +808,10 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         if (found == streams.end()) {
             const auto binding = static_cast<uint32_t>(bindings.size());
             found = streams.emplace(buffer, binding).first;
-            auto& data = pools[buffer->m_pool];
-            if (buffer->m_index > data.size() || buffer->m_size > data.size() - buffer->m_index)
-                throw std::runtime_error("Vertex buffer lies outside its pool");
+            const auto source = Geometry(buffer);
             bindings.push_back({binding, buffer->m_itemSize ? buffer->m_itemSize : declaration->m_bufSize, VK_VERTEX_INPUT_RATE_VERTEX});
-            offsets.push_back(Upload(data.data() + buffer->m_index, buffer->m_size));
+            offsets.push_back(source.second);
+            vertexBuffers.push_back(source.first);
         }
         attributes.push_back({static_cast<uint32_t>(location), found->second, formats[declaration->m_type], declaration->m_offset});
     }
@@ -796,57 +820,84 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     };
     const auto blend = gx.m_appRenderStates[GxRs_BlendingMode].m_value.m_data.u[0];
     if (blend >= GxBlends_Last) throw std::runtime_error("Unknown Gx blend mode");
-    std::array<VkDescriptorImageInfo, 16> images{};
+    std::array<std::array<VkDescriptorImageInfo, 16>, 2> images{};
     // Resolve uploads before beginning a render pass, since transfers cannot
     // occur inside it. Descriptor snapshots remain valid until the frame fence.
-    auto sample = [&](uint32_t slot) {
-        if (slot >= images.size()) throw std::runtime_error("Shader texture register is out of range");
-        if (!images[slot].imageView) {
-            auto* texture = static_cast<CGxTex*>(gx.m_appRenderStates[GxRs_Texture0 + slot].m_value.m_data.p);
+    auto sample = [&](unsigned set, uint32_t slot, bool useBoundTexture = true) {
+        if (slot >= (set == 0 ? 4u : 16u)) throw std::runtime_error("Shader texture register is out of range");
+        auto& descriptor = images[set == 0 ? 0 : 1][slot];
+        if (!descriptor.imageView) {
+            auto* texture = useBoundTexture ? static_cast<CGxTex*>(gx.m_appRenderStates[GxRs_Texture0 + slot].m_value.m_data.p) : nullptr;
             auto& image = Texture(texture);
-            images[slot] = {image.sampler, image.view, image.layout};
+            descriptor = {image.sampler, image.view, image.layout};
         }
     };
-    if (fixed) sample(0);
-    else {
-        for (const auto* shader : {v->reflection.get(), p->reflection.get()})
-            for (int i = 0; i < shader->sampler_count; ++i) sample(shader->samplers[i].index);
+    std::array<bool, 8> fixedStageEnabled{};
+    if (fixedPixelStage) {
+        bool enabledChain = true;
+        for (unsigned stage = 0; stage < fixedStageEnabled.size(); ++stage) {
+            auto* texture = static_cast<CGxTex*>(gx.m_appRenderStates[GxRs_Texture0 + stage].m_value.m_data.p);
+            enabledChain = enabledChain && texture;
+            fixedStageEnabled[stage] = enabledChain;
+            if (enabledChain && texture->m_target == GxTex_CubeMap)
+                throw std::runtime_error("Fixed-function cube-map sampling is not implemented");
+            sample(2, stage, enabledChain);
+        }
+    } else {
+        for (int i = 0; i < p->reflection->sampler_count; ++i) sample(2, p->reflection->samplers[i].index);
     }
+    if (v) for (int i = 0; i < v->reflection->sampler_count; ++i) sample(0, v->reflection->samplers[i].index);
     C44Matrix transform = gx.m_xforms[GxXform_World].m_mtx[gx.m_xforms[GxXform_World].m_level] *
         gx.m_xforms[GxXform_View].m_mtx[gx.m_xforms[GxXform_View].m_level] * gx.m_projNative;
     std::vector<float> vertexUniforms, pixelUniforms;
-    if (fixed) {
-        const auto* matrix = reinterpret_cast<const float*>(&transform);
-        vertexUniforms.assign(matrix, matrix + 16);
-        pixelUniforms = {gx.m_appRenderStates[GxRs_AlphaRef].m_value.m_data.u[0] / 255.0f,
-            gx.m_appRenderStates[GxRs_Texture0].m_value.m_data.p ? 1.0f : 0.0f, 0, 0};
-    } else {
-        std::array<float, 256 * 4> vertexRegisters;
-        std::copy_n(CGxDevice::s_shadowConstants[1].constants, vertexRegisters.size(), vertexRegisters.begin());
-        if (!vertexShader) {
-            const auto transpose = transform.Transpose();
-            std::memcpy(vertexRegisters.data(), &transpose, sizeof(transpose));
+    if (fixedVertexStage || fixedPixelStage) {
+        const auto& world = gx.m_xforms[GxXform_World].m_mtx[gx.m_xforms[GxXform_World].m_level];
+        const auto& view = gx.m_xforms[GxXform_View].m_mtx[gx.m_xforms[GxXform_View].m_level];
+        const C44Matrix worldView = world * view;
+        C44Matrix normalTransform;
+        for (unsigned stage = 0; stage < 8; ++stage) {
+            const auto generation = gx.m_appRenderStates[GxRs_TexGen0 + stage].m_value.m_data.u[0];
+            if (fixedVertexStage && (fixedStageEnabled[stage] || !fixedPixelStage) && generation >= GxTexGen_ReflectionMap)
+                normalTransform = worldView.Inverse().Transpose();
         }
-        vertexUniforms = GxVulkan::ShaderUniforms(*v->reflection, vertexRegisters.data(), 256);
-        pixelUniforms = GxVulkan::ShaderUniforms(*p->reflection, CGxDevice::s_shadowConstants[0].constants, 256);
-    }
-    if (!fixed) {
-        if (const char* directory = std::getenv("WOWDECOMP_VULKAN_SHADER_DUMP")) {
-            const std::string path = std::string(directory) + "/ps-" + std::to_string(p->id) + ".values";
-            if (!std::ifstream(path).good()) {
-                std::ofstream values(path);
-                values << "vertex " << v->id << " pixel " << p->id << '\n';
-                for (size_t i = 0; i < pixelUniforms.size(); ++i)
-                    values << pixelUniforms[i] << (i % 4 == 3 ? '\n' : ' ');
-                values << "textures\n";
-                for (int i = 0; i < p->reflection->sampler_count; ++i) {
-                    const auto slot = p->reflection->samplers[i].index;
-                    auto* texture = static_cast<CGxTex*>(gx.m_appRenderStates[GxRs_Texture0 + slot].m_value.m_data.p);
-                    values << slot << ' ' << (texture ? texture->m_format : 0) << '\n';
-                }
+        const auto appendMatrix = [&](const C44Matrix& matrix) {
+            const auto* data = reinterpret_cast<const float*>(&matrix);
+            vertexUniforms.insert(vertexUniforms.end(), data, data + 16);
+        };
+        appendMatrix(transform); appendMatrix(worldView); appendMatrix(normalTransform);
+        std::array<float, 32> coordinates{};
+        pixelUniforms = {gx.m_appRenderStates[GxRs_AlphaRef].m_value.m_data.u[0] / 255.0f, 0, 0, 0};
+        for (unsigned stage = 0; stage < 8; ++stage) {
+            C44Matrix texGen;
+            const bool enabledStage = fixedStageEnabled[stage] || !fixedPixelStage;
+            const auto coordinate = gx.m_appRenderStates[GxRs_TextureCoord0 + stage].m_value.m_data.u[0];
+            const auto generation = gx.m_appRenderStates[GxRs_TexGen0 + stage].m_value.m_data.u[0];
+            const auto transformMode = gx.m_appRenderStates[GxRs_TextureShader0 + stage].m_value.m_data.u[0];
+            const auto colourOp = gx.m_appRenderStates[GxRs_ColorOp0 + stage].m_value.m_data.u[0];
+            const auto alphaOp = gx.m_appRenderStates[GxRs_AlphaOp0 + stage].m_value.m_data.u[0];
+            if ((fixedVertexStage && enabledStage && (coordinate >= 8 || generation > GxTexGen_SphereMap || transformMode > 2)) ||
+                (fixedPixelStage && fixedStageEnabled[stage] && (colourOp >= 6 || alphaOp >= 6)))
+                throw std::runtime_error("Unsupported fixed-function texture-stage state");
+            if (enabledStage && (generation == GxTexGen_ObjectLinear || generation == GxTexGen_EyeLinear)) {
+                texGen = view.AffineInverse();
+                if (generation == GxTexGen_ObjectLinear) texGen = texGen * world.Inverse();
+            } else if (enabledStage && generation == GxTexGen_SphereMap) {
+                texGen.a0 = texGen.b1 = 0.5f; texGen.d0 = texGen.d1 = 0.5f;
             }
+            if (enabledStage && transformMode)
+                texGen = texGen * gx.m_xforms[stage].m_mtx[gx.m_xforms[stage].m_level];
+            appendMatrix(texGen);
+            coordinates[stage * 4] = static_cast<float>(coordinate);
+            coordinates[stage * 4 + 1] = static_cast<float>(generation);
+            coordinates[stage * 4 + 2] = static_cast<float>(transformMode);
+            coordinates[stage * 4 + 3] = enabledStage ? 1.0f : 0.0f;
+            pixelUniforms.insert(pixelUniforms.end(), {fixedStageEnabled[stage] ? 1.0f : 0.0f,
+                static_cast<float>(colourOp), static_cast<float>(alphaOp), 0});
         }
+        vertexUniforms.insert(vertexUniforms.end(), coordinates.begin(), coordinates.end());
     }
+    if (v) vertexUniforms = GxVulkan::ShaderUniforms(*v->reflection, CGxDevice::s_shadowConstants[1].constants, 256);
+    if (p) pixelUniforms = GxVulkan::ShaderUniforms(*p->reflection, CGxDevice::s_shadowConstants[0].constants, 256);
     if (vertexUniforms.empty()) vertexUniforms.resize(4);
     if (pixelUniforms.empty()) pixelUniforms.resize(4);
     const size_t alignment = std::max<VkDeviceSize>(properties.limits.minUniformBufferOffsetAlignment, 16);
@@ -874,14 +925,18 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         if (binding >= (set == 0 ? 4u : 16u)) throw std::runtime_error("Shader sampler exceeds its stage limit");
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         write.dstSet = sets[set]; write.dstBinding = binding; write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; write.pImageInfo = &images[binding]; writes.push_back(write);
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; write.pImageInfo = &images[set == 0 ? 0 : 1][binding]; writes.push_back(write);
     };
-    if (fixed) writeSampler(2, 0);
-    else {
-        for (int i = 0; i < v->reflection->sampler_count; ++i) writeSampler(0, v->reflection->samplers[i].index);
-        for (int i = 0; i < p->reflection->sampler_count; ++i) writeSampler(2, p->reflection->samplers[i].index);
-    }
+    if (v) for (int i = 0; i < v->reflection->sampler_count; ++i) writeSampler(0, v->reflection->samplers[i].index);
+    if (fixedPixelStage) for (unsigned stage = 0; stage < 8; ++stage) writeSampler(2, stage);
+    else for (int i = 0; i < p->reflection->sampler_count; ++i) writeSampler(2, p->reflection->samplers[i].index);
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    std::pair<VkBuffer, VkDeviceSize> residentIndex{};
+    if (indexed && batch.m_primType != GxPrim_TriangleFan) {
+        auto* buffer = gx.m_primIndexBuf;
+        if (!buffer || !buffer->m_pool) throw std::runtime_error("Indexed draw has no index buffer");
+        if (buffer->m_pool->m_usage != GxPoolUsage_Stream) residentIndex = Geometry(buffer);
+    }
     BeginPass();
     const uint32_t depthTest = enabled(GxRs_DepthTest, GxMasterEnable_DepthTest) ? 1u : 0u;
     const uint32_t depthWrite = enabled(GxRs_DepthWrite, GxMasterEnable_DepthWrite) ? 1u : 0u;
@@ -889,7 +944,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     const uint32_t colourMask = enabled(GxRs_ColorWrite, GxMasterEnable_ColorWrite) ? gx.m_appRenderStates[GxRs_ColorWrite].m_value.m_data.u[0] : 0;
     const auto depthFunction = gx.m_appRenderStates[GxRs_DepthFunc].m_value.m_data.u[0];
     const auto primitive = batch.m_primType == GxPrim_TriangleFan ? GxPrim_Triangles : batch.m_primType;
-    std::vector<uint64_t> key{fixed ? 0 : v->id, fixed ? 0 : p->id, reinterpret_cast<uint64_t>(currentPass),
+    std::vector<uint64_t> key{fixedVertexStage ? 0 : v->id, fixedPixelStage ? 0 : p->id, reinterpret_cast<uint64_t>(currentPass),
         blend, depthTest, depthWrite, cull, colourMask, depthFunction, static_cast<uint64_t>(primitive)};
     for (const auto& binding : bindings) {
         key.push_back(binding.binding); key.push_back(binding.stride); key.push_back(binding.inputRate);
@@ -969,7 +1024,6 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     }
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, found->second.handle);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 4, sets.data(), 0, nullptr);
-    std::vector<VkBuffer> vertexBuffers(bindings.size(), upload.buffer);
     vkCmdBindVertexBuffers(command, 0, static_cast<uint32_t>(vertexBuffers.size()), vertexBuffers.data(), offsets.data());
     VkViewport viewport{};
     viewport.x = gx.m_viewport.m_x.m_l * targetExtent.width;
@@ -1016,8 +1070,12 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         auto& data = pools[buffer->m_pool];
         if (buffer->m_index > data.size() || (static_cast<uint64_t>(batch.m_start) + batch.m_count) * 2 > data.size() - buffer->m_index)
             throw std::runtime_error("Index buffer overrun");
-        indexOffset = Upload(data.data() + buffer->m_index + batch.m_start * 2, batch.m_count * 2, 4);
-        vkCmdBindIndexBuffer(command, upload.buffer, indexOffset, VK_INDEX_TYPE_UINT16);
+        VkBuffer indexBuffer = upload.buffer;
+        if (residentIndex.first) {
+            indexBuffer = residentIndex.first;
+            indexOffset = residentIndex.second + static_cast<uint64_t>(batch.m_start) * 2;
+        } else indexOffset = Upload(data.data() + buffer->m_index + batch.m_start * 2, batch.m_count * 2, 4);
+        vkCmdBindIndexBuffer(command, indexBuffer, indexOffset, VK_INDEX_TYPE_UINT16);
         vkCmdDrawIndexed(command, batch.m_count, 1, 0, 0, 0);
     } else {
         vkCmdDraw(command, batch.m_count, 1, batch.m_start, 0);
@@ -1123,8 +1181,6 @@ int32_t CGxDeviceVulkan::DeviceSetFormat(const CGxFormat& format) {
         m_caps.m_hwCursor = 0; m_caps.m_occlusionQuery = 0;
         m_context = m_windowVisible = 1;
         m_windowFocus = (SDL_GetWindowFlags(state.window) & SDL_WINDOW_INPUT_FOCUS) != 0;
-        ShaderCreate(state.defaultVertex, GxSh_Vertex, "Shaders\\Vertex", "UI", 2);
-        ShaderCreate(&state.defaultPixel, GxSh_Pixel, "Shaders\\Pixel", "UI", 1);
         ICursorCreate(m_format);
         SDL_ShowCursor(SDL_DISABLE);
         OsGuiSetNativeWindowEventProc(WindowEvent, this);
@@ -1229,10 +1285,24 @@ void CGxDeviceVulkan::IRsSendToHw(EGxRenderState) {
 void CGxDeviceVulkan::PoolSizeSet(CGxPool* pool, uint32_t size) {
     if (!pool || size > INT32_MAX) throw std::invalid_argument("Invalid Gx pool size");
     m_native->pools[pool].resize(size); pool->m_size = static_cast<int32_t>(size);
+    for (auto& entry : m_native->geometry)
+        if (entry.second.pool == pool) entry.second.resident.MarkDirty();
 }
 void CGxDeviceVulkan::PoolDestroy(CGxPool* pool) {
-    if (pool) m_native->pools.erase(pool);
+    if (pool) {
+        for (auto entry = m_native->geometry.begin(); entry != m_native->geometry.end();) {
+            if (entry->second.pool == pool) {
+                entry->second.resident.Retire(m_native->retiredBuffers);
+                entry = m_native->geometry.erase(entry);
+            } else ++entry;
+        }
+        m_native->pools.erase(pool);
+    }
     CGxDevice::PoolDestroy(pool);
+}
+void CGxDeviceVulkan::BufDestroy(CGxBuf*& buffer) {
+    if (buffer) m_native->RetireGeometry(buffer);
+    CGxDevice::BufDestroy(buffer);
 }
 char* CGxDeviceVulkan::BufLock(CGxBuf* buffer) {
     if (!buffer || !buffer->m_pool) throw std::invalid_argument("Invalid Gx buffer lock");
@@ -1251,6 +1321,12 @@ char* CGxDeviceVulkan::BufLock(CGxBuf* buffer) {
     const uint64_t required = static_cast<uint64_t>(buffer->m_index) + buffer->m_size;
     if (required > INT32_MAX) throw std::runtime_error("Gx buffer size overflow");
     if (data.size() < required) data.resize(std::max<uint64_t>(required, std::max(pool->m_size, 0)));
+    for (auto& entry : m_native->geometry) {
+        const auto& cached = entry.second;
+        if (cached.pool == pool && cached.index < required &&
+            buffer->m_index < static_cast<uint64_t>(cached.index) + cached.bytes)
+            entry.second.resident.MarkDirty();
+    }
     return reinterpret_cast<char*>(data.data() + buffer->m_index);
 }
 int32_t CGxDeviceVulkan::BufUnlock(CGxBuf* buffer, uint32_t size) {

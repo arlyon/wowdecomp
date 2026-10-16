@@ -283,7 +283,7 @@ class CGxDevice {
 
     CGxDevice();
     CGxBuf* BufCreate(CGxPool* pool, uint32_t itemSize, uint32_t itemCount, uint32_t index);
-    void BufDestroy(CGxBuf*& buf);
+    virtual void BufDestroy(CGxBuf*& buf);
     void DeviceCreatePools();
     void DeviceCreateStreamBufs();
     void IShaderLoad(CGxShader** shaders, EGxShTarget target, const char* path, const char* name, uint32_t permutations);
