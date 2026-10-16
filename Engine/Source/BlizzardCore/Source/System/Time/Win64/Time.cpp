@@ -1,8 +1,12 @@
-#if defined(WOWDECOMP_ARCH_64)
+#if defined(WOWDECOMP_ARCH_64) || !defined(_WIN32)
 
 #include <cmath>
 #include <cstdint>
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include "Engine/Source/BlizzardCore/Source/System/Time/Linux/Native.h"
+#endif
 #include "Engine/Source/BlizzardCore/Source/System/Time/Time.h"
 
 // STATIC: 0x009E56C0
@@ -54,6 +58,7 @@ Blizzard::Time::Timestamp Blizzard::Time::FromFileTime(uint64_t fileTime) {
     return 0x7FFFFFFFFFFFFFFF;
 }
 
+#if defined(_WIN32)
 // OFFSET: 0x00428F60
 double System_Time::MeasureDrift(int64_t frequency, LARGE_INTEGER* counter, DWORD* tickCount) {
     DWORD tick;
@@ -92,6 +97,8 @@ uint64_t System_Time::GetTickCount64() {
     return s_tickCountHigh + s_lastTickCount;
 }
 
+#endif
+
 // OFFSET: 0x00429070
 void Blizzard::Time::BreakTime(Timestamp time, TimeRec& rec) {
     int32_t nanosecond = static_cast<int32_t>(time % 1000000000);
@@ -100,6 +107,7 @@ void Blizzard::Time::BreakTime(Timestamp time, TimeRec& rec) {
         nanosecond += 1000000000;
     }
 
+#if defined(_WIN32)
     int64_t ticks = time / 100 + 125911584000000000;
 
     if (time < 0 && time % 100) {
@@ -122,8 +130,17 @@ void Blizzard::Time::BreakTime(Timestamp time, TimeRec& rec) {
     rec.year = systemTime.wYear;
     rec.month = systemTime.wMonth;
 
+#else
+    System_Time::NativeBreakTime(time, rec);
+    rec.nanosecond = nanosecond;
+#endif
+
     bool leap = !(rec.year % 400) || (rec.year % 100 && !(rec.year % 4));
+#if defined(_WIN32)
     rec.yearday = System_Time::s_daysBeforeMonth[rec.month - 1] + systemTime.wDay - 1;
+#else
+    rec.yearday = System_Time::s_daysBeforeMonth[rec.month - 1] + rec.day - 1;
+#endif
 
     if (leap && rec.month > 2) {
         rec.yearday++;
@@ -132,6 +149,7 @@ void Blizzard::Time::BreakTime(Timestamp time, TimeRec& rec) {
 
 // OFFSET: 0x00429170
 Blizzard::Time::Timestamp Blizzard::Time::MakeTime(const TimeRec& rec) {
+#if defined(_WIN32)
     SYSTEMTIME systemTime;
     systemTime.wYear = static_cast<WORD>(rec.year);
     systemTime.wMonth = static_cast<WORD>(rec.month);
@@ -156,8 +174,12 @@ Blizzard::Time::Timestamp Blizzard::Time::MakeTime(const TimeRec& rec) {
     }
 
     return result;
+#else
+    return System_Time::NativeMakeTime(rec);
+#endif
 }
 
+#if defined(_WIN32)
 // OFFSET: 0x0042E870
 bool System_Time::CalibrateFrequency(LARGE_INTEGER* frequency) {
     if (!QueryPerformanceFrequency(frequency) || !frequency->QuadPart) {
@@ -233,8 +255,11 @@ bool System_Time::TimeInit() {
     return true;
 }
 
+#endif
+
 // OFFSET: 0x00435D80
 Blizzard::Time::Timestamp Blizzard::Time::GetTimestamp() {
+#if defined(_WIN32)
     if (System_Time::timeScaleCycles == 0xFFFFFFFFFFFFFFFF) {
         System_Time::TimeInit();
     }
@@ -249,10 +274,14 @@ Blizzard::Time::Timestamp Blizzard::Time::GetTimestamp() {
     FILETIME fileTime;
     GetSystemTimeAsFileTime(&fileTime);
     return FromFileTime((static_cast<uint64_t>(fileTime.dwHighDateTime) << 32) | fileTime.dwLowDateTime);
+#else
+    return System_Time::NativeTimestamp();
+#endif
 }
 
 // OFFSET: 0x00435E20
 int64_t Blizzard::Time::Milliseconds() {
+#if defined(_WIN32)
     if (System_Time::timeScaleCycles == 0xFFFFFFFFFFFFFFFF) {
         System_Time::TimeInit();
     }
@@ -265,6 +294,9 @@ int64_t Blizzard::Time::Milliseconds() {
     QueryPerformanceCounter(&counter);
 
     return static_cast<int64_t>(static_cast<double>(counter.QuadPart) * System_Time::timeScaleMilliseconds);
+#else
+    return System_Time::NativeMilliseconds();
+#endif
 }
 
 #endif

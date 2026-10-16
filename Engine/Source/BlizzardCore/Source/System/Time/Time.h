@@ -40,6 +40,9 @@ void BreakTime(Timestamp time, TimeRec& rec);
 Timestamp FromFileTime(uint64_t fileTime);
 void GetElapsedSinceStart(bool start);
 Timestamp GetTimestamp();
+// On Linux, invalid fields fail with INT64_MIN/errno=EINVAL; valid dates outside
+// the timestamp range fail with INT64_MIN/errno=ERANGE. Success clears errno,
+// including when the resulting timestamp is exactly INT64_MIN.
 Timestamp MakeTime(const TimeRec& rec);
 int64_t Milliseconds();
 
