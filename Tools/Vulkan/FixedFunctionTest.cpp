@@ -2,6 +2,7 @@
 #include "Engine/Source/Gx/CGxDeviceVulkan/Shader.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/Slang.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/ResidentBuffer.h"
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -112,8 +113,19 @@ struct Fixture {
     void Init() {
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO}; app.apiVersion = VK_API_VERSION_1_1;
         VkInstanceCreateInfo create{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; create.pApplicationInfo = &app;
+        uint32_t count = 0;
+        Vk(vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr));
+        std::vector<VkExtensionProperties> extensions(count);
+        Vk(vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data()));
+        const char* portability = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+        if (std::any_of(extensions.begin(), extensions.end(), [portability](const auto& extension) {
+            return std::strcmp(extension.extensionName, portability) == 0;
+        })) {
+            create.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+            create.enabledExtensionCount = 1; create.ppEnabledExtensionNames = &portability;
+        }
         Vk(vkCreateInstance(&create, nullptr, &instance));
-        uint32_t count = 0; Vk(vkEnumeratePhysicalDevices(instance, &count, nullptr)); Check(count != 0, "No Vulkan device for GPU regression test");
+        count = 0; Vk(vkEnumeratePhysicalDevices(instance, &count, nullptr)); Check(count != 0, "No Vulkan device for GPU regression test");
         std::vector<VkPhysicalDevice> devices(count); Vk(vkEnumeratePhysicalDevices(instance, &count, devices.data()));
         uint32_t family = 0; bool found = false;
         for (auto candidate : devices) {
@@ -126,6 +138,15 @@ struct Fixture {
         const float priority = 1; VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         queueInfo.queueFamilyIndex = family; queueInfo.queueCount = 1; queueInfo.pQueuePriorities = &priority;
         VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; deviceInfo.queueCreateInfoCount = 1; deviceInfo.pQueueCreateInfos = &queueInfo;
+        Vk(vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, nullptr));
+        extensions.resize(count);
+        Vk(vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, extensions.data()));
+        const char* subset = "VK_KHR_portability_subset";
+        if (std::any_of(extensions.begin(), extensions.end(), [subset](const auto& extension) {
+            return std::strcmp(extension.extensionName, subset) == 0;
+        })) {
+            deviceInfo.enabledExtensionCount = 1; deviceInfo.ppEnabledExtensionNames = &subset;
+        }
         Vk(vkCreateDevice(physical, &deviceInfo, nullptr, &device)); vkGetDeviceQueue(device, family, 0, &queue);
         VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; pool.queueFamilyIndex = family;
         Vk(vkCreateCommandPool(device, &pool, nullptr, &commandPool));
