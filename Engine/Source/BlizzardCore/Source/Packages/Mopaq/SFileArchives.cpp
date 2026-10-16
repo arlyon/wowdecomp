@@ -1266,6 +1266,9 @@ void System_SFile::ARCHIVEREC::InitializeTables() {
             return;
         }
 
+#if defined(_WIN32)
+#line 1268
+
         const uint32_t* raw = reinterpret_cast<const uint32_t*>(&this->m_blockTable[0]) + (this->m_header.m_blockTableSize * 16 - 16) / 4;
         BLOCKENTRY* first = &this->m_blockTable[0];
         int64_t archiveOffset = this->m_archiveOffset;
@@ -1275,6 +1278,23 @@ void System_SFile::ARCHIVEREC::InitializeTables() {
             uint32_t compressedSize = raw[1];
             uint32_t fileSize = raw[2];
             uint32_t flags = raw[3];
+#else
+        const auto* rawBytes = reinterpret_cast<const uint8_t*>(this->m_blockTable.data());
+        int64_t archiveOffset = this->m_archiveOffset;
+        for (uint32_t remaining = this->m_header.m_blockTableSize; remaining;) {
+            uint32_t index = --remaining;
+            BLOCKENTRY* entry = &this->m_blockTable[index];
+            // Expansion overlaps its source. Snapshot bytes before writing wider
+            // fields; typed uint32_t reads can be reordered across int64_t stores.
+            uint32_t raw[4];
+            memcpy(raw, rawBytes + static_cast<size_t>(index) * sizeof(raw), sizeof(raw));
+            uint32_t offset = raw[0];
+            uint32_t compressedSize = raw[1];
+            uint32_t fileSize = raw[2];
+            uint32_t flags = raw[3];
+#endif
+#line 1277
+
             entry->m_compressedSize = compressedSize;
             entry->m_offset = offset + archiveOffset;
             entry->m_fileSize = fileSize;

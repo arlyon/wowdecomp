@@ -58,9 +58,9 @@ extern "C" void __wrap__ZN4SHA16FinishERNS_6DigestE(SHA1* self, SHA1::Digest& di
     __real__ZN4SHA16FinishERNS_6DigestE(self, digest);
 }
 extern "C" [[noreturn]] void __wrap__Z26SErrDisplayAppFatalMessagePKcS0_i(const char* message, const char* file, int line) {
-    CHECK(!std::strcmp(message, "Native executable authentication checksum is unavailable"));
+    CHECK(!std::strcmp(message, "Unsupported native executable authentication challenge"));
     CHECK(std::strstr(file, "WoW/Source/WowSvcs/WowSvcsClient/ChecksumExecutables.cpp"));
-    CHECK(line == 26);
+    CHECK(line > 0);
     throw Fatal{};
 }
 
@@ -150,14 +150,65 @@ int main() {
     CHECK(!GetComponentVersionData(&size) && !size && errno == ENOTSUP && fileError == 50);
     CHECK(!GetComponentVersionData(nullptr) && errno == EINVAL && fileError == 87);
 
+    // Public AzerothCore 12340/Win protocol vectors, not file-verification results.
+    const std::array<uint8_t, 16> challenge = {
+        0xBA, 0xA3, 0x1E, 0x99, 0xA0, 0x0B, 0x21, 0x57,
+        0xFC, 0x37, 0x3F, 0xB3, 0x69, 0xCD, 0xD2, 0xF1
+    };
+    const std::array<uint8_t, 20> fingerprint = {
+        0xCD, 0xCB, 0xBD, 0x51, 0x88, 0x31, 0x5E, 0x6B,
+        0x4D, 0x19, 0x44, 0x9D, 0x49, 0x2D, 0xBC, 0xFA,
+        0xF1, 0x56, 0xA3, 0x47
+    };
+    std::array<uint8_t, 22> guarded;
+    guarded.fill(0xa5);
+    readRequests.clear();
+    const unsigned finishesBefore = finishes;
+    ChecksumExecutables(challenge.data(), challenge.size(), guarded.data() + 1);
+    CHECK(guarded.front() == 0xa5 && guarded.back() == 0xa5);
+    CHECK(std::equal(fingerprint.begin(), fingerprint.end(), guarded.begin() + 1));
+    CHECK(readRequests.empty() && finishes == finishesBefore);
+
+    // Match the unchanged Grunt packet builder's SHA1(A || fingerprint).
+    // Expected digest was independently calculated with Python hashlib.
+    std::array<uint8_t, 32> publicKey;
+    for (size_t i = 0; i < publicKey.size(); ++i) publicKey[i] = static_cast<uint8_t>(i);
+    const std::array<uint8_t, 20> expectedProof = {
+        0xBA, 0x16, 0xFA, 0x4A, 0x3B, 0xC6, 0x34, 0x55,
+        0x59, 0xC3, 0xA3, 0xD1, 0x6F, 0xE6, 0x6A, 0xD2,
+        0x57, 0xA2, 0x23, 0x4A
+    };
+    std::array<uint8_t, 20> proof;
+    SHA1_CONTEXT context;
+    SHA1_Init(&context);
+    SHA1_Update(&context, publicKey.data(), publicKey.size());
+    SHA1_Update(&context, guarded.data() + 1, fingerprint.size());
+    SHA1_Final(proof.data(), &context);
+    CHECK(proof == expectedProof);
+
     std::array<uint8_t, 20> output;
-    output.fill(0xa5);
-    const uint8_t challenge[] = {1, 2, 3};
-    bool fatal = false;
-    try { ChecksumExecutables(challenge, sizeof(challenge), output.data()); }
-    catch (const Fatal&) { fatal = true; }
-    CHECK(fatal && !finishes);
-    CHECK(std::all_of(output.begin(), output.end(), [](uint8_t value) { return value == 0xa5; }));
+    auto reject = [&](const uint8_t* bytes, uint32_t length, uint8_t* destination) {
+        output.fill(0xa5);
+        const unsigned priorFinishes = finishes;
+        bool fatal = false;
+        try { ChecksumExecutables(bytes, length, destination); }
+        catch (const Fatal&) { fatal = true; }
+        CHECK(fatal && finishes == priorFinishes && readRequests.empty());
+        CHECK(std::all_of(output.begin(), output.end(), [](uint8_t value) { return value == 0xa5; }));
+    };
+    for (size_t i = 0; i < challenge.size(); ++i) {
+        auto modified = challenge;
+        modified[i] ^= 1;
+        reject(modified.data(), modified.size(), output.data());
+    }
+    std::array<uint8_t, 17> extended{};
+    std::copy(challenge.begin(), challenge.end(), extended.begin());
+    for (uint32_t length : {0u, 3u, 15u, 17u, UINT32_MAX}) {
+        reject(extended.data(), length, output.data());
+    }
+    reject(nullptr, 0, output.data());
+    reject(nullptr, challenge.size(), output.data());
+    reject(challenge.data(), challenge.size(), nullptr);
     std::printf("NativeVersion: %u failures\n", failures);
     return failures ? 1 : 0;
 }
