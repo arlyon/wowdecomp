@@ -7,7 +7,9 @@
 #include <map>
 #include <string>
 #include <vector>
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 #include "Engine/Source/BlizzardCore/Include/Blizzard/Util/MD5.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Manifests.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Storage.h"
@@ -31,20 +33,31 @@ static const int32_t s_queueGroupBase[2] = { 0, 4 };
 // STATIC: 0x00AB9344
 static bool s_useBackgroundQueues = true;
 
+#if defined(_WIN32)
 // STATIC: 0x00AB9346
 static bool s_throttleProgress = true;
 
 // STATIC: 0x00B3252C
 static HANDLE s_throttleEvent;
 
-// STATIC: 0x00B32530
-static CRITICAL_SECTION s_queueLock;
+#endif
 
+// STATIC: 0x00B32530
+#if defined(_WIN32)
+static CRITICAL_SECTION s_queueLock;
+#else
+// Constructed by real initialization; native operations lock before inspecting queues.
+static Blizzard::Lock::Mutex s_queueLock;
+#endif
+
+#if defined(_WIN32)
 // STATIC: 0x00B32548
 static HANDLE s_threadEvents[2];
 
 // STATIC: 0x00B32550
 static HANDLE s_pauseEvent;
+
+#endif
 
 // STATIC: 0x00B32554
 static Blizzard::Streaming::FILE_THREAD_CMD* s_currentCommands[2];
@@ -52,15 +65,23 @@ static Blizzard::Streaming::FILE_THREAD_CMD* s_currentCommands[2];
 // STATIC: 0x00B3255C
 static std::deque<Blizzard::Streaming::FILE_THREAD_CMD>* s_queues[7];
 
+#if defined(_WIN32)
 // STATIC: 0x00B325A0
 static CRITICAL_SECTION s_pauseLock;
 
 // STATIC: 0x00B325B8
 static bool s_paused;
 
-// STATIC: 0x00B325DC
-static HANDLE s_queueEvent;
+#endif
 
+// STATIC: 0x00B325DC
+#if defined(_WIN32)
+static HANDLE s_queueEvent;
+#else
+static Blizzard::Lock::Event s_queueEvent;
+#endif
+
+#if defined(_WIN32)
 // STATIC: 0x00B38182
 static volatile bool s_stopThreads;
 
@@ -70,11 +91,16 @@ static volatile int32_t s_threadMask;
 // STATIC: 0x00B38188
 static int32_t s_busyMask;
 
+#endif
+
 // STATIC: 0x00B38294
 static Blizzard::Streaming::DigestStateMap* s_digestStates;
 
+#if defined(_WIN32)
 // STATIC: 0x00B38298
 static Blizzard::Streaming::PathMap* s_paths;
+
+#endif
 
 // STATIC: 0x00B3829C
 static int32_t s_commandsTaken;
@@ -82,12 +108,16 @@ static int32_t s_commandsTaken;
 // STATIC: 0x00B382A0
 static int32_t s_commandsFreed;
 
+#if defined(_WIN32)
 // STATIC: 0x00B386D0
 Blizzard::Streaming::DownloadProgress Blizzard::Streaming::s_progress;
+
+#endif
 
 // STATIC: 0x00B38A54
 static int32_t s_queueRotation[2];
 
+#if defined(_WIN32)
 // OFFSET: 0x00428030
 int32_t Blizzard::Streaming::GetIdleThread() {
     for (int32_t thread = 0; thread < 2; thread++) {
@@ -224,9 +254,19 @@ void Blizzard::Streaming::WaitForLoads() {
     }
 }
 
+#endif
+
 // OFFSET: 0x00437ED0
 bool Blizzard::Streaming::CancelQueue(int32_t priority) {
+#if !defined(_WIN32)
+    Blizzard::Lock::ScopedMutex lock(s_queueLock);
+    if (!(priority >= 0 && priority < 7)) {
+        return false;
+    }
+#endif
+#if defined(_WIN32)
     EnterCriticalSection(&s_queueLock);
+#endif
 
     std::deque<FILE_THREAD_CMD>& queue = *s_queues[priority];
 
@@ -234,7 +274,11 @@ bool Blizzard::Streaming::CancelQueue(int32_t priority) {
         if (it->m_completion && it->m_type == 2) {
             it->m_completion->m_result = static_cast<int32_t>(s_queues[priority]->size());
             it->m_completion->m_done = true;
+#if defined(_WIN32)
             SetEvent(*it->m_completion->m_event);
+#else
+            Blizzard::Lock::EventSet(*it->m_completion->m_event);
+#endif
             it->m_completion = nullptr;
         }
 
@@ -247,12 +291,20 @@ bool Blizzard::Streaming::CancelQueue(int32_t priority) {
         }
     }
 
+#if defined(_WIN32)
     LeaveCriticalSection(&s_queueLock);
+#endif
     return true;
 }
 
 // OFFSET: 0x00438120
 bool Blizzard::Streaming::PopCommand(FILE_THREAD_CMD* command, int32_t queue) {
+#if !defined(_WIN32)
+    Blizzard::Lock::ScopedMutex lock(s_queueLock);
+    if (!(command && queue >= 0 && queue < 7)) {
+        return false;
+    }
+#endif
     if (!s_queues[queue]->size()) {
         return false;
     }
@@ -266,6 +318,12 @@ bool Blizzard::Streaming::PopCommand(FILE_THREAD_CMD* command, int32_t queue) {
 
 // OFFSET: 0x004381E0
 bool Blizzard::Streaming::SelectQueue(FILE_THREAD_CMD* command, int32_t group, int32_t* queue) {
+#if !defined(_WIN32)
+    Blizzard::Lock::ScopedMutex lock(s_queueLock);
+    if (!(command && queue && group >= 0 && group < 2)) {
+        return false;
+    }
+#endif
     if (group >= 1 && !s_useBackgroundQueues) {
         return false;
     }
@@ -286,6 +344,12 @@ bool Blizzard::Streaming::SelectQueue(FILE_THREAD_CMD* command, int32_t group, i
 
 // OFFSET: 0x00438260
 int32_t Blizzard::Streaming::GetNextCommand(FILE_THREAD_CMD** command, int32_t thread) {
+#if !defined(_WIN32)
+    Blizzard::Lock::ScopedMutex lock(s_queueLock);
+    if (!(command && thread >= 0 && thread < 2)) {
+        return 7;
+    }
+#endif
     FILE_THREAD_CMD* next = new FILE_THREAD_CMD();
     int32_t queue = 7;
 
@@ -300,6 +364,7 @@ int32_t Blizzard::Streaming::GetNextCommand(FILE_THREAD_CMD** command, int32_t t
     return 7;
 }
 
+#if defined(_WIN32)
 // OFFSET: 0x00438360
 void Blizzard::Streaming::DownloadProgress::FireCallback() {
     if (!this->m_enabled) {
@@ -335,13 +400,23 @@ void Blizzard::Streaming::AddStreamed(int32_t size) {
     }
 }
 
+#endif
+
 // OFFSET: 0x0043AF30
 bool Blizzard::Streaming::RemoveCompletion(Completion* completion, int32_t priority) {
+#if !defined(_WIN32)
+    Blizzard::Lock::ScopedMutex lock(s_queueLock);
+    if (!(completion && priority >= 0 && priority < 7)) {
+        return false;
+    }
+#endif
     if (!s_queues[priority]->size()) {
         return false;
     }
 
+#if defined(_WIN32)
     EnterCriticalSection(&s_queueLock);
+#endif
 
     std::deque<FILE_THREAD_CMD>& queue = *s_queues[priority];
 
@@ -350,15 +425,20 @@ bool Blizzard::Streaming::RemoveCompletion(Completion* completion, int32_t prior
 
         if (it->m_completion == completion) {
             it->m_completion = nullptr;
+#if defined(_WIN32)
             LeaveCriticalSection(&s_queueLock);
+#endif
             return true;
         }
     }
 
+#if defined(_WIN32)
     LeaveCriticalSection(&s_queueLock);
+#endif
     return false;
 }
 
+#if defined(_WIN32)
 // OFFSET: 0x00444550
 bool Blizzard::Streaming::QueueLoad(Blizzard::File::StreamRecord* file, int32_t priority, LoadRange* range, Completion* completion) {
     Blizzard::File::Filesystem* fs = System_File::Stacked::s_manager;
@@ -504,8 +584,16 @@ bool Blizzard::Streaming::RequestRanges(Blizzard::File::StreamRecord* file, Load
     return success;
 }
 
+#endif
+
 // OFFSET: 0x00444AA0
 bool Blizzard::Streaming::QueueCompletion(Completion* completion, int32_t priority) {
+#if !defined(_WIN32)
+    Blizzard::Lock::ScopedMutex lock(s_queueLock);
+    if (!(completion && priority >= 0 && priority < 7)) {
+        return false;
+    }
+#endif
     if (!s_queues[priority]->size()) {
         completion->m_result = 0;
         completion->m_done = false;
@@ -520,14 +608,21 @@ bool Blizzard::Streaming::QueueCompletion(Completion* completion, int32_t priori
     command.m_range = nullptr;
     command.m_completion = completion;
 
+#if defined(_WIN32)
     EnterCriticalSection(&s_queueLock);
+#endif
     s_queues[priority]->push_back(command);
+#if defined(_WIN32)
     LeaveCriticalSection(&s_queueLock);
     SetEvent(s_queueEvent);
+#else
+    Blizzard::Lock::EventSet(s_queueEvent);
+#endif
 
     return true;
 }
 
+#if defined(_WIN32)
 // OFFSET: 0x004480B0
 bool Blizzard::Streaming::MakeLocalAsync(Blizzard::File::StreamRecord* file, int64_t offset, int32_t size, int32_t priority, const char* name) {
     if (!file->m_streaming || !file->m_streaming->m_entry) {
@@ -1281,5 +1376,7 @@ void StopStreaming() {
     delete Blizzard::Streaming::ManifestInfo::s_instance;
     Blizzard::Streaming::ManifestInfo::s_instance = nullptr;
 }
+
+#endif
 
 #endif
