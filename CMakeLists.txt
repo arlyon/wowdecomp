@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.13)
 
 if (${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
     message(FATAL_ERROR
@@ -17,22 +17,10 @@ if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
     message(FATAL_ERROR "wowdecomp targets Windows only.")
 endif ()
 
-# x64 is the target. Win32 stays buildable: it is the configuration whose struct layouts can be
-# checked against Wow.exe 3.3.5a (12340).
-if (CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(WOWDECOMP_ARCH_64 1)
-    add_compile_definitions(WOWDECOMP_ARCH_64=1)
-elseif (CMAKE_SIZEOF_VOID_P EQUAL 4)
-    set(WOWDECOMP_ARCH_32 1)
-    add_compile_definitions(WOWDECOMP_ARCH_32=1)
-    # x87 floating point like the VS2005 original; keeps Win32 code comparable with the binary (re/tools/verify.py).
-    if (MSVC)
-        add_compile_options(/arch:IA32 /fp:fast)
-    endif ()
-    # 32-bit time_t like the original build: time/localtime/mktime resolve to _time32/_localtime32/_mktime32.
-    add_compile_definitions(_USE_32BIT_TIME_T)
-else ()
-    message(FATAL_ERROR "Unsupported pointer size.")
+include(cmake/WowPlatform.cmake)
+wowdecomp_configure_platform()
+if (WOWDECOMP_CPU STREQUAL "arm64")
+    message(FATAL_ERROR "Target identity supports ARM64; the client still requires architecture-specific implementations.")
 endif ()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
