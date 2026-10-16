@@ -60,6 +60,15 @@ target_link_libraries(BlizzardLogTest PRIVATE BlizzardCore Storm Threads::Thread
 target_link_options(BlizzardLogTest PRIVATE "-Wl,--wrap=pthread_create")
 add_test(NAME BlizzardLog COMMAND BlizzardLogTest)
 set_tests_properties(BlizzardLog PROPERTIES TIMEOUT 25)
+find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+add_executable(BlizzardUrlTest BlizzardUrlTest.cpp)
+target_link_libraries(BlizzardUrlTest PRIVATE BlizzardCore Storm Threads::Threads)
+target_link_options(BlizzardUrlTest PRIVATE
+    "-Wl,--wrap=curl_multi_info_read"
+    "-Wl,--wrap=_ZN8Blizzard6Thread14CreateDetachedEPFjPvES1_PKc")
+add_test(NAME BlizzardUrl COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/blizzard_url_fixture.py $<TARGET_FILE:BlizzardUrlTest>)
+set_tests_properties(BlizzardUrl PROPERTIES TIMEOUT 40)
 add_executable(StreamingStorageRangesTest StreamingStorageRangesTest.cpp)
 target_link_libraries(StreamingStorageRangesTest PRIVATE BlizzardCore Storm Threads::Threads)
 add_test(NAME StreamingStorageRanges COMMAND StreamingStorageRangesTest)

@@ -45,7 +45,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(Threads REQUIRED)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET GLOBAL vorbisfile)
-    target_link_libraries(BlizzardCore PUBLIC PkgConfig::VORBISFILE bzip2 Threads::Threads)
+    pkg_check_modules(CURL REQUIRED IMPORTED_TARGET GLOBAL libcurl>=7.85.0)
+    target_link_libraries(BlizzardCore PUBLIC PkgConfig::VORBISFILE PkgConfig::CURL bzip2 Threads::Threads)
 else ()
     target_include_directories(BlizzardCore
         PRIVATE
