@@ -4,6 +4,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # This file contains shared throttling logic, despite its original location.
     if (CMAKE_SIZEOF_VOID_P EQUAL 8)
         list(APPEND PRIVATE_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/Debug/Win64/Debug.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/File/Win64/File.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/Hardware/Win64/Hardware.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/Time/Win64/Time.cpp"
