@@ -41,7 +41,12 @@ struct Control {
     }
 };
 std::once_flag initialized;
-std::recursive_mutex creationMutex;
+std::recursive_mutex& CreationMutex() {
+    // Blizzard::Using invokes shutdown from cross-TU static destructors. Keep
+    // this admission lock alive for those callbacks and late rejected creates.
+    static auto* mutex = new std::recursive_mutex;
+    return *mutex;
+}
 std::atomic<bool> stopping{false};
 Control& State(Record* record) { return *static_cast<Control*>(record->m_handle); }
 bool Failure(int error) { errno = error; return false; }
@@ -124,7 +129,7 @@ void System_Thread::SetStackTraceEntryPoint(void* entryPoint) {
 }
 void System_Thread::InitStackTraceEntryPoint() { SetStackTraceEntryPoint(__builtin_return_address(0)); }
 Record* System_Thread::NewThread(uint32_t (*function)(void*), void* param, const char* name) {
-    std::lock_guard<std::recursive_mutex> lock(creationMutex);
+    std::lock_guard<std::recursive_mutex> lock(CreationMutex());
     InitThreadSystem();
     if (stopping) { errno = ESHUTDOWN; return nullptr; }
     return Allocate(function, param, name);
@@ -141,7 +146,7 @@ bool System_Thread::ValidateNativeCreate(uint32_t (*function)(void*), Record** o
 }
 
 bool Blizzard::Thread::Create(uint32_t (*function)(void*), void* param, Record** output, const char* name, int32_t flags, int32_t stackSize) {
-    std::lock_guard<std::recursive_mutex> creation(creationMutex);
+    std::lock_guard<std::recursive_mutex> creation(CreationMutex());
     if (!System_Thread::ValidateNativeCreate(function, output, flags, stackSize)) return false;
     Record* record = System_Thread::NewThread(function, param, name);
     if (!record) return false;
@@ -285,7 +290,7 @@ void System_Thread::SetWorkerAffinity(Record* record, int32_t mask) {
 
 void System_Thread::ShutdownNativeThreads() {
     {
-        std::lock_guard<std::recursive_mutex> creation(creationMutex);
+        std::lock_guard<std::recursive_mutex> creation(CreationMutex());
         if (stopping) return;
         if (GetThreadRecord() != s_mainThread) { errno = EPERM; return; }
         stopping = true;

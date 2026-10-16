@@ -1,0 +1,22 @@
+cmake_minimum_required(VERSION 3.13)
+project(wowdecomp_mac_smoke LANGUAGES CXX)
+if(NOT APPLE)
+    message(FATAL_ERROR "This probe uses Darwin's DYLD_INSERT_LIBRARIES")
+endif()
+find_package(SDL2 REQUIRED)
+find_package(Threads REQUIRED)
+set(WOWDECOMP_CLIENT "" CACHE FILEPATH "Built client with a separate, configured runtime data directory")
+set(WOWDECOMP_SMOKE_BACKEND "vulkan" CACHE STRING "Renderer to exercise")
+if(NOT EXISTS "${WOWDECOMP_CLIENT}")
+    message(FATAL_ERROR "Set WOWDECOMP_CLIENT to the built Wow executable")
+endif()
+add_library(QuitDriver SHARED QuitDriver.cpp)
+target_compile_features(QuitDriver PRIVATE cxx_std_17)
+target_link_libraries(QuitDriver PRIVATE SDL2::SDL2 Threads::Threads)
+get_filename_component(CLIENT_DIRECTORY "${WOWDECOMP_CLIENT}" DIRECTORY)
+enable_testing()
+add_test(NAME NormalQuit COMMAND "${WOWDECOMP_CLIENT}")
+set_tests_properties(NormalQuit PROPERTIES
+    WORKING_DIRECTORY "${CLIENT_DIRECTORY}"
+    ENVIRONMENT "DYLD_INSERT_LIBRARIES=$<TARGET_FILE:QuitDriver>;WOWDECOMP_GX_BACKEND=${WOWDECOMP_SMOKE_BACKEND}"
+    TIMEOUT 30)
