@@ -196,6 +196,24 @@ else ()
     message(STATUS "DXVK Native not found; only the CPU portability tests will be built")
 endif ()
 
+# Exercise the real public selection API without linking or initializing GPUs.
+# Linux section GC isolates these functions, like the socket contract tests above.
+foreach (backend dxvk vulkan both)
+    add_executable(GxBackend-${backend} GxBackendTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/Gx.cpp")
+    target_include_directories(GxBackend-${backend} PRIVATE "${WOWDECOMP_ROOT}")
+    target_link_libraries(GxBackend-${backend} PRIVATE Storm)
+    target_compile_options(GxBackend-${backend} PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(GxBackend-${backend} PRIVATE -Wl,--gc-sections)
+    if (NOT backend STREQUAL "vulkan")
+        target_compile_definitions(GxBackend-${backend} PRIVATE WOWDECOMP_DXVK=1)
+    endif ()
+    if (NOT backend STREQUAL "dxvk")
+        target_compile_definitions(GxBackend-${backend} PRIVATE WOWDECOMP_VULKAN=1)
+    endif ()
+    add_test(NAME GxBackend-${backend} COMMAND GxBackend-${backend})
+endforeach ()
+
 add_library(NativeLibraryFixture SHARED LibraryFixture.cpp)
 
 add_executable(CDataRecyclerTest CDataRecyclerTest.cpp

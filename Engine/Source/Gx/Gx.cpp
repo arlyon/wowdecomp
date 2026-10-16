@@ -11,6 +11,8 @@
 #include "Engine/Source/Storm/H/storm.h"
 #if defined(WOWDECOMP_VULKAN)
 #include "Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.h"
+#endif
+#if !defined(_WIN32)
 #include <cstring>
 #include <stdexcept>
 #endif
@@ -124,16 +126,29 @@ static int (*s_drawListSorters[GxuSorts_Last])(const void*, const void*) = { Dra
 // VERIFY: 0b88acbc auto
 // OFFSET: 0x008C8DE0
 EGxApi GxDefaultApi() {
-#if defined(WOWDECOMP_VULKAN)
+#if !defined(_WIN32)
     if (const char* backend = std::getenv("WOWDECOMP_GX_BACKEND")) {
-        if (std::strcmp(backend, "dxvk") == 0) return GxApi_D3d9;
-        if (std::strcmp(backend, "vulkan") != 0)
-            throw std::invalid_argument("WOWDECOMP_GX_BACKEND must be vulkan or dxvk");
-    }
-    return GxApi_Vulkan;
+        if (std::strcmp(backend, "dxvk") == 0) {
+#if defined(WOWDECOMP_DXVK)
+            return GxApi_D3d9;
 #else
-    return GxApi_D3d9;
+            throw std::invalid_argument("DXVK backend was not built");
 #endif
+        }
+        if (std::strcmp(backend, "vulkan") == 0) {
+#if defined(WOWDECOMP_VULKAN)
+            return GxApi_Vulkan;
+#else
+            throw std::invalid_argument("Vulkan backend was not built");
+#endif
+        }
+        throw std::invalid_argument("WOWDECOMP_GX_BACKEND must be vulkan or dxvk");
+    }
+#if defined(WOWDECOMP_VULKAN)
+    return GxApi_Vulkan;
+#endif
+#endif
+    return GxApi_D3d9;
 }
 
 // VERIFY: cef2b995 auto
@@ -153,7 +168,11 @@ int32_t GxApiSupported(EGxApi api) {
 #if defined(WOWDECOMP_VULKAN)
     if (api == GxApi_Vulkan) return 1;
 #endif
+#if defined(WOWDECOMP_DXVK)
     return api == GxApi_D3d9;
+#else
+    return 0;
+#endif
 #endif
 }
 
@@ -229,9 +248,10 @@ CGxDevice* CreateGxDevice(EGxApi api, GxWindowProc windowProc, const CGxFormat& 
     CGxDevice* device = nullptr;
 #if defined(WOWDECOMP_VULKAN)
     if (api == GxApi_Vulkan) device = CreateCGxDeviceVulkan();
-    else
 #endif
+#if defined(WOWDECOMP_DXVK)
     if (api == GxApi_D3d9) device = CreateCGxDeviceD3d();
+#endif
     if (!device) return nullptr;
     g_theGxDevicePtr = device;
 #endif

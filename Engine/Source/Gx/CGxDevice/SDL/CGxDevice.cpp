@@ -3,7 +3,9 @@
 #include <cstring>
 #include <SDL.h>
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+#if defined(WOWDECOMP_DXVK)
 #include "Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h"
+#endif
 #include "Engine/Source/Os/SDL/Window.h"
 #if defined(WOWDECOMP_VULKAN)
 #include "Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.h"
@@ -17,7 +19,11 @@ int32_t CGxDevice::AdapterFormats(EGxApi api, TSGrowableArray<CGxFormat>& format
 #if defined(WOWDECOMP_VULKAN)
     if (api == GxApi_Vulkan) return VulkanAdapterFormats(formats);
 #endif
+#if defined(WOWDECOMP_DXVK)
     return api == GxApi_D3d9 ? CGxDevice::D3dAdapterFormats(formats) : 0;
+#else
+    return 0;
+#endif
 }
 
 int32_t CGxDevice::AdjustWindowRectToWorkArea(float aspectRatio, C2iVector* adjust, tagRECT* rect) {
@@ -52,6 +58,7 @@ int32_t CGxDevice::DeviceAdapterID(uint16_t& vendorID, uint16_t& deviceID,
 #endif
     vendorID = deviceID = 0xFFFF;
     driverVersionHi = driverVersionLo = 0;
+#if defined(WOWDECOMP_DXVK)
     HINSTANCE library = nullptr;
     LPDIRECT3D9 d3d = nullptr;
     if (!CGxDeviceD3d::ILoadD3dLib(library, d3d)) return 0;
@@ -65,6 +72,9 @@ int32_t CGxDevice::DeviceAdapterID(uint16_t& vendorID, uint16_t& deviceID,
     }
     CGxDeviceD3d::IUnloadD3dLib(library, d3d);
     return valid;
+#else
+    return 0;
+#endif
 }
 
 int32_t CGxDevice::DeviceAdapterInfer(uint16_t& deviceID) {
@@ -77,6 +87,7 @@ int32_t CGxDevice::DeviceAdapterInfer(uint16_t& deviceID) {
     }
 #endif
     deviceID = 0;
+#if defined(WOWDECOMP_DXVK)
     HINSTANCE library = nullptr;
     LPDIRECT3D9 d3d = nullptr;
     if (!CGxDeviceD3d::ILoadD3dLib(library, d3d)) return 0;
@@ -89,6 +100,9 @@ int32_t CGxDevice::DeviceAdapterInfer(uint16_t& deviceID) {
     }
     CGxDeviceD3d::IUnloadD3dLib(library, d3d);
     return valid;
+#else
+    return 0;
+#endif
 }
 
 int32_t CGxDevice::AdapterDesktopMode(CGxMonitorMode& mode) {
@@ -121,6 +135,7 @@ int32_t CGxDevice::AdapterMonitorModes(TSGrowableArray<CGxMonitorMode>& modes) {
 }
 
 int32_t CGxDevice::D3dAdapterFormats(TSGrowableArray<CGxFormat>& formats) {
+#if defined(WOWDECOMP_DXVK)
     HINSTANCE library = nullptr;
     LPDIRECT3D9 d3d = nullptr;
     if (!CGxDeviceD3d::ILoadD3dLib(library, d3d)) return 0;
@@ -164,4 +179,8 @@ int32_t CGxDevice::D3dAdapterFormats(TSGrowableArray<CGxFormat>& formats) {
     }
     CGxDeviceD3d::IUnloadD3dLib(library, d3d);
     return formats.Count() != 0;
+#else
+    formats.SetCount(0);
+    return 0;
+#endif
 }
