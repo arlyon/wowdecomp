@@ -4,8 +4,10 @@
 
 `platform-foundation` adds target identity above `main`. `linux-native` is rebased
 onto that foundation and separates reusable native code from Linux providers.
-`native-vulkan` is stacked above Linux. Original tips are retained as
-`backup/linux-native-before-platform` and `backup/native-vulkan-before-platform`.
+`native-vulkan-platform` carries the rebased Vulkan snapshot above Linux. The
+existing `native-vulkan` worktree was left on its original branch because new,
+uncommitted work appeared there during the prefactor. Original tips are retained
+as `backup/linux-native-before-platform` and `backup/native-vulkan-before-platform`.
 Nothing in this work establishes a successful macOS or Windows build.
 
 The client still builds on Linux x86-64 and Windows x86/x86-64. Darwin and ARM64
@@ -85,6 +87,11 @@ Preserve both requested macOS routes:
 DXVK Native must itself have a qualified macOS/architecture-compatible build,
 SDL WSI, and feature requirements supported by the selected MoltenVK version.
 Portability handling in our native Vulkan renderer does not change DXVK internals.
+On `native-vulkan-platform`, `WOWDECOMP_DXVK` (default ON) and
+`WOWDECOMP_VULKAN` (default OFF) are independent build options. Vulkan-only builds
+do not discover, include or link DXVK. A build with neither backend is rejected.
+`WOWDECOMP_GX_BACKEND=dxvk|vulkan` selects a compiled backend; unavailable or
+unknown selections fail explicitly. Vulkan remains the default when compiled in.
 The Vulkan backend already requests portability enumeration/subset extensions.
 Real feature/format limits, presentation, shader bindings, Retina drawable sizes,
 resize/minimize, readback and rendering parity still need validation on the Mac.
@@ -129,3 +136,27 @@ x86-64 and ARM64 independently. Qualify Vulkan/MoltenVK and DXVK/MoltenVK
 separately with startup, local archive reads, login/EULA, input, clipboard, audio,
 fullscreen/Retina resize, screenshots and clean shutdown. Do not disable data
 signature checks or relax fail-closed unsupported services just to reach a frame.
+
+## Prefactor verification on the Linux host
+
+- Foundation: `cmake --build out/platform-foundation-gcc` and the Clang equivalent;
+  `ctest --test-dir out/platform-foundation-gcc --output-on-failure` and the
+  Clang equivalent: 12/12 each (including source-selection cases).
+- Linux: `cmake --build out/portability-tests-dxvk --parallel 4` and
+  `out/portability-tests-clang`; CTest: 40/40 each, including startup and MSVC-macro
+  preservation against the original Linux tip. Clang syntax diagnostics passed
+  on 48 changed native sources. `cmake --build out/linux-client-release --target
+  Wow --parallel 4` passed (resumed after the first command's time limit).
+- Restacked Vulkan: full `Wow` builds passed in `out/platform-dxvk-only`,
+  `out/platform-vulkan-only`, and `out/platform-backends-both`. The Vulkan-only
+  compilation database, ELF dependencies and symbols contain no DXVK dependency
+  or D3D9 device implementation.
+- `ctest --test-dir out/platform-vulkan-portability --output-on-failure`: 43/43,
+  including all three backend-selection configurations and MSVC-macro checking.
+  `ctest --test-dir out/platform-backend-gcc --output-on-failure`: 43/43.
+  `ctest --test-dir out/platform-vulkan-shaders --output-on-failure`: 1/1,
+  with the pinned Slang compiler enabled. Disabling both backends fails configure
+  with the intended diagnostic.
+- Existing compiler warnings remain. No game/runtime rendering smoke test,
+  Windows build, Darwin compile, ARM64 execution or MoltenVK qualification was
+  performed. Shader sources and extraction were not changed.
