@@ -7,12 +7,7 @@
 struct tagRECT;
 
 #if !defined(_WIN32)
-struct tagRECT {
-    int32_t left;
-    int32_t top;
-    int32_t right;
-    int32_t bottom;
-};
+#include "Engine/Source/Os/SDL/Window.h"
 #endif
 
 enum OSINPUT {

@@ -81,16 +81,15 @@ void OsGetVersionString(char* buffer, int32_t size) {
     }
 }
 
+// Legacy authentication wire tags, not native hardware/OS capabilities.
+// 3.3.5a servers expect the Windows x86 client identity even for native ports.
+// Keep IOsGetProcessorFeatures and OsGetVersionString truthful to the host.
 uint32_t OsGetProcessorId() {
-#if defined(__aarch64__)
-    return 0x41524D;
-#else
-    return 0x783836;
-#endif
+    return 0x783836; // 'x86'
 }
 
 uint32_t OsGetOsId() {
-    return 0x4D6163;
+    return 0x57696E; // 'Win'
 }
 
 static int32_t CopySized(char* buffer, uint32_t* size, const char* value) {

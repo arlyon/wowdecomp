@@ -731,7 +731,13 @@ void WowConnection::StartConnect() {
         this->m_sock = -1;
     }
 
-    int32_t sock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int32_t sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock >= 0 && fcntl(sock, F_SETFD, FD_CLOEXEC) != 0) {
+        const int error = errno;
+        close(sock);
+        sock = -1;
+        errno = error;
+    }
 
     if (sock < 0) {
 #line 674

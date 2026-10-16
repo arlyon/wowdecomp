@@ -49,9 +49,7 @@ class GxDrawListEntry {
     GxDrawListEntry();
 };
 
-#if defined(_WIN32) || defined(WOWDECOMP_DXVK)
 CGxDevice* CreateCGxDeviceD3d();
-#endif
 #if defined(_WIN32)
 CGxDevice* CreateCGxDeviceD3d9Ex();
 #endif

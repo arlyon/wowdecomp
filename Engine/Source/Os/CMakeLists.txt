@@ -1,6 +1,10 @@
 if (WOWDECOMP_POSIX)
     file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "Native/*.cpp" "Posix/*.cpp" "SDL/*.cpp" "${WOWDECOMP_OS}/*.cpp")
     list(APPEND PRIVATE_SOURCES Time.cpp Processor.cpp Path.cpp)
+    if (APPLE)
+        list(APPEND PRIVATE_SOURCES Mac/OsCall.cpp Mac/OsFile.cpp Mac/OsMemory.cpp
+            Mac/OsSecureRandom.cpp Mac/System.cpp Mac/Path.cpp)
+    endif ()
 else ()
     file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
 endif ()

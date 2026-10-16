@@ -32,6 +32,10 @@ endif ()
 
 # Native macOS client: SDL2 (window, input, audio device), the system OpenGL framework and libcurl replace
 # Win32/WGL/DirectInput/WinINet. Platform sources live in Mac/ directories next to the Win32/Win64 ones.
+if (WOWDECOMP_POSIX)
+    find_package(Threads REQUIRED)
+endif ()
+
 if (APPLE)
     find_package(SDL2 CONFIG REQUIRED)
     find_package(CURL REQUIRED)
@@ -116,7 +120,7 @@ add_subdirectory(WoW/Source)
 if (WIN32)
     add_subdirectory(Tools/WowClient)
 endif ()
-if (WIN32 AND WOWDECOMP_ARCH_64)
+if (WOWDECOMP_ARCH_64)
     add_subdirectory(Tools/XvidDecoder)
 endif ()
 

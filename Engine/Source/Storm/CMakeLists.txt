@@ -3,6 +3,9 @@ if (WOWDECOMP_POSIX)
     list(APPEND PRIVATE_SOURCES Source/SStr.cpp Source/SOption.cpp Source/soprintf.cpp Source/MD5.cpp Source/SComp.cpp
         Source/SArc4.cpp Source/SCrc.cpp Source/SCmd.cpp Source/SBig.cpp
         Source/RSA.cpp Source/Sha1.cpp Source/SSignature.cpp Source/SUni.cpp Source/SRgn.cpp)
+    if (APPLE)
+        list(APPEND PRIVATE_SOURCES Source/SMem.cpp)
+    endif ()
 else ()
     file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
 endif ()

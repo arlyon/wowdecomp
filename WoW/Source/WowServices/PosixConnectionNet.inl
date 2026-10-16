@@ -16,8 +16,14 @@ struct WowPollWake {
 void WowConnectionNet::PlatformInit(bool useEngine) {
     this->m_event = nullptr;
     int fds[2];
-    if (pipe2(fds, O_NONBLOCK | O_CLOEXEC)) {
+    if (pipe(fds)) {
         throw std::runtime_error("WowConnectionNet wake pipe creation failed");
+    }
+    if (!WowSetNonblocking(fds[0]) || !WowSetNonblocking(fds[1]) ||
+        fcntl(fds[0], F_SETFD, FD_CLOEXEC) != 0 || fcntl(fds[1], F_SETFD, FD_CLOEXEC) != 0) {
+        close(fds[0]);
+        close(fds[1]);
+        throw std::runtime_error("WowConnectionNet wake pipe configuration failed");
     }
     try {
         this->m_event = new WowPollWake{fds[0], fds[1]};
