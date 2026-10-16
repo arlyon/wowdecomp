@@ -1,4 +1,10 @@
+option(WOWDECOMP_VULKAN "Build the native Vulkan backend alongside D3D9/DXVK" OFF)
 file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
+if (NOT WOWDECOMP_VULKAN)
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/CGxDeviceVulkan/")
+elseif (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "Native Vulkan client bring-up currently targets the Linux port")
+endif ()
 
 wowdecomp_filter_platform_sources(PRIVATE_SOURCES ${PRIVATE_SOURCES})
 if (WOWDECOMP_POSIX)
@@ -22,6 +28,18 @@ target_include_directories(Gx
 
 if (WOWDECOMP_POSIX)
     target_link_libraries(Gx PUBLIC DXVKNative::D3D9 PRIVATE PkgConfig::SDL2)
+endif ()
+
+if (WOWDECOMP_VULKAN)
+    get_filename_component(WOWDECOMP_ROOT "../../.." ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    find_package(Vulkan 1.1 REQUIRED)
+    include("${WOWDECOMP_ROOT}/cmake/MojoShader.cmake")
+    include("${WOWDECOMP_ROOT}/cmake/SlangCompiler.cmake")
+    include("${WOWDECOMP_ROOT}/cmake/SlangShaders.cmake")
+    target_link_libraries(Gx PRIVATE Vulkan::Vulkan GxMojoShader GxSlangCompiler)
+    target_compile_definitions(Gx PUBLIC WOWDECOMP_VULKAN=1)
+    target_compile_definitions(Gx PRIVATE WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    add_dependencies(Gx GxSlangShaders)
 endif ()
 
 if (WIN32)
