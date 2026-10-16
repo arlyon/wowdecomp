@@ -147,9 +147,6 @@ struct CGxDeviceVulkan::State {
     std::vector<VkFramebuffer> framebuffers;
     VkRenderPass currentPass = VK_NULL_HANDLE;
     VkExtent2D targetExtent{};
-    uint64_t drawCount = 0;
-    std::map<uint64_t, unsigned> capturedPasses;
-    void CaptureColour(const std::string& path);
 
     uint32_t MemoryType(uint32_t mask, VkMemoryPropertyFlags flags) const;
     NativeBuffer MakeBuffer(VkDeviceSize size, VkBufferUsageFlags usage);
@@ -1078,47 +1075,6 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     } else {
         vkCmdDraw(command, batch.m_count, 1, batch.m_start, 0);
     }
-    ++drawCount;
-    if (fixedVertexStage && p && drawCount > 200 &&
-        (p->reflection->sampler_count == 4 || p->reflection->sampler_count == 2)) {
-        if (const char* directory = std::getenv("WOWDECOMP_VULKAN_CAPTURE")) {
-            auto& count = capturedPasses[p->id];
-            if (count < 2) CaptureColour(std::string(directory) + "/pass-" +
-                std::to_string(p->id) + "-" + std::to_string(count++));
-        }
-    }
-}
-
-void CGxDeviceVulkan::State::CaptureColour(const std::string& path) {
-    EndPass();
-    auto* target = gx.m_textureTarget[GxBuffers_Color].m_texture;
-    auto* image = target ? &Texture(target) : nullptr;
-    const VkFormat format = image ? image->format : surfaceFormat;
-    if (format != VK_FORMAT_B8G8R8A8_UNORM && format != VK_FORMAT_R8G8B8A8_UNORM) return;
-    const uint32_t width = image ? image->width : extent.width;
-    const uint32_t height = image ? image->height : extent.height;
-    auto readback = MakeBuffer(static_cast<size_t>(width) * height * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-    try {
-        VkBufferImageCopy copy{};
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent = {width, height, 1};
-        vkCmdCopyImageToBuffer(command, image ? image->image : swapImages[imageIndex],
-            VK_IMAGE_LAYOUT_GENERAL, readback.buffer, 1, &copy);
-        VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-            0, 1, &barrier, 0, nullptr, 0, nullptr);
-        Submit(false, true);
-        std::ofstream output(path + ".ppm", std::ios::binary);
-        output << "P6\n" << width << ' ' << height << "\n255\n";
-        for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i) {
-            const auto* pixel = readback.mapped + i * 4;
-            const char rgb[] = {static_cast<char>(pixel[format == VK_FORMAT_B8G8R8A8_UNORM ? 2 : 0]),
-                static_cast<char>(pixel[1]), static_cast<char>(pixel[format == VK_FORMAT_B8G8R8A8_UNORM ? 0 : 2])};
-            output.write(rgb, 3);
-        }
-    } catch (...) { DestroyBuffer(readback); throw; }
-    DestroyBuffer(readback);
 }
 
 void CGxDeviceVulkan::State::Submit(bool present, bool resume) {
@@ -1407,18 +1363,6 @@ void CGxDeviceVulkan::IShaderCreate(CGxShader* shader) {
     try {
         auto recovered = GxVulkan::RecoverSlangShader(shader->m_code.Ptr(), shader->m_code.Count());
         auto code = m_native->shaderCompiler.Compile(recovered.source, shader->m_target == GxSh_Vertex);
-        if (const char* directory = std::getenv("WOWDECOMP_VULKAN_SHADER_DUMP")) {
-            const std::string path = std::string(directory) + "/" +
-                (shader->m_target == GxSh_Vertex ? "vs-" : "ps-") + std::to_string(m_native->nextShader);
-            std::ofstream(path + ".slang") << recovered.source;
-            std::ofstream spirv(path + ".spv", std::ios::binary);
-            spirv.write(reinterpret_cast<const char*>(code.data()), code.size() * sizeof(uint32_t));
-            std::ofstream reflection(path + ".uniforms");
-            for (int i = 0; i < recovered.reflection->uniform_count; ++i) {
-                const auto& u = recovered.reflection->uniforms[i];
-                reflection << u.index << ' ' << u.array_count << ' ' << u.constant << '\n';
-            }
-        }
         m_native->shaders.insert_or_assign(shader, NativeShader{m_native->nextShader++, std::move(recovered.reflection), std::move(code)});
         shader->m_apiSpecific = &m_native->shaders.at(shader); shader->m_valid = 1;
     } catch (const std::exception& error) {
@@ -1458,10 +1402,6 @@ int32_t CGxDeviceVulkan::TexStretch(CGxTex* dest, const CiRect* destRect,
     auto& state = *m_native;
     if (!dest || !m_context || !state.BeginFrame()) return 0;
     state.EndPass();
-    if (const char* directory = std::getenv("WOWDECOMP_VULKAN_CAPTURE");
-        directory && state.drawCount > 200 && state.capturedPasses[0] < 2) {
-        state.CaptureColour(std::string(directory) + "/source-" + std::to_string(state.capturedPasses[0]++));
-    }
     auto& destination = state.Texture(dest);
     auto* sourceTarget = m_textureTarget[GxBuffers_Color].m_texture;
     auto* sourceImage = sourceTarget ? &state.Texture(sourceTarget) : nullptr;

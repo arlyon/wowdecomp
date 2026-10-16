@@ -131,6 +131,12 @@ if (WOWDECOMP_ARCH_64)
     add_subdirectory(Tools/XvidDecoder)
 endif ()
 
+option(WOWDECOMP_PORTABILITY_TESTS "Build CPU backend-selection and UI layout regression tests" OFF)
+if (WOWDECOMP_PORTABILITY_TESTS)
+    enable_testing()
+    add_subdirectory(Tools/Portability)
+endif ()
+
 if (WIN32)
     foreach (target Wow WowClient MapViewer M2Viewer GxTest MpqTest BlpTest DbcTest AssetCheck)
         if (TARGET ${target})

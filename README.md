@@ -80,23 +80,27 @@ logger off in `WowClient` with `-DWOWCLIENT_CRASH_LOG=OFF`.
 |---|---|---|
 | `WOWDECOMP_DISABLE_SIGNATURE_CHECKS` | `OFF` | Skip the MPQ file and `.toc.sig` signature checks, so modified game data and interface files load |
 | `WOWCLIENT_CRASH_LOG` | `ON` | Build `WowClient` with the crash logger |
-| `WOWDECOMP_VULKAN` | `OFF` | Build the experimental native Vulkan/Slang backend on Linux |
+| `WOWDECOMP_VULKAN` | `OFF` | Build the experimental native Vulkan/Slang backend on Linux or macOS |
 | `WOWDECOMP_DXVK` | `ON` | Build the native D3D9/DXVK backend; disable for a Vulkan-only client |
+| `WOWDECOMP_PORTABILITY_TESTS` | `OFF` | Build CPU UI-layout and backend-selection tests with the POSIX client |
 | `WOWCLIENT_OUTPUT_OVERRIDE` | empty | Name the `WowClient` executable something other than `WowClient64` / `WowClient32` |
 
-### Platform foundation and macOS handoff
+### Platform foundation and macOS
 
 See [Platform portability](docs/PlatformPortability.md) for target OS/CPU/layout
-selection, shared SDL/POSIX layers, and the remaining Darwin and ARM64 integration
-inventory. macOS client builds are not enabled yet.
+selection and shared SDL/POSIX layers. [macOS bring-up](docs/MacOSBringup.md)
+contains native ARM64 build/run instructions and the validation record for DXVK
+and direct Vulkan through MoltenVK. The `macos` branch/PR #6 contains the OS port;
+`vulkan-macos` adds the renderer without importing Linux OS providers.
 
-### Native Vulkan (Linux bring-up)
+### Native Vulkan
 
 This opt-in backend uses the existing Gx interface and submits Vulkan commands directly. It is
 currently a **raster baseline**, not a ray tracer or a performance improvement claim. SDL2, Vulkan
 headers/loader and the shader dependencies below are required. A DXVK-native development prefix is
 required only with `WOWDECOMP_DXVK=ON`; use `-DWOWDECOMP_DXVK=OFF` for a Vulkan-only build.
-Windows Vulkan and macOS/MoltenVK have not been built or run.
+Native Vulkan/MoltenVK has been built and exercised in gameplay on macOS ARM64,
+including user-confirmed glow rendering. Windows Vulkan has not been built or run.
 
 Dependencies are built locally, not installed system-wide. The CMake integration checks these revisions:
 
@@ -156,29 +160,30 @@ Known boundaries: shader-model 1.4 translation is unsupported, and some shader-m
 are not recovered correctly. The audited model 2/3 variants compile and validate, but offline compilation
 does not prove rendering parity. Occlusion queries, hardware cursors, vendor stereo, multisampling and
 performance optimisation are not part of this initial backend. Rectangle-coordinate textures and
-cubemap render-target planes are also unsupported. Runtime verification is scoped to the intro and
-animated login/EULA scene, not authenticated gameplay or every world rendering path.
+cubemap render-target planes are also unsupported. Linux runtime evidence covers the intro and
+animated login/EULA scene. macOS evidence additionally includes authenticated gameplay and the glow
+fix; neither offline compilation nor those checks prove parity across every world rendering path.
 
 The Linux JPEG screenshot writer currently crashes in both DXVK and native Vulkan (in
 `rgb_ycc_start`, independently of rendering). Use `SET screenshotFormat "tga"` in the run directory's
 `WTF/Config.wtf`, or capture the client window externally. TGA readback works with both backends.
 
-### Linux portability regression tests
+### Portability regression tests
 
-The native OS and maths tests are independent of the client build and need no game data, Vulkan,
-or working display. They require a C++17 compiler, CMake 3.13 or newer, pkg-config and SDL2 development
-files (2.0.22 or newer, for extended text-event ownership). Input tests use SDL's dummy video driver
-without touching the desktop:
+The CPU layout and backend-selection tests use the client's shared libraries but do not launch the
+client, open a display or require game data. Enable them in an existing configured POSIX client build:
 
 ```sh
-cmake -S Tools/Portability -B out/portability-tests -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build out/portability-tests --parallel
-ctest --test-dir out/portability-tests --output-on-failure
+cmake -S . -B out/client-vulkan-mac -DWOWDECOMP_PORTABILITY_TESTS=ON
+cmake --build out/client-vulkan-mac --target \
+  CoordinateTest RootLayoutTest GxBackend-dxvk GxBackend-vulkan GxBackend-both --parallel
+ctest --test-dir out/client-vulkan-mac --output-on-failure
 ```
 
-Optionally set `WOWDECOMP_MSVC_BASE` to an explicit Git revision to register the preprocessing
-preservation check in CTest (requires Python 3). This checks active MSVC-macro source, not Windows
-binary matching or decompilation coverage. These test targets do not build or launch the game.
+Shared provider and platform-boundary tests remain standalone projects under `Tools/Posix` and
+`Tools/Platform`. The broader Linux OS-provider harness stays on the Linux branch; it is not imported
+here. For an opt-in real-client normal-quit test on a macOS desktop, see
+[Tools/MacSmoke](Tools/MacSmoke/README.md).
 
 ### Adding platforms
 
