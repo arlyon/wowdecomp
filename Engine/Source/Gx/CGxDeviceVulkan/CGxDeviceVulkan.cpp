@@ -128,6 +128,10 @@ struct CGxDeviceVulkan::State {
     NativeImage depth, white;
     std::map<CGxPool*, std::vector<uint8_t>> pools;
     std::map<CGxTex*, NativeImage> textures;
+    // Samplers describe filtering, not texture identity. In particular Metal
+    // permits far fewer live sampler objects than a world has textures.
+    std::map<std::array<uint32_t, 7>, VkSampler> samplers;
+    VkSampler Sampler(const VkSamplerCreateInfo& info);
     std::vector<NativeImage> retiredImages;
     std::map<CGxShader*, NativeShader> shaders;
     uint64_t nextShader = 1;
@@ -219,8 +223,26 @@ NativeImage CGxDeviceVulkan::State::MakeImage(uint32_t width, uint32_t height, u
     } catch (...) { DestroyImage(image); throw; }
     return image;
 }
+VkSampler CGxDeviceVulkan::State::Sampler(const VkSamplerCreateInfo& info) {
+    uint32_t maxLod;
+    static_assert(sizeof(maxLod) == sizeof(info.maxLod));
+    std::memcpy(&maxLod, &info.maxLod, sizeof(maxLod));
+    // All other VkSamplerCreateInfo fields are identical (zero/default) for
+    // the two callers. Include each field they vary in the cache key.
+    const std::array<uint32_t, 7> key{info.magFilter, info.minFilter, info.mipmapMode,
+        info.addressModeU, info.addressModeV, info.addressModeW, maxLod};
+    auto found = samplers.find(key);
+    if (found != samplers.end()) return found->second;
+    if (samplers.size() >= properties.limits.maxSamplerAllocationCount)
+        throw std::runtime_error("Vulkan unique sampler state limit exhausted");
+    VkSampler sampler;
+    GX_VK(vkCreateSampler(device, &info, nullptr, &sampler));
+    try { samplers.emplace(key, sampler); }
+    catch (...) { vkDestroySampler(device, sampler, nullptr); throw; }
+    return sampler;
+}
 void CGxDeviceVulkan::State::DestroyImage(NativeImage& image) {
-    if (image.sampler) vkDestroySampler(device, image.sampler, nullptr);
+    // The device cache owns samplers; retired images may still reference them.
     if (image.view) vkDestroyImageView(device, image.view, nullptr);
     if (image.image) vkDestroyImage(device, image.image, nullptr);
     if (image.memory) vkFreeMemory(device, image.memory, nullptr);
@@ -540,6 +562,8 @@ void CGxDeviceVulkan::State::Destroy() {
         for (auto& image : retiredImages) DestroyImage(image);
         retiredImages.clear();
         DestroyImage(white); DestroyImage(depth); DestroyBuffer(upload);
+        for (const auto& entry : samplers) vkDestroySampler(device, entry.second, nullptr);
+        samplers.clear();
         for (auto view : swapViews) if (view) vkDestroyImageView(device, view, nullptr);
         swapViews.clear(); swapImages.clear();
         if (swapchain) vkDestroySwapchainKHR(device, swapchain, nullptr);
@@ -579,7 +603,7 @@ NativeImage& CGxDeviceVulkan::State::Texture(CGxTex* texture) {
             sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
             sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
             sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            GX_VK(vkCreateSampler(device, &sampler, nullptr, &white.sampler));
+            white.sampler = Sampler(sampler);
         }
         return white;
     }
@@ -607,9 +631,6 @@ NativeImage& CGxDeviceVulkan::State::Texture(CGxTex* texture) {
     }
     NativeImage& image = found->second;
     if (!image.sampler || texture->m_needsFlagUpdate) {
-        if (image.sampler) {
-            NativeImage old; old.sampler = image.sampler; retiredImages.push_back(old);
-        }
         VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         sampler.magFilter = texture->m_flags.m_filter == GxTex_Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
         sampler.minFilter = texture->m_flags.m_filter == GxTex_Nearest || texture->m_flags.m_filter == GxTex_NearestMipNearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
@@ -618,7 +639,7 @@ NativeImage& CGxDeviceVulkan::State::Texture(CGxTex* texture) {
         sampler.addressModeV = texture->m_flags.m_wrapV ? VK_SAMPLER_ADDRESS_MODE_REPEAT : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sampler.maxLod = static_cast<float>(image.levels - 1);
-        GX_VK(vkCreateSampler(device, &sampler, nullptr, &image.sampler));
+        image.sampler = Sampler(sampler);
         texture->m_needsFlagUpdate = 0;
     }
     if (texture->m_needsUpdate) {
@@ -750,7 +771,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
             if (location == GxVA_Color0 || location == GxVA_Color1) value = {1, 1, 1, 1};
             if (location == GxVA_Normal) value = {0, 0, 1, 0};
             const auto binding = static_cast<uint32_t>(bindings.size());
-            bindings.push_back({binding, 0, VK_VERTEX_INPUT_RATE_VERTEX});
+            // One instance per draw, firstInstance == 0: a constant value for
+            // every vertex without a zero stride forbidden by portability_subset.
+            bindings.push_back({binding, sizeof(value), VK_VERTEX_INPUT_RATE_INSTANCE});
             offsets.push_back(Upload(value.data(), sizeof(value)));
             attributes.push_back({static_cast<uint32_t>(location), binding, VK_FORMAT_R32G32B32A32_SFLOAT, 0});
             continue;
@@ -807,6 +830,23 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         vertexUniforms = GxVulkan::ShaderUniforms(*v->reflection, vertexRegisters.data(), 256);
         pixelUniforms = GxVulkan::ShaderUniforms(*p->reflection, CGxDevice::s_shadowConstants[0].constants, 256);
     }
+    if (!fixed) {
+        if (const char* directory = std::getenv("WOWDECOMP_VULKAN_SHADER_DUMP")) {
+            const std::string path = std::string(directory) + "/ps-" + std::to_string(p->id) + ".values";
+            if (!std::ifstream(path).good()) {
+                std::ofstream values(path);
+                values << "vertex " << v->id << " pixel " << p->id << '\n';
+                for (size_t i = 0; i < pixelUniforms.size(); ++i)
+                    values << pixelUniforms[i] << (i % 4 == 3 ? '\n' : ' ');
+                values << "textures\n";
+                for (int i = 0; i < p->reflection->sampler_count; ++i) {
+                    const auto slot = p->reflection->samplers[i].index;
+                    auto* texture = static_cast<CGxTex*>(gx.m_appRenderStates[GxRs_Texture0 + slot].m_value.m_data.p);
+                    values << slot << ' ' << (texture ? texture->m_format : 0) << '\n';
+                }
+            }
+        }
+    }
     if (vertexUniforms.empty()) vertexUniforms.resize(4);
     if (pixelUniforms.empty()) pixelUniforms.resize(4);
     const size_t alignment = std::max<VkDeviceSize>(properties.limits.minUniformBufferOffsetAlignment, 16);
@@ -851,7 +891,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     const auto primitive = batch.m_primType == GxPrim_TriangleFan ? GxPrim_Triangles : batch.m_primType;
     std::vector<uint64_t> key{fixed ? 0 : v->id, fixed ? 0 : p->id, reinterpret_cast<uint64_t>(currentPass),
         blend, depthTest, depthWrite, cull, colourMask, depthFunction, static_cast<uint64_t>(primitive)};
-    for (const auto& binding : bindings) { key.push_back(binding.binding); key.push_back(binding.stride); }
+    for (const auto& binding : bindings) {
+        key.push_back(binding.binding); key.push_back(binding.stride); key.push_back(binding.inputRate);
+    }
     key.push_back(UINT64_MAX);
     for (const auto& attribute : attributes) {
         key.push_back(attribute.location); key.push_back(attribute.binding); key.push_back(attribute.format); key.push_back(attribute.offset);
@@ -1251,6 +1293,18 @@ void CGxDeviceVulkan::IShaderCreate(CGxShader* shader) {
     try {
         auto recovered = GxVulkan::RecoverSlangShader(shader->m_code.Ptr(), shader->m_code.Count());
         auto code = m_native->shaderCompiler.Compile(recovered.source, shader->m_target == GxSh_Vertex);
+        if (const char* directory = std::getenv("WOWDECOMP_VULKAN_SHADER_DUMP")) {
+            const std::string path = std::string(directory) + "/" +
+                (shader->m_target == GxSh_Vertex ? "vs-" : "ps-") + std::to_string(m_native->nextShader);
+            std::ofstream(path + ".slang") << recovered.source;
+            std::ofstream spirv(path + ".spv", std::ios::binary);
+            spirv.write(reinterpret_cast<const char*>(code.data()), code.size() * sizeof(uint32_t));
+            std::ofstream reflection(path + ".uniforms");
+            for (int i = 0; i < recovered.reflection->uniform_count; ++i) {
+                const auto& u = recovered.reflection->uniforms[i];
+                reflection << u.index << ' ' << u.array_count << ' ' << u.constant << '\n';
+            }
+        }
         m_native->shaders.insert_or_assign(shader, NativeShader{m_native->nextShader++, std::move(recovered.reflection), std::move(code)});
         shader->m_apiSpecific = &m_native->shaders.at(shader); shader->m_valid = 1;
     } catch (const std::exception& error) {
