@@ -58,8 +58,8 @@ Ninja 1.13.2:
 
 - Full ARM64 Release `Wow` executable built and launched with local 12340 data.
 - The login screen, including its animated scene, rendered through DXVK/MoltenVK;
-  the user confirmed it works. Authentication identity was subsequently corrected
-  from ARM/Mac to x86/Win; server login/gameplay still needs revalidation.
+  the user confirmed it works. With authentication identity corrected from
+  ARM/Mac to x86/Win, the user also confirmed server login and gameplay.
 - Standalone D3D9 draw/readback/Present passed, with exact background `204080`
   and triangle `ff0000`, using SDL2 2.32.10, MoltenVK package 1.4.2 and Vulkan
   loader 1.4.363.0. Earlier smoke evidence also exists on M4 Max/macOS 26.7.
@@ -72,3 +72,13 @@ No Windows or Intel macOS build has been verified here. Fullscreen/Retina resize
 audio correctness, networking, shutdown and unsupported provider behavior still
 need broader testing. Selected imported providers and file paths need further
 review; a successful build/login screen is not proof of complete gameplay.
+
+Normal quit previously aborted during static finalization: POSIX log admission
+and thread creation locks were destroyed before `Blizzard::Using` shutdown
+callbacks used them. These admission primitives now have process lifetime while
+explicit shutdown still joins workers and releases logger/thread resources.
+See [Tools/MacSmoke](../Tools/MacSmoke/README.md) for the opt-in real-client
+SDL normal-quit regression test. The platform suite now passes 15/15, including
+WindowsLeaves, after restoring the unused original Windows logger/pool leaves.
+Native Vulkan and its user-confirmed glow fix remain on `vulkan-macos`, not in
+this macOS/DXVK PR.

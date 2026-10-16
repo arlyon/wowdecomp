@@ -22,6 +22,8 @@ ctest --test-dir out/mac-smoke --output-on-failure
 ```
 
 Adjust the Homebrew paths for your installation. Validation can also be enabled
-with the usual `WOWDECOMP_VULKAN_VALIDATION` and `VK_LAYER_PATH` variables. Use
-`WOWDECOMP_SMOKE_BACKEND=dxvk` at configure time with a DXVK-built client to test
-that backend instead. Do not use this test for a visual verdict on rendering.
+with the usual `WOWDECOMP_VULKAN_VALIDATION` and `VK_LAYER_PATH` variables. By
+default the client selects its enabled-build backend. Set
+`-DWOWDECOMP_SMOKE_BACKEND=dxvk` or `vulkan` at configure time for an explicit
+selection; that backend must be built. Do not use this test for a visual verdict
+on rendering.

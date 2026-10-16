@@ -6,7 +6,7 @@ endif()
 find_package(SDL2 REQUIRED)
 find_package(Threads REQUIRED)
 set(WOWDECOMP_CLIENT "" CACHE FILEPATH "Built client with a separate, configured runtime data directory")
-set(WOWDECOMP_SMOKE_BACKEND "vulkan" CACHE STRING "Renderer to exercise")
+set(WOWDECOMP_SMOKE_BACKEND "" CACHE STRING "Renderer override (empty uses the client's default)")
 if(NOT EXISTS "${WOWDECOMP_CLIENT}")
     message(FATAL_ERROR "Set WOWDECOMP_CLIENT to the built Wow executable")
 endif()
@@ -15,8 +15,12 @@ target_compile_features(QuitDriver PRIVATE cxx_std_17)
 target_link_libraries(QuitDriver PRIVATE SDL2::SDL2 Threads::Threads)
 get_filename_component(CLIENT_DIRECTORY "${WOWDECOMP_CLIENT}" DIRECTORY)
 enable_testing()
+set(test_environment "DYLD_INSERT_LIBRARIES=$<TARGET_FILE:QuitDriver>;DXVK_WSI_DRIVER=SDL2")
+if(NOT WOWDECOMP_SMOKE_BACKEND STREQUAL "")
+    list(APPEND test_environment "WOWDECOMP_GX_BACKEND=${WOWDECOMP_SMOKE_BACKEND}")
+endif()
 add_test(NAME NormalQuit COMMAND "${WOWDECOMP_CLIENT}")
 set_tests_properties(NormalQuit PROPERTIES
     WORKING_DIRECTORY "${CLIENT_DIRECTORY}"
-    ENVIRONMENT "DYLD_INSERT_LIBRARIES=$<TARGET_FILE:QuitDriver>;WOWDECOMP_GX_BACKEND=${WOWDECOMP_SMOKE_BACKEND}"
+    ENVIRONMENT "${test_environment}"
     TIMEOUT 30)
