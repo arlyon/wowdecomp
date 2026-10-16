@@ -8,6 +8,12 @@ else ()
 endif ()
 wowdecomp_filter_platform_sources(PRIVATE_SOURCES ${PRIVATE_SOURCES})
 
+if (NOT WIN32)
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Win(32|64)/")
+else ()
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Mac/")
+endif ()
+
 add_library(Storm STATIC
     ${PRIVATE_SOURCES}
 )

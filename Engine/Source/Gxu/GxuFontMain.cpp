@@ -2,7 +2,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <malloc.h>
 #include <typeinfo>
 #include <freetype/ftmodule.h>
 #include "Engine/Source/Gxu/GxuFont.h"

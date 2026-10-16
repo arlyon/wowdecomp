@@ -6,6 +6,12 @@ else ()
 endif ()
 wowdecomp_filter_platform_sources(PRIVATE_SOURCES ${PRIVATE_SOURCES})
 
+if (NOT WIN32)
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Win(32|64)/")
+else ()
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Mac/")
+endif ()
+
 add_library(Os STATIC
     ${PRIVATE_SOURCES}
 )
@@ -32,3 +38,14 @@ if(WIN32)
             version
     )
 endif()
+if (APPLE)
+    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    find_library(CARBON_FRAMEWORK Carbon REQUIRED)
+    target_link_libraries(Os
+        PUBLIC
+            SDL2::SDL2
+            CURL::libcurl
+            ${COREFOUNDATION_FRAMEWORK}
+            ${CARBON_FRAMEWORK}
+    )
+endif ()
