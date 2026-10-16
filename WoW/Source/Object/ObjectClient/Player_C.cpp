@@ -1,3 +1,10 @@
+#if defined(_WIN32)
+#define GUILD_ID_FROM_PARAM(value) reinterpret_cast<uint32_t>(value)
+#else
+// This callback carries a 32-bit guild ID encoded in the opaque argument.
+#define GUILD_ID_FROM_PARAM(value) static_cast<uint32_t>(reinterpret_cast<uintptr_t>(value))
+#endif
+#line 1
 #include "Player_C.h"
 #include <malloc.h>
 #include "Engine/Source/Base/CDataStore.h"
@@ -679,7 +686,7 @@ static void InitWeaponSkills() {
 static int32_t GuildUpdateHandler(WOWGUID guid, void* param) {
     CGObject_C* object = ClntObjMgrObjectPtr(guid, TYPEMASK_OBJECT, __FILE__, __LINE__);
 
-    if (object && (object->m_obj->m_type & TYPEMASK_PLAYER) && static_cast<CGPlayer_C*>(object)->m_player->m_playerGuildid == reinterpret_cast<uint32_t>(param)) {
+    if (object && (object->m_obj->m_type & TYPEMASK_PLAYER) && static_cast<CGPlayer_C*>(object)->m_player->m_playerGuildid == GUILD_ID_FROM_PARAM(param)) {
         static_cast<CGPlayer_C*>(object)->OnGuildChanged(0);
     }
 

@@ -1,3 +1,7 @@
+#if !defined(_WIN32)
+#include <cmath>
+#endif
+#line 1
 #include "PlayerName.h"
 #include <typeinfo>
 #include "Engine/Source/Base/CDataAllocator.h"
@@ -79,7 +83,7 @@ void PlayerNameShutdown() {
     s_playerNameFont = nullptr;
     GxuFontDestroyBatch(s_playerNameBatch);
     s_playerNameBatch = nullptr;
-    s_freePlayerNames.Clear(typeid(PLAYERNAMEDESC).raw_name(), SLOG_OBJECT, 1);
+    s_freePlayerNames.Clear(STORM_TYPE_NAME(PLAYERNAMEDESC), SLOG_OBJECT, 1);
     ConsoleCommandUnregister("PlayerNames");
 
     if (s_playerNameIcons) {

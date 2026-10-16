@@ -10,6 +10,12 @@
 
 #include <limits.h>
 #include <stddef.h>
+#if !defined(_WIN32)
+#include <stdint.h>
+/* MSVC spelling used by the client's 64-bit Lua profiling counters. */
+typedef int64_t __int64;
+#endif
+#line 13
 
 
 /*

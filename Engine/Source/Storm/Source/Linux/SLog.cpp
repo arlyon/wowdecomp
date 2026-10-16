@@ -39,6 +39,10 @@ bool Open(Log& log) {
 }
 }
 
+// The mutex and empty list are initialized by C++ before use. Reinitializing
+// must not discard live log handles; SLogDestroy owns their explicit teardown.
+void SLogInitialize() {}
+
 int32_t STORMAPI SLogCreate(const char* filename, uint32_t flags, HSLOG* handle) {
     if (handle) *handle = nullptr;
     if (!filename || !*filename || !handle) { SErrSetLastError(STORM_ERROR_INVALID_PARAMETER); return 0; }

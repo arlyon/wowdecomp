@@ -512,7 +512,7 @@ static void EnforceMaxLines() {
     }
 
     node->~CONSOLELINE();
-    SMemFree(node, typeid(CONSOLELINE).raw_name(), SLOG_OBJECT, 0);
+    SMemFree(node, STORM_TYPE_NAME(CONSOLELINE), SLOG_OBJECT, 0);
     s_NumLines--;
 }
 

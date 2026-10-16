@@ -12,6 +12,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "${CMAKE_CURRENT_SOURCE_DIR}/Source/Packages/Streaming/Win64/Manifests.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/Source/Packages/Streaming/Win64/Storage.cpp"
             "${CMAKE_CURRENT_SOURCE_DIR}/Source/Packages/Streaming/Win64/Streaming.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Source/Packages/iounit/Win64/IOFileUnit.cpp"
         )
     endif ()
 else ()

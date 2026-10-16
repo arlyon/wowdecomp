@@ -76,6 +76,31 @@ void* STORMAPI SMemReAlloc(void* pointer, size_t bytes, const char* filename, in
     return replacement;
 }
 
+// A readable mapping check, NOT allocation ownership, object lifetime, or a
+// guarantee against a concurrent unmap. Never dereference the candidate here.
+int32_t STORMAPI SMemIsValidPointer(void* pointer, size_t bytes, uint32_t flags) {
+    const uintptr_t begin = reinterpret_cast<uintptr_t>(pointer);
+    if (!begin || !bytes || flags || bytes > UINTPTR_MAX - begin) {
+        SErrSetLastError(STORM_ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    FILE* maps = std::fopen("/proc/self/maps", "r");
+    if (!maps) return 0;
+    uintptr_t cursor = begin;
+    const uintptr_t end = begin + bytes;
+    char line[4096];
+    while (cursor < end && std::fgets(line, sizeof(line), maps)) {
+        unsigned long low, high;
+        char permissions[5]{};
+        if (std::sscanf(line, "%lx-%lx %4s", &low, &high, permissions) != 3) continue;
+        if (high <= cursor) continue;
+        if (low > cursor || permissions[0] != 'r') break;
+        cursor = high;
+    }
+    std::fclose(maps);
+    return cursor >= end;
+}
+
 void* operator new(size_t bytes) {
     if (void* pointer = SMemAlloc(bytes ? bytes : 1, "new", SLOG_FUNCTION, 0)) return pointer;
     throw std::bad_alloc();

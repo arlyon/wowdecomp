@@ -1,4 +1,10 @@
 #include "WowConnectionNet.h"
+#if !defined(_WIN32)
+#include <stdexcept>
+#include <cstdio>
+#include <exception>
+static thread_local WowConnectionNet* s_currentNetwork;
+#endif
 #include "Engine/Source/ConsoleBase/IConsole.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Storm/H/storm.h"
@@ -7,7 +13,19 @@
 // OFFSET: 0x00469060
 static uint32_t STORMAPI NetworkThreadProc(void* param) {
     WowConnectionNet* network = static_cast<WowConnectionNet*>(param);
+#if !defined(_WIN32)
+    s_currentNetwork = network;
+#endif
+#if defined(_WIN32)
     network->PlatformRun();
+#else
+    try {
+        network->PlatformRun();
+    } catch (...) {
+        std::fprintf(stderr, "WowConnectionNet network thread threw an exception\n");
+        std::terminate();
+    }
+#endif
     network->m_stopEvent.Set();
 
     return 0;
@@ -17,7 +35,19 @@ static uint32_t STORMAPI NetworkThreadProc(void* param) {
 // OFFSET: 0x00469300
 static uint32_t STORMAPI WorkerThreadProc(void* param) {
     WowConnectionNet::WORKER* worker = static_cast<WowConnectionNet::WORKER*>(param);
+#if !defined(_WIN32)
+    s_currentNetwork = worker->m_owner;
+#endif
+#if defined(_WIN32)
     worker->m_owner->RunWorker(worker->m_index);
+#else
+    try {
+        worker->m_owner->RunWorker(worker->m_index);
+    } catch (...) {
+        std::fprintf(stderr, "WowConnectionNet worker callback threw an exception\n");
+        std::terminate();
+    }
+#endif
 
     return 0;
 }
@@ -29,6 +59,7 @@ WowConnectionNet::WORKER::WORKER() : m_event(0, 0) {
 // VERIFY: 87918bed manual
 // OFFSET: 0x00469320
 void WowConnectionNet::Start() {
+#if defined(_WIN32)
     char name[32];
     uint32_t i = 0;
 
@@ -58,6 +89,35 @@ void WowConnectionNet::Start() {
     while (!this->m_networkStarted) {
         OsSleep(100);
     }
+#else
+    int created = 0;
+    try {
+        for (int i = 0; i < this->m_numWorkers; ++i) {
+            auto& worker = this->m_workers[i];
+            worker.m_owner = this;
+            worker.m_index = i;
+            worker.m_connection = nullptr;
+            worker.m_quit = false;
+            worker.m_lastTime = OsGetAsyncTimeMs();
+            char name[] = "NetThread";
+            if (!SThread::Create(WorkerThreadProc, &worker, worker.m_thread, name, 0))
+                throw std::runtime_error("WowConnectionNet worker creation failed");
+            ++created;
+        }
+        __atomic_store_n(&this->m_networkStarted, false, __ATOMIC_RELEASE);
+        char name[] = "Network";
+        if (!SThread::Create(NetworkThreadProc, this, this->m_thread, name, 0))
+            throw std::runtime_error("WowConnectionNet network thread creation failed");
+        while (!__atomic_load_n(&this->m_networkStarted, __ATOMIC_ACQUIRE)) OsSleep(1);
+    } catch (...) {
+        for (int i = 0; i < created; ++i) {
+            __atomic_store_n(&this->m_workers[i].m_quit, true, __ATOMIC_RELEASE);
+            this->m_workers[i].m_event.Set();
+        }
+        for (int i = 0; i < created; ++i) this->m_workers[i].m_thread.Wait(0xFFFFFFFF);
+        throw;
+    }
+#endif
 }
 
 // VERIFY: c90eb59b auto
@@ -103,7 +163,20 @@ void WowConnectionNet::RunWorker(int32_t index) {
             worker.m_lastTime = OsGetAsyncTimeMs();
         } while (worker.m_event.Wait(1000));
 
+#if defined(_WIN32)
         if (worker.m_quit) {
+#else
+        if (__atomic_load_n(&worker.m_quit, __ATOMIC_ACQUIRE)) {
+#endif
+#if !defined(_WIN32)
+            worker.m_lock.Enter();
+            if (worker.m_connection) {
+                __atomic_fetch_sub(&worker.m_connection->m_serviceCount, 1, __ATOMIC_RELEASE);
+                worker.m_connection->Release();
+                worker.m_connection = nullptr;
+            }
+            worker.m_lock.Leave();
+#endif
             break;
         }
 
@@ -112,7 +185,11 @@ void WowConnectionNet::RunWorker(int32_t index) {
         this->Service(worker.m_connection, serviceFlags);
 
         worker.m_lock.Enter();
+#if defined(_WIN32)
         InterlockedExchangeAdd(reinterpret_cast<volatile LONG*>(&worker.m_connection->m_serviceCount), -1);
+#else
+        __atomic_fetch_add(reinterpret_cast<volatile int32_t*>(&worker.m_connection->m_serviceCount), -1, __ATOMIC_SEQ_CST);
+#endif
         worker.m_connection->Release();
         worker.m_connection = nullptr;
         worker.m_lock.Leave();
@@ -131,7 +208,11 @@ void WowConnectionNet::SignalWorker(WowConnection* connection, uint32_t flags) {
 
     connection->m_refCount.Increment();
     connection->m_serviceFlags = flags;
+#if defined(_WIN32)
     InterlockedExchangeAdd(reinterpret_cast<volatile LONG*>(&connection->m_serviceCount), 1);
+#else
+    __atomic_fetch_add(reinterpret_cast<volatile int32_t*>(&connection->m_serviceCount), 1, __ATOMIC_SEQ_CST);
+#endif
 
     for (int32_t i = 0; i < this->m_numWorkers; i++) {
         WowConnectionNet::WORKER& worker = this->m_workers[i];
@@ -153,7 +234,11 @@ void WowConnectionNet::SignalWorker(WowConnection* connection, uint32_t flags) {
 void WowConnectionNet::Delete(WowConnection* connection) {
     this->m_connectionsLock.Enter();
 
+#if defined(_WIN32)
     if (!connection->m_refCount.m_value) {
+#else
+    if (!__atomic_load_n(&connection->m_refCount.m_value, __ATOMIC_ACQUIRE)) {
+#endif
         delete connection;
     }
 
@@ -197,6 +282,7 @@ void WowConnectionNet::Remove(WowConnection* connection) {
 // VERIFY: eb055e2d manual
 // OFFSET: 0x00469080
 void WowConnectionNet::Stop() {
+#if defined(_WIN32)
     this->m_stop = true;
     this->PlatformStop();
     this->PlatformWorkerReady();
@@ -218,11 +304,27 @@ void WowConnectionNet::Stop() {
         if (worker.m_thread.Wait(10000)) {
             ConsolePrintf("Network thread %d did not exit normally", i);
         } else if (worker.m_connection) {
+#if defined(_WIN32)
             InterlockedExchangeAdd(reinterpret_cast<volatile LONG*>(&worker.m_connection->m_serviceCount), -1);
+#else
+            __atomic_fetch_add(reinterpret_cast<volatile int32_t*>(&worker.m_connection->m_serviceCount), -1, __ATOMIC_SEQ_CST);
+#endif
             worker.m_connection->Release();
             worker.m_connection = nullptr;
         }
     }
+#else
+    // Destruction from a network callback cannot join its own thread.
+    if (s_currentNetwork == this) throw std::logic_error("WowConnectionNet self-shutdown is unsupported");
+    __atomic_store_n(&this->m_stop, true, __ATOMIC_RELEASE);
+    this->PlatformStop();
+    this->m_thread.Wait(0xFFFFFFFF);
+    for (int i = 0; i < this->m_numWorkers; ++i) {
+        __atomic_store_n(&this->m_workers[i].m_quit, true, __ATOMIC_RELEASE);
+        this->m_workers[i].m_event.Set();
+    }
+    for (int i = 0; i < this->m_numWorkers; ++i) this->m_workers[i].m_thread.Wait(0xFFFFFFFF);
+#endif
 }
 
 // VERIFY: 91633125 manual

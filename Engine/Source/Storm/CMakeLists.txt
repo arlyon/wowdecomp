@@ -1,6 +1,8 @@
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     file(GLOB PRIVATE_SOURCES CONFIGURE_DEPENDS "Source/Linux/*.cpp")
-    list(APPEND PRIVATE_SOURCES Source/SStr.cpp Source/SOption.cpp Source/soprintf.cpp Source/MD5.cpp Source/SComp.cpp)
+    list(APPEND PRIVATE_SOURCES Source/SStr.cpp Source/SOption.cpp Source/soprintf.cpp Source/MD5.cpp Source/SComp.cpp
+        Source/SArc4.cpp Source/SCrc.cpp Source/SCmd.cpp Source/SBig.cpp
+        Source/RSA.cpp Source/Sha1.cpp Source/SSignature.cpp Source/SUni.cpp Source/SRgn.cpp)
 else ()
     file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
     list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Linux/")

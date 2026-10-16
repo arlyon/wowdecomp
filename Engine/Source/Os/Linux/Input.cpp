@@ -8,6 +8,7 @@
 #include "Engine/Source/Os/Window.h"
 #include "Engine/Source/Os/Linux/Window.h"
 #include "Engine/Source/Os/Input.h"
+#include "Engine/Source/Os/Joystick.h"
 #include "Engine/Source/Os/TimeManager.h"
 
 namespace {
@@ -160,6 +161,8 @@ int32_t OsGuiProcessMessage(void* message) {
                 case SDL_WINDOWEVENT_FOCUS_LOST:
                     ClearKeyState();
                     s_buttons = 0;
+                    OsIMEUpdatePreedit(nullptr);
+                    OsPollJoysticks(0);
                     OsQueuePut(OS_INPUT_FOCUS, 0, 0, 0, 0);
                     break;
                 case SDL_WINDOWEVENT_FOCUS_GAINED:
@@ -186,7 +189,16 @@ int32_t OsGuiProcessMessage(void* message) {
         }
         // Preedit UI is separate from committed text. These events transfer
         // SDL-owned allocations even when the game does not consume them.
+        case SDL_TEXTEDITING:
+            if (!GameWindow(event.edit.windowID)) return 0;
+            {
+                auto text = event.edit;
+                text.text[sizeof(text.text) - 1] = '\0';
+                OsIMEUpdatePreedit(text.text);
+            }
+            return 1;
         case SDL_TEXTEDITING_EXT:
+            if (GameWindow(event.editExt.windowID)) OsIMEUpdatePreedit(event.editExt.text);
             SDL_free(event.editExt.text);
             return 1;
         case SDL_DROPFILE:
@@ -195,6 +207,7 @@ int32_t OsGuiProcessMessage(void* message) {
             return 1;
         case SDL_TEXTINPUT: {
             if (!GameWindow(event.text.windowID)) return 0;
+            OsIMEUpdatePreedit(nullptr);
             std::array<char, SDL_TEXTINPUTEVENT_TEXT_SIZE> text;
             std::memcpy(text.data(), event.text.text, text.size());
             text.back() = '\0';
@@ -265,7 +278,9 @@ int32_t OsInputGet(OSINPUT* id, int32_t* param0, int32_t* param1, int32_t* param
         if (s_textPosition < s_textSize) QueueCharacter();
         if (OsQueueGet(id, param0, param1, param2, param3)) return 1;
     }
-    return 0;
+    auto window = static_cast<SDL_Window*>(OsGuiGetWindow(0));
+    OsPollJoysticks(window && (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS));
+    return OsQueueGet(id, param0, param1, param2, param3);
 }
 
 int32_t OsInputIsKeyDown(KEY key) {
@@ -335,6 +350,8 @@ void OsInputInitialize() {
 }
 
 void OsInputDestroy() {
+    OsIMEUpdatePreedit(nullptr);
+    OsJoystickDestroy();
     SDL_StopTextInput();
     SDL_SetRelativeMouseMode(SDL_FALSE);
     s_head = s_tail = 0;

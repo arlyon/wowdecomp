@@ -2448,7 +2448,7 @@ static void ProcessDeleteList(int32_t force) {
 
             sound->m_channel = nullptr;
             sound->~SESoundInternal();
-            SMemFree(sound, typeid(SESoundInternal).raw_name(), SLOG_OBJECT, 0);
+            SMemFree(sound, STORM_TYPE_NAME(SESoundInternal), SLOG_OBJECT, 0);
         }
 
         sound = next;
@@ -2772,7 +2772,7 @@ void SE2::StopAllSounds(int32_t restart) {
                 } else {
                     SESoundInternal* next = s_soundList.Next(sound);
                     sound->~SESoundInternal();
-                    SMemFree(sound, typeid(SESoundInternal).raw_name(), SLOG_OBJECT, 0);
+                    SMemFree(sound, STORM_TYPE_NAME(SESoundInternal), SLOG_OBJECT, 0);
                     sound = next;
                 }
             }
@@ -3145,9 +3145,15 @@ int32_t SE2::Init(int32_t maxChannels, bool (*positionCallback)(uint64_t, C3Vect
     result = FMOD::System_Create(&s_enumSystem);
     SE_ERRCHECK(result);
 
+#if !defined(__linux__)
+#line 3148
     if (s_enumSystem && s_enumSystem->init(4, FMOD_INIT_NORMAL, nullptr) != FMOD_OK) {
         s_enumSystem->setOutput(FMOD_OUTPUTTYPE_NOSOUND);
     }
+#endif
+    // Linux driver queries initialize the output description lazily, without
+    // opening a second playback device just to enumerate its names.
+#line 3151
 
     s_system->setOutput(FMOD_OUTPUTTYPE_AUTODETECT);
 
@@ -3185,6 +3191,16 @@ int32_t SE2::Init(int32_t maxChannels, bool (*positionCallback)(uint64_t, C3Vect
         int32_t hardware = s_enableHardware->m_intValue;
         int32_t mode2 = s_enableMode2->m_intValue;
         int32_t openAL = s_enableOpenAL ? s_enableOpenAL->m_intValue : 0;
+
+#if defined(__linux__)
+        if (hardware || mode2 || openAL) {
+            SE2::Log_Write(__LINE__, __FILE__, FMOD_OK, " - SDL2 native output uses the software mixer; hardware, Mode 2 and OpenAL output are unavailable.");
+        }
+        hardware = 0;
+        mode2 = 0;
+        openAL = 0;
+#endif
+#line 3188
 
         SE2::Log_Write(__LINE__, __FILE__, FMOD_OK, " - Hardware is %s", hardware ? "ENABLED" : "DISABLED");
 

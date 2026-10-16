@@ -451,6 +451,16 @@ FMOD_RESULT OutputWavWriter::writeWavHeader()
             extensible = true;
         }
 
+#if defined(PLATFORM_LINUX)
+        WAVE_FORMATEXTENSIBLE Fmt = {};
+        Fmt.Format.wFormatTag = static_cast<unsigned short>(extensible ? WAVE_FORMAT_EXTENSIBLE : mFormat == FMOD_SOUND_FORMAT_PCMFLOAT ? WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM);
+        Fmt.Format.nChannels = static_cast<unsigned short>(mChannels);
+        Fmt.Format.nSamplesPerSec = static_cast<unsigned int>(mRate);
+        Fmt.Format.nAvgBytesPerSec = static_cast<unsigned int>(mRate * mChannels * mBits / 8);
+        Fmt.Format.nBlockAlign = static_cast<unsigned short>(mChannels * mBits / 8);
+        Fmt.Format.wBitsPerSample = static_cast<unsigned short>(mBits);
+#else
+#line 454
         WAVE_FORMATEXTENSIBLE Fmt =
         {
             {
@@ -464,6 +474,8 @@ FMOD_RESULT OutputWavWriter::writeWavHeader()
             },
             0
         };
+#endif
+#line 467
 
         if (Fmt.Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE)
         {
@@ -485,11 +497,18 @@ FMOD_RESULT OutputWavWriter::writeWavHeader()
             {'d','a','t','a'}, mLengthBytes       /* size is unknown at the moment so just make it huge */
         };
 
+#if defined(PLATFORM_LINUX)
+        WAVE_CHUNK WavHeader = { {'R','I','F','F'},
+            static_cast<unsigned int>(sizeof(FmtHdr) + sizeof(Fmt) + sizeof(DataChunk) + mLengthBytes) };
+#else
+#line 488
         WAVE_CHUNK WavHeader = 
         { 
             {'R','I','F','F'}, 
             sizeof(FmtHdr) + sizeof(Fmt) + sizeof(DataChunk) + mLengthBytes,
         };
+#endif
+#line 493
 
 #ifdef PLATFORM_ENDIAN_BIG
         FmtHdr.size    = FMOD_SWAPENDIAN_DWORD(FmtHdr.size);

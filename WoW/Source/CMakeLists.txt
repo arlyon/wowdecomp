@@ -1,6 +1,8 @@
 file(GLOB PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
 
-if (WOWDECOMP_ARCH_64)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    file(GLOB PLATFORM_SOURCES CONFIGURE_DEPENDS "Linux/*.cpp")
+elseif (WOWDECOMP_ARCH_64)
     file(GLOB PLATFORM_SOURCES CONFIGURE_DEPENDS "Win64/*.cpp")
 else ()
     file(GLOB PLATFORM_SOURCES CONFIGURE_DEPENDS "Win32/*.cpp")
@@ -14,14 +16,21 @@ else ()
     set(WOW_OUTPUT_NAME Wow32)
 endif ()
 
+if (WIN32)
+    set(WOW_RUNTIME_DIRECTORY ${CMAKE_SOURCE_DIR}/bin/Win)
+else ()
+    set(WOW_OUTPUT_NAME Wow)
+    set(WOW_RUNTIME_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+endif ()
+
 set_target_properties(Wow PROPERTIES
     OUTPUT_NAME ${WOW_OUTPUT_NAME}
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin/Win
+    RUNTIME_OUTPUT_DIRECTORY ${WOW_RUNTIME_DIRECTORY}
 )
 
 foreach (config ${CMAKE_CONFIGURATION_TYPES} ${CMAKE_BUILD_TYPE})
     string(TOUPPER ${config} config)
-    set_target_properties(Wow PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${config} ${CMAKE_SOURCE_DIR}/bin/Win)
+    set_target_properties(Wow PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${config} ${WOW_RUNTIME_DIRECTORY})
 endforeach ()
 
 target_include_directories(Wow
@@ -29,7 +38,15 @@ target_include_directories(Wow
         ${CMAKE_SOURCE_DIR}
 )
 
-target_link_options(Wow PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
+if (WIN32)
+    target_link_options(Wow PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
+endif ()
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # The original module graph has static-library cycles; rescan, don't force
+    # extraction of unused objects as --whole-archive would.
+    target_link_libraries(Wow PRIVATE PkgConfig::SDL2 "-Wl,--start-group")
+endif ()
 
 target_link_libraries(Wow
     PRIVATE
@@ -77,3 +94,7 @@ target_link_libraries(Wow
         WowServices
         WowSvcs
 )
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(Wow PRIVATE "-Wl,--end-group")
+endif ()

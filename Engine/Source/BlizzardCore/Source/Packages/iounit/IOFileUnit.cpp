@@ -110,6 +110,36 @@ bool IOFileUnit::Close() {
 // VERIFY: 0c03f57b manual
 // OFFSET: 0x00457D00
 bool IOUnbufferedFileUnit::Read(void* buffer, int64_t offset, uint32_t count, uint32_t* bytesRead) {
+#if !defined(_WIN32)
+    if (bytesRead) *bytesRead = 0;
+    if (!this->m_stream || offset < 0 || offset > INT64_MAX - count || (count && !buffer)) return false;
+    if (!count) return true;
+    if (!this->m_alignedBuffer || this->m_alignMask >= 0x100000u) return false;
+
+    uint32_t total = 0;
+    while (count) {
+        const uint32_t head = static_cast<uint32_t>(offset & this->m_alignMask);
+        const uint32_t chunk = count < 0x100000u - head ? count : 0x100000u - head;
+        const uint32_t request = (head + chunk + this->m_alignMask) & ~this->m_alignMask;
+        const int64_t start = offset - head;
+        if (start > INT64_MAX - request) break;
+        int32_t read = request;
+        // Use the real positioned provider: ReadNative's public offset is only 32 bits.
+        if (!Blizzard::File::Read(this->m_stream, this->m_alignedBuffer, start, &read) ||
+            read < 0 || read > static_cast<int32_t>(request)) break;
+        const uint32_t available = read > static_cast<int32_t>(head) ? read - head : 0;
+        const uint32_t amount = available < chunk ? available : chunk;
+        memcpy(buffer, static_cast<uint8_t*>(this->m_alignedBuffer) + head, amount);
+        buffer = static_cast<uint8_t*>(buffer) + amount;
+        offset += amount;
+        count -= amount;
+        total += amount;
+        if (amount < chunk) break;
+    }
+    if (!bytesRead) return count == 0;
+    *bytesRead = total;
+    return total != 0;
+#else
     if (!(reinterpret_cast<uintptr_t>(buffer) & this->m_alignMask) && !(count & this->m_alignMask)) {
         return this->IOFileUnit::Read(buffer, offset, count, bytesRead);
     }
@@ -154,11 +184,70 @@ bool IOUnbufferedFileUnit::Read(void* buffer, int64_t offset, uint32_t count, ui
 
     *bytesRead = total;
     return result;
+#endif
 }
 
 // VERIFY: 890de1f7 manual
 // OFFSET: 0x00434E00
 bool IOUnbufferedFileUnit::Write(const void* buffer, int64_t offset, uint32_t count) {
+#if !defined(_WIN32)
+    if (!this->m_stream || offset < 0 || offset > INT64_MAX - count || (count && !buffer)) return false;
+    if (!count) return true;
+    if (!this->m_alignedBuffer || this->m_alignMask >= 0x100000u || !(this->m_stream->m_mode & 2)) return false;
+    const int64_t end = offset + count;
+    if (end > INT64_MAX - this->m_alignMask) return false;
+    const int64_t physicalSize = Blizzard::File::GetFileInfo(this->m_stream)->m_size;
+    const int64_t alignedEnd = (end + this->m_alignMask) & ~static_cast<int64_t>(this->m_alignMask);
+    // Preflight the whole operation, including the final window, before any write.
+    const bool preserveHead = (offset & this->m_alignMask) && offset - (offset & this->m_alignMask) < physicalSize;
+    const bool preserveTail = end < physicalSize && end != alignedEnd;
+    if ((preserveHead || preserveTail) && !(this->m_stream->m_mode & 1)) return false;
+
+    // Caller serialization is required: preflight is not a rollback guarantee.
+    // Only boundary windows need existing data, but check every required read
+    // before the first write, including a tail beyond fully covered windows.
+    for (int64_t position = offset; position < end;) {
+        const uint32_t head = static_cast<uint32_t>(position & this->m_alignMask);
+        const int64_t start = position - head;
+        const uint32_t chunk = end - position < 0x100000u - head ?
+            static_cast<uint32_t>(end - position) : 0x100000u - head;
+        const uint32_t request = (head + chunk + this->m_alignMask) & ~this->m_alignMask;
+        if ((head && start < physicalSize) || (head + chunk < request && position + chunk < physicalSize)) {
+            int32_t read = request;
+            if (!Blizzard::File::Read(this->m_stream, this->m_alignedBuffer, start, &read)) return false;
+            const int64_t existing = physicalSize - start < request ? physicalSize - start : request;
+            if (read < existing || read > static_cast<int32_t>(request)) return false;
+        }
+        position += chunk;
+    }
+
+    while (count) {
+        const uint32_t head = static_cast<uint32_t>(offset & this->m_alignMask);
+        const int64_t start = offset - head;
+        const uint32_t chunk = count < 0x100000u - head ? count : 0x100000u - head;
+        const uint32_t request = (head + chunk + this->m_alignMask) & ~this->m_alignMask;
+        memset(this->m_alignedBuffer, 0, request);
+        if ((head && start < physicalSize) || (head + chunk < request && offset + chunk < physicalSize)) {
+            int32_t read = request;
+            if (!Blizzard::File::Read(this->m_stream, this->m_alignedBuffer, start, &read)) return false;
+            const int64_t existing = physicalSize - start < request ? physicalSize - start : request;
+            if (read < existing || read > static_cast<int32_t>(request)) return false;
+        }
+        memcpy(static_cast<uint8_t*>(this->m_alignedBuffer) + head, buffer, chunk);
+        int32_t written = request;
+        // A false result may follow pwrite (fdatasync failure); count is then not evidence.
+        if (!Blizzard::File::Write(this->m_stream, this->m_alignedBuffer, start, &written)) return false;
+        if (written < 0 || written > static_cast<int32_t>(request)) return false;
+        const uint32_t accepted = written > static_cast<int32_t>(head) ?
+            (static_cast<uint32_t>(written) - head < chunk ? written - head : chunk) : 0;
+        if (accepted && offset + accepted > this->m_size) this->m_size = offset + accepted;
+        if (written != static_cast<int32_t>(request)) return false;
+        offset += chunk;
+        count -= chunk;
+        buffer = static_cast<const uint8_t*>(buffer) + chunk;
+    }
+    return true;
+#else
     if (!(reinterpret_cast<uintptr_t>(buffer) & this->m_alignMask) && !(count & this->m_alignMask)) {
         return Blizzard::File::Write(this->m_stream, buffer, offset, reinterpret_cast<int32_t*>(&count));
     }
@@ -195,6 +284,7 @@ bool IOUnbufferedFileUnit::Write(const void* buffer, int64_t offset, uint32_t co
     }
 
     return result;
+#endif
 }
 
 // VERIFY: 710d0107 auto
@@ -207,13 +297,32 @@ bool IOUnbufferedFileUnit::GetFileSize(int64_t* size) {
 // VERIFY: 5d7cec3a auto
 // OFFSET: 0x00430B50
 bool IOUnbufferedFileUnit::SetFileSize(int64_t size) {
+#if !defined(_WIN32)
+    if (!this->m_stream || size < 0 || size > INT64_MAX - this->m_alignMask) return false;
+    if (!this->IOFileUnit::SetFileSize((size + this->m_alignMask) & ~static_cast<int64_t>(this->m_alignMask))) return false;
+    this->m_size = size;
+    return true;
+#else
     this->m_size = size;
     return this->IOFileUnit::SetFileSize((size + this->m_alignMask) & ~static_cast<int64_t>(this->m_alignMask));
+#endif
 }
 
 // VERIFY: a6aec7d5 manual
 // OFFSET: 0x00430A50
 bool IOUnbufferedFileUnit::Close() {
+#if !defined(_WIN32)
+    Blizzard::Memory::Free(this->m_buffer);
+    this->m_buffer = nullptr;
+    this->m_alignedBuffer = nullptr;
+    if (!this->m_stream) return false;
+    // Keep descriptor ownership until both operations have been attempted. No reopen.
+    const int64_t physicalSize = Blizzard::File::GetFileInfo(this->m_stream)->m_size;
+    const bool truncated = physicalSize <= this->m_size || this->IOFileUnit::SetFileSize(this->m_size);
+    const bool closed = this->IOFileUnit::Close();
+    this->m_stream = nullptr;
+    return truncated && closed;
+#else
     Blizzard::Memory::Free(this->m_buffer);
 
     Blizzard::File::FileInfo* info = Blizzard::File::GetFileInfo(this->m_stream);
@@ -235,6 +344,7 @@ bool IOUnbufferedFileUnit::Close() {
 
     bool result = Blizzard::File::SetEOF(this->m_stream, this->m_size, 0);
     return Blizzard::File::Close(this->m_stream) && result;
+#endif
 }
 
 // VERIFY: b673bf5e manual

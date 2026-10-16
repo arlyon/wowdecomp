@@ -97,13 +97,27 @@ add_library(expat STATIC
     expat/lib/xmltok.c
 )
 
-target_compile_definitions(expat
-    PUBLIC
-        _STATIC
-    PRIVATE
-        COMPILED_FROM_DSP
-        _LIB
-)
+if (WIN32)
+    target_compile_definitions(expat
+        PUBLIC
+            _STATIC
+        PRIVATE
+            COMPILED_FROM_DSP
+            _LIB
+    )
+else ()
+    include(TestBigEndian)
+    test_big_endian(EXPAT_BIG_ENDIAN)
+    if (EXPAT_BIG_ENDIAN)
+        set(EXPAT_BYTEORDER 4321)
+    else ()
+        set(EXPAT_BYTEORDER 1234)
+    endif ()
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/expat_config.h"
+        "#define BYTEORDER ${EXPAT_BYTEORDER}\n#define HAVE_MEMMOVE 1\n#define HAVE_UNISTD_H 1\n#define XML_NS 1\n#define XML_DTD 1\n#define XML_CONTEXT_BYTES 1024\n")
+    target_compile_definitions(expat PUBLIC _STATIC)
+    target_include_directories(expat PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+endif ()
 
 target_include_directories(expat
     PUBLIC

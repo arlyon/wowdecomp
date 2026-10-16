@@ -4,7 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include "Engine/Source/Tempest/C3Vector.h"
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include "Engine/Source/Storm/H/Compiler.h"
+#endif
+#line 8
 
 enum CHAR_CUSTOMIZATION_TYPE {
     CHAR_CUSTOMIZATION_SKIN = 0,
@@ -47,7 +52,7 @@ enum CharEnumFlags : uint32_t {
     CHARACTER_FLAG_UNK29 = 0x10000000,
     CHARACTER_FLAG_UNK30 = 0x20000000,
     CHARACTER_FLAG_UNK31 = 0x40000000,
-    CHARACTER_FLAG_UNK32 = 0xFFFFFFFF80000000,
+    CHARACTER_FLAG_UNK32 = STORM_ENUM32_BIT31,
 };
 
 struct CharacterPreferences {

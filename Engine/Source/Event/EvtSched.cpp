@@ -1,3 +1,8 @@
+#if !defined(_WIN32)
+#define InterlockedIncrement(value) __atomic_add_fetch(value, 1, __ATOMIC_SEQ_CST)
+#define InterlockedDecrement(value) __atomic_sub_fetch(value, 1, __ATOMIC_SEQ_CST)
+#endif
+#line 1
 #include <cstddef>
 #include <cstdint>
 #include <cstring>

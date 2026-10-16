@@ -1,3 +1,4 @@
+if (WIN32)
 add_library(XvidDecoder SHARED
     XvidDecoder.cpp
     XvidDecoder.def
@@ -28,3 +29,14 @@ target_compile_options(XvidDecoder
     PRIVATE
         $<$<CONFIG:Debug>:/MD>
 )
+else ()
+    find_library(XVIDCORE_LIBRARY NAMES xvidcore libxvidcore.so.4 REQUIRED)
+    add_library(XvidDecoder SHARED XvidDecoder.cpp)
+    target_include_directories(XvidDecoder PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/ThirdParty/xvidcore/include)
+    target_link_libraries(XvidDecoder PRIVATE ${XVIDCORE_LIBRARY})
+    set_target_properties(XvidDecoder PROPERTIES
+        OUTPUT_NAME XvidDecoder
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+endif ()

@@ -1,7 +1,12 @@
 #if defined(WOWDECOMP_ARCH_64)
 
+#if defined(_WIN32)
 #include <winsock2.h>
 #include <windows.h>
+#else
+#include <arpa/inet.h>
+#include <netdb.h>
+#endif
 #include "WoW/Source/WowServices/BattlenetLogin.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "WoW/Source/Battlenet/Tumor/TumorManager.h"

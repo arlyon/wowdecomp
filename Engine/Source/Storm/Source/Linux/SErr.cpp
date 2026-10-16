@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <exception>
+#include <unistd.h>
 #include <thread>
 #include <SDL.h>
 #include "Engine/Source/Storm/H/storm.h"
@@ -20,6 +22,16 @@ Handler* s_handlers;
 std::recursive_mutex s_handlerMutex;
 std::thread::id s_uiThread;
 std::atomic<bool> s_initialized{false};
+char s_logTitle[256] = "World of Warcraft";
+int32_t (STORMAPI* s_logCallback)(char*, uint32_t);
+std::terminate_handler s_previousTerminate;
+bool s_catching;
+[[noreturn]] void Terminate() noexcept {
+    // No allocation, locks, callbacks, dialogs, or attempted signal recovery.
+    static constexpr char text[] = "Storm: unhandled C++ exception or terminate request\n";
+    (void)!write(STDERR_FILENO, text, sizeof(text) - 1);
+    std::abort();
+}
 }
 
 uint32_t STORMAPI SErrGetLastError() {
@@ -127,6 +139,30 @@ void STORMAPI SErrRegisterHandler(ErrorHandler callback) {
     s_handlers = node;
 }
 
+void STORMAPI SErrCatchUnhandledExceptions() {
+    std::lock_guard<std::recursive_mutex> lock(s_handlerMutex);
+    if (!s_catching) {
+        s_previousTerminate = std::set_terminate(Terminate);
+        s_catching = true;
+    }
+}
+
+void STORMAPI SErrSetLogTitleString(const char* title) {
+    std::lock_guard<std::recursive_mutex> lock(s_handlerMutex);
+    std::snprintf(s_logTitle, sizeof(s_logTitle), "%s", title ? title : "");
+}
+
+void STORMAPI SErrSetLogCallback(int32_t (STORMAPI* callback)(char*, uint32_t)) {
+    std::lock_guard<std::recursive_mutex> lock(s_handlerMutex);
+    s_logCallback = callback;
+}
+
+int32_t STORMAPI SErrGetLogLastPath(char* buffer, uint32_t size) {
+    if (!buffer || !size) SErrSetLastError(STORM_ERROR_INVALID_PARAMETER);
+    // Native diagnostics currently go to stderr, not a persistent crash report.
+    return 0;
+}
+
 int32_t STORMAPI SErrDestroy() {
     if (s_reporting) { SErrSetLastError(STORM_ERROR_INVALID_PARAMETER); return 0; }
     std::lock_guard<std::recursive_mutex> lock(s_handlerMutex);
@@ -134,6 +170,11 @@ int32_t STORMAPI SErrDestroy() {
         Handler* next = s_handlers->next;
         std::free(s_handlers);
         s_handlers = next;
+    }
+    s_logCallback = nullptr;
+    if (s_catching) {
+        if (std::get_terminate() == Terminate) std::set_terminate(s_previousTerminate);
+        s_catching = false;
     }
     s_initialized.store(false, std::memory_order_release);
     return 1;
@@ -153,8 +194,17 @@ int32_t STORMAPI SErrDisplayError(uint32_t error, const char* filename, int32_t 
     std::fprintf(stderr, "%s\n", summary);
     bool handled = false;
     bool canShowDialog = false;
+    char title[sizeof(s_logTitle)];
     {
         std::lock_guard<std::recursive_mutex> lock(s_handlerMutex);
+        std::memcpy(title, s_logTitle, sizeof(title));
+        std::fprintf(stderr, "%s\n", title);
+        if (s_logCallback) {
+            char header[4096]{};
+            s_logCallback(header, sizeof(header));
+            header[sizeof(header) - 1] = 0;
+            std::fputs(header, stderr);
+        }
         canShowDialog = s_initialized.load(std::memory_order_acquire) && std::this_thread::get_id() == s_uiThread;
         for (Handler* node = s_handlers; node; node = node->next) {
             if (!node->callback(error, errorText, filename ? filename : "", line, description ? description : "")) {
@@ -172,7 +222,7 @@ int32_t STORMAPI SErrDisplayError(uint32_t error, const char* filename, int32_t 
         };
         SDL_MessageBoxData box{};
         box.flags = recoverable ? SDL_MESSAGEBOX_WARNING : SDL_MESSAGEBOX_ERROR;
-        box.title = "World of Warcraft";
+        box.title = title;
         box.message = summary;
         box.numbuttons = recoverable ? 2 : 1;
         box.buttons = buttons;

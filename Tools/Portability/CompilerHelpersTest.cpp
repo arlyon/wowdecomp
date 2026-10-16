@@ -9,6 +9,7 @@
 #include <type_traits>
 #include "Engine/Source/Event/Types.h"
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+#include "Engine/Source/Gxu/GxuScene.h"
 #include "Engine/Source/Storm/H/stpl.h"
 #include "Engine/Source/Tempest/CMath.h"
 #include "Engine/Source/Tempest/CRandom.h"
@@ -59,6 +60,15 @@ void CheckCompilerBoundary() {
           "shared archive CRT comparison spellings");
     Check(_atoi64(" -9223372036854775808tail") == INT64_MIN && _atoi64("invalid") == 0,
           "shared manifest signed 64-bit parsing");
+    Check(_strtoi64("-0x7fffffffffffffff!", nullptr, 0) == -INT64_MAX &&
+          _strtoui64("0xffffffffffffffff!", nullptr, 0) == UINT64_MAX,
+          "native base-detected signed and unsigned 64-bit parsing");
+    errno = 0;
+    Check(_strtoi64("9223372036854775808", nullptr, 10) == INT64_MAX && errno == ERANGE,
+          "native signed parsing overflow reports range error");
+    Check(_finite(0.0) && _finite(-0.0f) && !_finite(std::numeric_limits<double>::infinity()) &&
+          !_finite(std::numeric_limits<float>::quiet_NaN()), "native finite classification");
+    static_assert(STORM_ENUM32_BIT31 == uint32_t{1} << 31, "native enum high bit");
     FILE* file = nullptr;
     Check(fopen_s(&file, "/dev/null", "r") == 0 && file, "native checked file-open binding");
     if (file) std::fclose(file);
@@ -117,6 +127,8 @@ void CheckRandom() {
 }
 
 int main() {
+    static_assert(std::is_abstract<GxuSceneObject>::value, "native scene object is an interface");
+    Check(typeid(GxuSceneObject*).name() != nullptr, "scene interface pointer RTTI links without fake implementations");
     TSBaseArray<int> array{};
     Check(std::strcmp(array.MemFileName(), typeid(int).name()) == 0,
           "native RTTI diagnostic type name");

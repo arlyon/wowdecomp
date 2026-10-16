@@ -80,7 +80,13 @@ void NetClient::WCMessageReady(WowConnection* connection, uint32_t timeStamp, CD
     uint32_t size = msg->m_size;
     void* data;
     msg->GetDataInSitu(data, size);
+#if defined(_WIN32)
+#line 83
     InterlockedExchangeAdd(reinterpret_cast<volatile LONG*>(&this->m_bytesReceived), msg->m_size);
+#else
+    __atomic_fetch_add(&this->m_bytesReceived, msg->m_size, __ATOMIC_SEQ_CST);
+#endif
+#line 84
     msg->m_read = 0;
 
     uint16_t msgId;

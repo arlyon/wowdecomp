@@ -1,4 +1,4 @@
-#if defined(WOWDECOMP_ARCH_64)
+#if defined(_WIN32) && defined(WOWDECOMP_ARCH_64)
 
 #include <cstring>
 #include <mbstring.h>

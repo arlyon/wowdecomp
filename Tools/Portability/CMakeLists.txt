@@ -34,10 +34,30 @@ set_tests_properties(StormThread PROPERTIES TIMEOUT 20)
 add_subdirectory("${WOWDECOMP_ROOT}/ThirdParty" ThirdParty EXCLUDE_FROM_ALL)
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/BlizzardCore" BlizzardCore)
 target_include_directories(BlizzardCore PUBLIC "${WOWDECOMP_ROOT}")
+add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/SoundEngine" SoundEngine)
+target_include_directories(SoundEngine PRIVATE "${WOWDECOMP_ROOT}")
+add_executable(NativeSoundTest NativeSoundTest.cpp)
+target_include_directories(NativeSoundTest PRIVATE
+    "${WOWDECOMP_ROOT}/Engine/Source/SoundEngine/fmodex/linux/src")
+target_link_libraries(NativeSoundTest PRIVATE fmodex)
+add_test(NAME NativeSound COMMAND NativeSoundTest)
+set_tests_properties(NativeSound PROPERTIES ENVIRONMENT "SDL_AUDIODRIVER=dummy" TIMEOUT 20)
+add_test(NAME NativeSoundUnavailable COMMAND NativeSoundTest --unavailable)
+set_tests_properties(NativeSoundUnavailable PROPERTIES
+    ENVIRONMENT "SDL_AUDIODRIVER=wowdecomp-invalid-driver" TIMEOUT 20)
 add_executable(BlizzardPrimitivesTest BlizzardPrimitivesTest.cpp)
 target_link_libraries(BlizzardPrimitivesTest PRIVATE BlizzardCore Threads::Threads)
 add_test(NAME BlizzardPrimitives COMMAND BlizzardPrimitivesTest)
 set_tests_properties(BlizzardPrimitives PROPERTIES TIMEOUT 20)
+add_executable(IOUnitTest IOUnitTest.cpp)
+target_compile_definitions(IOUnitTest PRIVATE WOWDECOMP_ARCH_64=1)
+target_link_libraries(IOUnitTest PRIVATE BlizzardCore Storm BlizzardCore)
+target_link_options(IOUnitTest PRIVATE
+    "-Wl,--wrap=_ZN8Blizzard4File12SetLastErrorEi"
+    "-Wl,--wrap=_ZN11System_File6Native16GetFileAlignmentEPKcRj"
+    "-Wl,--wrap=_ZN8Blizzard6Memory8AllocateEj")
+add_test(NAME IOUnit COMMAND IOUnitTest)
+set_tests_properties(IOUnit PROPERTIES TIMEOUT 30)
 add_executable(FileBackendTest FileBackendTest.cpp)
 target_link_libraries(FileBackendTest PRIVATE BlizzardCore Storm)
 target_link_options(FileBackendTest PRIVATE "-Wl,--wrap=_ZN8Blizzard4File12SetLastErrorEi")
@@ -70,6 +90,11 @@ target_link_options(BlizzardLogTest PRIVATE "-Wl,--wrap=pthread_create")
 add_test(NAME BlizzardLog COMMAND BlizzardLogTest)
 set_tests_properties(BlizzardLog PROPERTIES TIMEOUT 25)
 find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+add_executable(LegacyUrlTest LegacyUrlTest.cpp)
+target_link_libraries(LegacyUrlTest PRIVATE Os BlizzardCore Storm Threads::Threads)
+add_test(NAME LegacyUrl COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/blizzard_url_fixture.py $<TARGET_FILE:LegacyUrlTest>)
+set_tests_properties(LegacyUrl PROPERTIES TIMEOUT 40)
 add_executable(BlizzardUrlTest BlizzardUrlTest.cpp)
 target_link_libraries(BlizzardUrlTest PRIVATE BlizzardCore Storm Threads::Threads)
 target_link_options(BlizzardUrlTest PRIVATE
@@ -87,6 +112,56 @@ target_compile_definitions(StreamingQueuesTest PRIVATE WOWDECOMP_ARCH_64=1)
 target_link_libraries(StreamingQueuesTest PRIVATE BlizzardCore Storm Threads::Threads)
 add_test(NAME StreamingQueues COMMAND StreamingQueuesTest)
 set_tests_properties(StreamingQueues PROPERTIES TIMEOUT 20)
+add_executable(LegacyNetAddressTest LegacyNetAddressTest.cpp)
+target_link_libraries(LegacyNetAddressTest PRIVATE Os Storm)
+add_test(NAME LegacyNetAddress COMMAND LegacyNetAddressTest)
+set_tests_properties(LegacyNetAddress PROPERTIES TIMEOUT 10)
+add_executable(LegacySystemTest LegacySystemTest.cpp)
+target_link_libraries(LegacySystemTest PRIVATE Os)
+target_link_options(LegacySystemTest PRIVATE
+    -Wl,--wrap=sysconf,--wrap=sysinfo,--wrap=gethostname,--wrap=uname,--wrap=getpwuid_r,--wrap=readlink)
+add_test(NAME LegacySystem COMMAND LegacySystemTest)
+set_tests_properties(LegacySystem PROPERTIES TIMEOUT 20)
+add_executable(LegacyOsFileTest LegacyOsFileTest.cpp)
+target_link_libraries(LegacyOsFileTest PRIVATE Os Storm)
+target_link_options(LegacyOsFileTest PRIVATE "-Wl,--wrap=fdopendir")
+add_test(NAME LegacyOsFile COMMAND LegacyOsFileTest)
+set_tests_properties(LegacyOsFile PROPERTIES TIMEOUT 20)
+add_executable(NativeVersionTest NativeVersionTest.cpp
+    "${WOWDECOMP_ROOT}/WoW/Source/WowSvcs/WowSvcsClient/ChecksumExecutables.cpp")
+target_link_libraries(NativeVersionTest PRIVATE Os BlizzardCore Storm)
+target_link_options(NativeVersionTest PRIVATE
+    "-Wl,--wrap=_Z26SErrDisplayAppFatalMessagePKcS0_i"
+    "-Wl,--wrap=_ZN4SHA16FinishERNS_6DigestE"
+    "-Wl,--wrap=_Z10OsReadFileP9HOSFILE__PvjPj"
+    "-Wl,--wrap=_Z13OsGetFileSizeP9HOSFILE__"
+    "-Wl,--wrap=_ZN8Blizzard4File12SetLastErrorEi")
+add_test(NAME NativeVersion COMMAND NativeVersionTest)
+set_tests_properties(NativeVersion PROPERTIES TIMEOUT 20)
+add_executable(WowSocketTest WowSocketTest.cpp
+    "${WOWDECOMP_ROOT}/WoW/Source/WowServices/WowConnection.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/WowServices/WowConnectionNet.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/WowServices/Win64/WowConnection.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/WowServices/Win64/WowConnectionNet.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/WowServices/WDataStore.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Base/CDataStore.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Storm/Source/SArc4.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/ObjectAlloc/ObjectAlloc.cpp")
+target_compile_definitions(WowSocketTest PRIVATE WOWDECOMP_ARCH_64=1)
+target_compile_options(WowSocketTest PRIVATE -ffunction-sections -fdata-sections)
+target_link_libraries(WowSocketTest PRIVATE Storm BlizzardCore Os Threads::Threads)
+target_link_options(WowSocketTest PRIVATE -Wl,--gc-sections
+    -Wl,--wrap=send -Wl,--wrap=recv -Wl,--wrap=poll -Wl,--wrap=pthread_create)
+add_test(NAME WowSocket COMMAND WowSocketTest)
+set_tests_properties(WowSocket PROPERTIES TIMEOUT 35)
+add_executable(NativeUnavailableTest NativeUnavailableTest.cpp
+    "${WOWDECOMP_ROOT}/WoW/Source/Battlenet/Battlenet.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/Battlenet/BSN/BSNCpp.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/Battlenet/Linux/Library.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/Glue/Linux/PatchDownloadGlue.cpp")
+target_link_libraries(NativeUnavailableTest PRIVATE Storm)
+add_test(NAME NativeUnavailable COMMAND NativeUnavailableTest)
+set_tests_properties(NativeUnavailable PROPERTIES TIMEOUT 10)
 add_executable(LocalOnlyStreamingTest LocalOnlyStreamingTest.cpp)
 target_link_libraries(LocalOnlyStreamingTest PRIVATE BlizzardCore Storm Threads::Threads)
 add_test(NAME LocalOnlyStreaming COMMAND LocalOnlyStreamingTest)
@@ -97,8 +172,23 @@ else ()
     target_compile_definitions(BlizzardCore PRIVATE WOWDECOMP_ARCH_32=1)
 endif ()
 
+list(APPEND CMAKE_MODULE_PATH "${WOWDECOMP_ROOT}/cmake")
+find_package(DXVKNative QUIET)
+if (DXVKNative_FOUND)
+    add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Gx" Gx)
+    target_include_directories(Gx PUBLIC "${WOWDECOMP_ROOT}")
+else ()
+    message(STATUS "DXVK Native not found; only the CPU portability tests will be built")
+endif ()
+
 add_library(NativeLibraryFixture SHARED LibraryFixture.cpp)
 
+add_executable(CDataRecyclerTest CDataRecyclerTest.cpp
+    "${WOWDECOMP_ROOT}/Engine/Source/Base/CDataRecycler.cpp")
+target_link_libraries(CDataRecyclerTest PRIVATE Storm Threads::Threads)
+target_compile_options(CDataRecyclerTest PRIVATE -O3 -fstrict-aliasing)
+add_test(NAME CDataRecycler COMMAND CDataRecyclerTest)
+set_tests_properties(CDataRecycler PROPERTIES TIMEOUT 20)
 add_executable(CompilerHelpersTest CompilerHelpersTest.cpp)
 target_link_libraries(CompilerHelpersTest PRIVATE Tempest)
 add_test(NAME CompilerHelpers COMMAND CompilerHelpersTest)
@@ -150,6 +240,15 @@ target_link_libraries(SdlInputTest PRIVATE Os PkgConfig::SDL2 Threads::Threads)
 target_link_options(SdlInputTest PRIVATE "-Wl,--wrap=SDL_SetWindowResizable")
 add_test(NAME SdlInput COMMAND SdlInputTest)
 set_tests_properties(CompilerHelpers OsServices SecureRandom StormLocks SdlInput PROPERTIES TIMEOUT 20)
+add_executable(SdlServicesTest SdlServicesTest.cpp)
+target_link_libraries(SdlServicesTest PRIVATE Os PkgConfig::SDL2 Threads::Threads)
+find_program(SDL_SERVICES_BWRAP bwrap)
+if (NOT SDL_SERVICES_BWRAP)
+    message(FATAL_ERROR "SdlServicesTest requires bwrap device isolation")
+endif ()
+add_test(NAME SdlServices COMMAND "${SDL_SERVICES_BWRAP}"
+    --ro-bind / / --dev /dev --tmpfs /sys --unshare-net -- $<TARGET_FILE:SdlServicesTest>)
+set_tests_properties(SdlServices PROPERTIES TIMEOUT 20)
 
 set(WOWDECOMP_MSVC_BASE "" CACHE STRING "Optional Git baseline for MSVC-macro preprocessing checks (not binary matching)")
 if (WOWDECOMP_MSVC_BASE)

@@ -11,7 +11,7 @@
 #include "Engine/Source/Os/Error.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Storm/H/storm.h"
-#include "ThirdParty/nvapi/nvapi.h"
+#include "Engine/Source/Gx/CGxDeviceD3d/NvApi.h"
 
 typedef IDirect3D9* (WINAPI* Direct3DCreate9Proc)(UINT sdkVersion);
 
@@ -179,7 +179,7 @@ char* CGxDeviceD3d::IBufLock(CGxBuf* buf) {
         default:
             break;
     }
-
+#if defined(_WIN32)
     if (SUCCEEDED(result) && buf->m_size) {
         __try {
             volatile char* probe = data;
@@ -193,7 +193,7 @@ char* CGxDeviceD3d::IBufLock(CGxBuf* buf) {
             result = E_FAIL;
         }
     }
-
+#endif
     if (FAILED(result)) {
         this->IBufUnlock(buf);
         return static_cast<char*>(this->m_emergencyMem[pool->m_target].Lock(buf->m_size));
@@ -253,7 +253,7 @@ CGxDeviceD3d::CGxDeviceD3d() : m_desktopDisplayMode() {
     this->DeviceCreatePools();
     this->DeviceCreateStreamBufs();
 }
-
+#if defined(_WIN32)
 // VERIFY: 57303b58 auto
 // OFFSET: 0x0068E140
 void CGxDeviceD3d::IUnloadD3dLib(HINSTANCE& d3dLib, LPDIRECT3D9& d3d) {
@@ -267,7 +267,7 @@ void CGxDeviceD3d::IUnloadD3dLib(HINSTANCE& d3dLib, LPDIRECT3D9& d3d) {
         d3dLib = nullptr;
     }
 }
-
+#endif
 // VERIFY: 211a94b3 manual
 // OFFSET: 0x0068E180
 LPDIRECT3DINDEXBUFFER9 CGxDeviceD3d::ICreateD3dIB(EGxPoolUsage usage, uint32_t size) {
@@ -344,7 +344,7 @@ void CGxDeviceD3d::PoolDestroy(CGxPool* pool) {
         CGxDevice::PoolDestroy(pool);
     }
 }
-
+#if defined(_WIN32)
 // VERIFY: b07d4055 auto
 // OFFSET: 0x0068E750
 void CGxDeviceD3d::CursorSetVisible(int32_t visible) {
@@ -363,7 +363,7 @@ void CGxDeviceD3d::CursorSetVisible(int32_t visible) {
         }
     }
 }
-
+#endif
 // VERIFY: 9a0772fe auto
 // OFFSET: 0x0068E7E0
 void CGxDeviceD3d::CursorUnlock(uint32_t x, uint32_t y) {
@@ -505,7 +505,7 @@ bool CGxDeviceD3d::QueryGetParam(CGxQuery* query, EGxQueryParam param, uint32_t&
             return false;
     }
 }
-
+#if defined(_WIN32)
 // VERIFY: 012b93fa manual
 // OFFSET: 0x0068ED80
 int32_t CGxDeviceD3d::ILoadD3dLib(HINSTANCE& d3dLib, LPDIRECT3D9& d3d) {
@@ -551,7 +551,7 @@ void CGxDeviceD3d::ISetWindowFocus(int32_t focus) {
         }
     }
 }
-
+#endif
 // VERIFY: d0799ea2 manual
 // OFFSET: 0x0069FB00
 LPDIRECT3DVERTEXBUFFER9 CGxDeviceD3d::ICreateD3dVB(EGxPoolUsage usage, uint32_t size) {
@@ -740,7 +740,7 @@ void CGxDeviceD3d::IShaderCreate(CGxShader* shader) {
         this->IShaderCreatePixel(shader);
     }
 }
-
+#if defined(_WIN32)
 // VERIFY: f717b755 auto
 // OFFSET: 0x006A9920
 void CGxDeviceD3d::CapsWindowSizeInScreenCoords(CRect& rect) {
@@ -760,7 +760,7 @@ void CGxDeviceD3d::CapsWindowSizeInScreenCoords(CRect& rect) {
         rect = this->DeviceCurWindow();
     }
 }
-
+#endif
 // VERIFY: 616797ae manual
 // OFFSET: 0x006A9B40
 void CGxDeviceD3d::XformSetProjection(const C44Matrix& matrix) {
@@ -1950,8 +1950,8 @@ void CGxDeviceD3d::IStateSyncVertexPtrs() {
         return;
     }
 
-    CGxBuf** streamBufs = static_cast<CGxBuf**>(_alloca(sizeof(CGxBuf*) * GxVAs_Last));
-    uint32_t* streamStrides = static_cast<uint32_t*>(_alloca(sizeof(uint32_t) * GxVAs_Last));
+    CGxBuf** streamBufs = static_cast<CGxBuf**>(STORM_ALLOCA(sizeof(CGxBuf*) * GxVAs_Last));
+    uint32_t* streamStrides = static_cast<uint32_t*>(STORM_ALLOCA(sizeof(uint32_t) * GxVAs_Last));
     uint32_t streamCount = 0;
 
     memset(streamBufs, 0, sizeof(CGxBuf*) * GxVAs_Last);
@@ -2259,7 +2259,7 @@ void CGxDeviceD3d::ISetPresentParms(D3DPRESENT_PARAMETERS& d3dpp, const CGxForma
 
     d3dpp.MultiSampleQuality = static_cast<DWORD>((qualityLevels - 1) * format.m_multisampleQuality);
 }
-
+#if defined(_WIN32)
 // VERIFY: 284cb5b4 manual
 // OFFSET: 0x0068EB20
 static ATOM WindowClassCreate() {
@@ -2371,7 +2371,7 @@ int32_t CGxDeviceD3d::ICreateWindow(CGxFormat& format) {
 
     return this->m_hwnd != nullptr;
 }
-
+#endif
 // VERIFY: d94c29eb manual
 // OFFSET: 0x0068EE20
 void CGxDeviceD3d::ISetCaps(const CGxFormat& format) {
@@ -2552,6 +2552,7 @@ static void DefaultTexUserFunc(EGxTexCommand command, uint32_t width, uint32_t h
 // VERIFY: ee744ef0 manual
 // OFFSET: 0x0068F3D0
 int32_t CGxDeviceD3d::ICreateD3dDevice(const CGxFormat& format) {
+#if defined(_WIN32)
     if (NvAPI_Initialize() == NVAPI_OK) {
         this->m_d3dStereoEnabled = 0;
         this->m_d3dNVAPI = 1;
@@ -2591,7 +2592,7 @@ int32_t CGxDeviceD3d::ICreateD3dDevice(const CGxFormat& format) {
                 break;
         }
     }
-
+#endif
     bool hwTnL = format.m_hwTnL;
 
     if (hwTnL && !(this->m_d3dCaps.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT)) {
@@ -2609,7 +2610,7 @@ int32_t CGxDeviceD3d::ICreateD3dDevice(const CGxFormat& format) {
         this->m_d3dDevice = nullptr;
         return 0;
     }
-
+#if defined(_WIN32)
     if (this->m_d3dNVAPI) {
         NvU8 stereoEnabled = 0;
 
@@ -2623,7 +2624,7 @@ int32_t CGxDeviceD3d::ICreateD3dDevice(const CGxFormat& format) {
             }
         }
     }
-
+#endif
     this->m_devAdapterFormat = d3dpp.BackBufferFormat;
     this->m_context = 1;
     this->m_devDepthFormat = d3dpp.AutoDepthStencilFormat;
@@ -2777,17 +2778,17 @@ void CGxDeviceD3d::IDestroyD3d() {
         GxTexDestroy(this->m_texture3B58);
         this->m_texture3B58 = nullptr;
     }
-
+#if defined(_WIN32)
     if (this->m_d3dStereoHandle) {
         NvAPI_Stereo_DestroyHandle(static_cast<StereoHandle>(this->m_d3dStereoHandle));
         this->m_d3dStereoHandle = nullptr;
     }
-
+#endif
     if (this->m_d3dDevice) {
         this->m_d3dDevice->Release();
         this->m_d3dDevice = nullptr;
     }
-
+#if defined(_WIN32)
     if (this->m_d3dNVAPI) {
         NvU8 stereoEnabled;
 
@@ -2801,8 +2802,9 @@ void CGxDeviceD3d::IDestroyD3d() {
             }
         }
     }
+#endif
 }
-
+#if defined(_WIN32)
 // VERIFY: fc602985 manual
 // OFFSET: 0x006904D0
 int32_t CGxDeviceD3d::DeviceSetFormat(const CGxFormat& format) {
@@ -2868,7 +2870,7 @@ void CGxDeviceD3d::DeviceDestroy() {
         this->m_d3dLib = nullptr;
     }
 }
-
+#endif
 // VERIFY: cbd2d003 manual
 // OFFSET: 0x00690680
 int32_t CGxDeviceD3d::ICreateD3d() {
@@ -2890,7 +2892,7 @@ int32_t CGxDeviceD3d::ICreateD3d() {
 
     return 0;
 }
-
+#if defined(_WIN32)
 // VERIFY: a236ad1a auto
 // OFFSET: 0x00690750
 int32_t CGxDeviceD3d::DeviceCreate(GxWindowProc windowProc, const CGxFormat& format) {
@@ -2936,7 +2938,7 @@ int32_t CGxDeviceD3d::DeviceCreate(void* window, const CGxFormat& format) {
     this->DeviceDestroy();
     return 0;
 }
-
+#endif
 // VERIFY: 64f9b1e2 manual
 // OFFSET: 0x006A1690
 void CGxDeviceD3d::IReleaseD3dQueries() {
@@ -3264,7 +3266,7 @@ void CGxDeviceD3d::ScenePresent() {
         if (FAILED(this->m_d3dDevice->Present(nullptr, nullptr, nullptr, nullptr))) {
             this->m_context = 0;
         }
-
+#if defined(_WIN32)
         if (this->m_d3dStereoHandle && this->m_d3dStereoDirty) {
             this->m_d3dStereoDirty = 0;
 
@@ -3274,6 +3276,7 @@ void CGxDeviceD3d::ScenePresent() {
             status = NvAPI_Stereo_SetSeparation(static_cast<StereoHandle>(this->m_d3dStereoHandle), this->m_d3dStereoSeparation);
             CGxDevice::Log("NvAPI_Stereo_SetSeparation: status=%d separation=%g", status, this->m_d3dStereoSeparation);
         }
+#endif
     }
 
     this->ISceneBegin();
@@ -3414,7 +3417,7 @@ void CGxDeviceD3d::DeviceSetBaseMipLevel(uint32_t level) {
     this->ITexForceRecreation(1);
     CGxDevice::DeviceSetBaseMipLevel(level);
 }
-
+#if defined(_WIN32)
 // VERIFY: bc1bdcba manual
 // OFFSET: 0x006A0360
 LRESULT CALLBACK CGxDeviceD3d::WindowProcD3d(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -3604,7 +3607,7 @@ LRESULT CALLBACK CGxDeviceD3d::WindowProcD3d(HWND hwnd, UINT message, WPARAM wpa
 
     return DefWindowProcA(hwnd, message, wparam, lparam);
 }
-
+#endif
 // VERIFY: d4889697 auto
 // OFFSET: 0x0068E510
 void CGxDeviceD3d::DeviceSaveDepthSurface() {
@@ -3647,7 +3650,13 @@ void CGxDeviceD3d::LogCrashInfo(char* buffer, uint32_t size) {
 
         SStrPrintf(line, sizeof(line), "  Driver: %s\r\n", identifier.Driver);
         SStrPack(buffer, line, size);
+#if defined(_WIN32)
         SStrPrintf(line, sizeof(line), "  Version: %d.%d.%04d.%04d\r\n", HIWORD(identifier.DriverVersion.HighPart), LOWORD(identifier.DriverVersion.HighPart), HIWORD(identifier.DriverVersion.LowPart), LOWORD(identifier.DriverVersion.LowPart));
+#else
+        const uint32_t high = static_cast<uint32_t>(identifier.DriverVersion.HighPart);
+        const uint32_t low = identifier.DriverVersion.LowPart;
+        SStrPrintf(line, sizeof(line), "  Version: %u.%u.%04u.%04u\r\n", high >> 16, high & 0xFFFF, low >> 16, low & 0xFFFF);
+#endif
         SStrPack(buffer, line, size);
         SStrPrintf(line, sizeof(line), "  Description: %s\r\n", identifier.Description);
         SStrPack(buffer, line, size);

@@ -3,6 +3,7 @@
 #include <cstring>
 #include "Engine/Source/Storm/H/storm.h"
 
+#ifndef NDEBUG
 namespace {
 void Write(const char* format, va_list args) {
     char buffer[1024];
@@ -32,3 +33,4 @@ void DebugLog(int32_t, const char* format, ...) {
 void DebugValidate(const char* expression) {
     DebugLog("Validation failed: %s", expression);
 }
+#endif

@@ -1,6 +1,10 @@
 #include <cerrno>
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Streaming.h"
 
+// InitializeStreaming never acquires workers, transport or storage on this
+// platform, so shutdown has no resources to release.
+void StopStreaming() {}
+
 namespace {
 bool Unsupported() {
     errno = ENOTSUP;

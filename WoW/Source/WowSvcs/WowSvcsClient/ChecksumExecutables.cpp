@@ -3,6 +3,10 @@
 #include "Engine/Source/BlizzardCore/Source/Packages/Util/SHA1.h"
 #include "Engine/Source/Os/OsVersionHash.h"
 #include "WoW/Source/WowServices/HMAC.h"
+#if !defined(_WIN32)
+#include "Engine/Source/Storm/H/storm.h"
+#endif
+#line 6
 
 struct ChecksumFile {
     /* 0000 */ const char* m_path;
@@ -21,7 +25,15 @@ void ChecksumExecutables(const uint8_t* challenge, uint32_t challengeLength, uin
     for (uint32_t i = 0; i < sizeof(s_files) / sizeof(s_files[0]); i++) {
         if (s_files[i].m_type) {
             IOsVersionHashCallback2<HMAC<SHA1>> callback(&hmac);
+#if !defined(_WIN32)
+            if (!IOsVersionChecksum(callback, s_files[i].m_path, s_files[i].m_type == 2)) {
+                SErrDisplayAppFatalMessage("Native executable authentication checksum is unavailable", __FILE__, __LINE__);
+            }
+#else
+#line 24
             IOsVersionChecksum(callback, s_files[i].m_path, s_files[i].m_type == 2);
+#endif
+#line 25
         }
     }
 

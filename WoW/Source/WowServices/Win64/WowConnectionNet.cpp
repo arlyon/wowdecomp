@@ -1,5 +1,6 @@
 #if defined(WOWDECOMP_ARCH_64)
 
+#if defined(_WIN32)
 #include <winsock2.h>
 #include <windows.h>
 #include "WoW/Source/WowServices/WowConnectionNet.h"
@@ -184,5 +185,9 @@ void WowConnectionNet::PlatformStop() {
 void WowConnectionNet::PlatformDestroy() {
     WSACleanup();
 }
+
+#else
+#include "WoW/Source/WowServices/PosixConnectionNet.inl"
+#endif
 
 #endif

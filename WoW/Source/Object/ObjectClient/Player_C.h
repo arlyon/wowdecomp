@@ -3,7 +3,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(_WIN32)
 #include <windows.h>
+#endif
+#line 7
 #include "Engine/Source/Services/SysMessage.h"
 #include "Engine/Source/Storm/H/stpl.h"
 #include "Engine/Source/Tempest/C3Vector.h"

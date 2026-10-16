@@ -16,6 +16,9 @@ void Check(bool condition, const char* message) {
 int main() {
     namespace Streaming = Blizzard::Streaming;
     const auto directory = std::filesystem::current_path();
+    errno = EDOM;
+    StopStreaming();
+    Check(errno == EDOM, "shutdown before unsupported initialization has no acquired resources");
     for (bool required : {false, true}) {
         errno = 0;
         Check(!Streaming::InitializeStreaming("unopened.mfil", "unwritten.stor", "variant", "unused", required)
@@ -46,6 +49,10 @@ int main() {
     Check(!Streaming::RemoveCompletion(&completion, 0) && errno == ENOTSUP, "uninitialized completion removal is safe");
     Check(!completion.m_done && !completion.m_success && completion.m_result == 0 && !completion.m_event,
           "unsupported queue operations do not fabricate completion");
+    errno = EDOM;
+    StopStreaming();
+    StopStreaming();
+    Check(errno == EDOM, "repeated local-only shutdown is harmless");
     Check(std::filesystem::current_path() == directory, "initialization does not change working directory");
     std::puts("PASS: explicit local-only streaming boundary and safe unsupported operations");
 }

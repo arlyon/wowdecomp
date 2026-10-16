@@ -2,7 +2,7 @@
 #define ENGINE_SOURCE_OS_LINUX_WINDOW_H
 
 #include <cstdint>
-#include <SDL.h>
+struct SDL_WindowEvent;
 
 struct tagRECT {
     int32_t left;
@@ -16,5 +16,9 @@ struct tagRECT {
 using OsNativeWindowEventProc = void (*)(void* context, const SDL_WindowEvent& event);
 void OsGuiSetNativeWindowEventProc(OsNativeWindowEventProc proc, void* context);
 void OsGuiDispatchNativeWindowEvent(const SDL_WindowEvent& event);
+
+// Video/event owner thread only; copies text before SDL event storage is freed.
+void OsIMEUpdatePreedit(const char* text);
+void OsJoystickDestroy();
 
 #endif
