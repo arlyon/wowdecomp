@@ -80,7 +80,8 @@ logger off in `WowClient` with `-DWOWCLIENT_CRASH_LOG=OFF`.
 |---|---|---|
 | `WOWDECOMP_DISABLE_SIGNATURE_CHECKS` | `OFF` | Skip the MPQ file and `.toc.sig` signature checks, so modified game data and interface files load |
 | `WOWCLIENT_CRASH_LOG` | `ON` | Build `WowClient` with the crash logger |
-| `WOWDECOMP_VULKAN` | `OFF` | Build the experimental native Vulkan/Slang backend on Linux, retaining DXVK as a reference |
+| `WOWDECOMP_VULKAN` | `OFF` | Build the experimental native Vulkan/Slang backend on Linux |
+| `WOWDECOMP_DXVK` | `ON` | Build the native D3D9/DXVK backend; disable for a Vulkan-only client |
 | `WOWCLIENT_OUTPUT_OVERRIDE` | empty | Name the `WowClient` executable something other than `WowClient64` / `WowClient32` |
 
 ### Platform foundation and macOS handoff
@@ -93,7 +94,8 @@ inventory. macOS client builds are not enabled yet.
 
 This opt-in backend uses the existing Gx interface and submits Vulkan commands directly. It is
 currently a **raster baseline**, not a ray tracer or a performance improvement claim. SDL2, Vulkan
-headers/loader and a DXVK-native development prefix are required; DXVK remains available for comparison.
+headers/loader and the shader dependencies below are required. A DXVK-native development prefix is
+required only with `WOWDECOMP_DXVK=ON`; use `-DWOWDECOMP_DXVK=OFF` for a Vulkan-only build.
 Windows Vulkan and macOS/MoltenVK have not been built or run.
 
 Dependencies are built locally, not installed system-wide. The CMake integration checks these revisions:
@@ -130,7 +132,9 @@ Keep Slang's `libslang-compiler` and `libslang-glslang` beside its build outputs
 The client finds game data beside its executable. For isolated comparisons, copy the executable into
 separate run directories, link each directory's `Data` to your existing client data, and give each its
 own `WTF` and `XDG_CONFIG_HOME`. Set `WOWDECOMP_GX_BACKEND=vulkan` (the enabled-build default) or
-`WOWDECOMP_GX_BACKEND=dxvk` when launching. `WOWDECOMP_VULKAN_VALIDATION=1` requests
+`WOWDECOMP_GX_BACKEND=dxvk` when launching, if that backend was built. Unknown or unbuilt backend
+selections fail explicitly; building with both backends disabled is also rejected.
+`WOWDECOMP_VULKAN_VALIDATION=1` requests
 `VK_LAYER_KHRONOS_validation`; supply a local layer through `VK_LAYER_PATH` if it is not installed.
 Do not disable archive signature checks merely to exercise a backend.
 
