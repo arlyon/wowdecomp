@@ -9,6 +9,8 @@
 #include <vector>
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include <cerrno>
 #endif
 #include "Engine/Source/BlizzardCore/Include/Blizzard/Util/MD5.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Manifests.h"
@@ -259,6 +261,7 @@ void Blizzard::Streaming::WaitForLoads() {
 // OFFSET: 0x00437ED0
 bool Blizzard::Streaming::CancelQueue(int32_t priority) {
 #if !defined(_WIN32)
+    if (!s_queueEvent) { errno = ENOTSUP; return false; }
     Blizzard::Lock::ScopedMutex lock(s_queueLock);
     if (!(priority >= 0 && priority < 7)) {
         return false;
@@ -405,6 +408,7 @@ void Blizzard::Streaming::AddStreamed(int32_t size) {
 // OFFSET: 0x0043AF30
 bool Blizzard::Streaming::RemoveCompletion(Completion* completion, int32_t priority) {
 #if !defined(_WIN32)
+    if (!s_queueEvent) { errno = ENOTSUP; return false; }
     Blizzard::Lock::ScopedMutex lock(s_queueLock);
     if (!(completion && priority >= 0 && priority < 7)) {
         return false;
@@ -589,6 +593,7 @@ bool Blizzard::Streaming::RequestRanges(Blizzard::File::StreamRecord* file, Load
 // OFFSET: 0x00444AA0
 bool Blizzard::Streaming::QueueCompletion(Completion* completion, int32_t priority) {
 #if !defined(_WIN32)
+    if (!s_queueEvent) { errno = ENOTSUP; return false; }
     Blizzard::Lock::ScopedMutex lock(s_queueLock);
     if (!(completion && priority >= 0 && priority < 7)) {
         return false;
