@@ -6,7 +6,7 @@
 #include <map>
 #include <string>
 #include <vector>
-#include <windows.h>
+#include "Engine/Source/BlizzardCore/Source/System/WindowsIncludes.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Storage.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Streaming/Streaming.h"
 #include "Engine/Source/BlizzardCore/Source/System/File/File.h"
@@ -16,6 +16,9 @@
 #include "Engine/Source/BlizzardCore/Source/System/String/String.h"
 #include "Engine/Source/BlizzardCore/Source/System/Thread/Thread.h"
 
+// Native builds reuse only range planning and state transitions here; persistence,
+// worker lifecycle and initialization still require their real platform providers.
+#if defined(_WIN32)
 // STATIC: 0x00AB909F
 bool Blizzard::Storage::s_usePartFiles = true;
 
@@ -24,10 +27,12 @@ int32_t Blizzard::Storage::s_blockSize = 0x4000;
 
 // STATIC: 0x00AB93CC
 std::string Blizzard::Storage::s_storagePath;
+#endif
 
 // STATIC: 0x00B325C0
 Blizzard::Lock::Mutex Blizzard::Storage::s_storageLock;
 
+#if defined(_WIN32)
 // STATIC: 0x00B325D8
 void* Blizzard::Storage::s_storageEvent;
 
@@ -51,6 +56,7 @@ volatile bool Blizzard::Storage::s_storageStopped;
 
 // STATIC: 0x00B3834C
 std::deque<Blizzard::Streaming::WriteRequest> Blizzard::Storage::s_writeQueue;
+#endif
 
 // OFFSET: 0x00427F50
 int32_t Blizzard::Storage::GetBlockLength(Blizzard::Streaming::StorageEntry* entry, int32_t block) {
@@ -68,6 +74,7 @@ int32_t Blizzard::Storage::CountRanges(Blizzard::Streaming::StorageEntry* entry,
     return static_cast<int32_t>((size + offset) / entry->m_blockSize - offset / entry->m_blockSize + 4);
 }
 
+#if defined(_WIN32)
 // OFFSET: 0x0042CEF0
 bool Blizzard::Storage::ReadAt(Blizzard::File::Filesystem* fs, Blizzard::File::StreamRecord* file, void* buffer, int64_t offset, int32_t size) {
     return Blizzard::File::Read(fs, file, buffer, offset, &size);
@@ -77,6 +84,8 @@ bool Blizzard::Storage::ReadAt(Blizzard::File::Filesystem* fs, Blizzard::File::S
 bool Blizzard::Storage::WriteAt(Blizzard::File::StreamRecord* file, const void* buffer, int64_t offset, int32_t size) {
     return Blizzard::File::Write(file, buffer, offset, &size);
 }
+
+#endif
 
 // OFFSET: 0x0042D820
 bool Blizzard::Storage::IsComplete(Blizzard::Streaming::StorageEntry* entry) {
@@ -249,10 +258,18 @@ int32_t Blizzard::Storage::BuildRangesWithHeader(Blizzard::Streaming::StorageEnt
 
 // OFFSET: 0x0042DE70
 bool Blizzard::Storage::RequestRange(Blizzard::Streaming::StorageEntry* entry, int64_t offset, int32_t size, int32_t state) {
+#if defined(_WIN32)
     EnterCriticalSection(&s_storageLock);
+#else
+    Blizzard::Lock::MutexEnter(s_storageLock);
+#endif
 
     if (entry->m_closed) {
+#if defined(_WIN32)
         LeaveCriticalSection(&s_storageLock);
+#else
+        Blizzard::Lock::MutexLeave(s_storageLock);
+#endif
         return false;
     }
 
@@ -267,7 +284,11 @@ bool Blizzard::Storage::RequestRange(Blizzard::Streaming::StorageEntry* entry, i
         }
     }
 
+#if defined(_WIN32)
     LeaveCriticalSection(&s_storageLock);
+#else
+    Blizzard::Lock::MutexLeave(s_storageLock);
+#endif
     return true;
 }
 
@@ -276,15 +297,24 @@ void Blizzard::Storage::SetRangeAs(Blizzard::Streaming::StorageEntry* entry, int
     int32_t first = static_cast<int32_t>(offset / entry->m_blockSize);
     int32_t last = size <= 0 ? first : static_cast<int32_t>((offset + size - 1) / entry->m_blockSize);
 
+#if defined(_WIN32)
     EnterCriticalSection(&s_storageLock);
+#else
+    Blizzard::Lock::MutexEnter(s_storageLock);
+#endif
 
     for (uint32_t block = first; static_cast<int32_t>(block) <= last; block++) {
         entry->m_blocks[block].m_state = state;
     }
 
+#if defined(_WIN32)
     LeaveCriticalSection(&s_storageLock);
+#else
+    Blizzard::Lock::MutexLeave(s_storageLock);
+#endif
 }
 
+#if defined(_WIN32)
 // OFFSET: 0x00432530
 Blizzard::Storage::StorageEntryRef::StorageEntryRef(Blizzard::Streaming::StorageEntry* entry) {
     EnterCriticalSection(&s_storageLock);
@@ -355,6 +385,8 @@ bool Blizzard::Storage::WriteIndexEntry(Blizzard::Streaming::StorageEntry* entry
     return true;
 }
 
+#endif
+
 // OFFSET: 0x00432A40
 Blizzard::Streaming::LoadRange* Blizzard::Storage::GetRange(Blizzard::Streaming::StorageEntry* entry, int64_t offset, int32_t size, int32_t* count, bool lock) {
     int64_t zero = 0;
@@ -374,7 +406,11 @@ Blizzard::Streaming::LoadRange* Blizzard::Storage::GetRange(Blizzard::Streaming:
     }
 
     if (lock) {
+#if defined(_WIN32)
         EnterCriticalSection(&s_storageLock);
+#else
+        Blizzard::Lock::MutexEnter(s_storageLock);
+#endif
     }
 
     Blizzard::Streaming::LoadRange* ranges;
@@ -394,12 +430,17 @@ Blizzard::Streaming::LoadRange* Blizzard::Storage::GetRange(Blizzard::Streaming:
     }
 
     if (lock) {
+#if defined(_WIN32)
         LeaveCriticalSection(&s_storageLock);
+#else
+        Blizzard::Lock::MutexLeave(s_storageLock);
+#endif
     }
 
     return ranges;
 }
 
+#if defined(_WIN32)
 // OFFSET: 0x00435A60
 int64_t Blizzard::Storage::GetNextHeaderOffset() {
     int64_t offset = 8;
@@ -1241,5 +1282,7 @@ bool Blizzard::Storage::Initialize(const char* path, bool required) {
     Blizzard::File::Delete(path);
     return true;
 }
+
+#endif
 
 #endif
