@@ -10,6 +10,9 @@
 
 // OFFSET: 0x0044B7B0
 System_Thread::ThreadWorker::~ThreadWorker() {
+#if !defined(_WIN32)
+    if (!this->m_thread) return;
+#endif
     Blizzard::Lock::EventSet(this->m_wakeEvent.m_event);
     Blizzard::Lock::EventWaitForever(this->m_readyEvent.m_event);
 
@@ -62,8 +65,13 @@ uint32_t System_Thread::ThreadWorker::Executive(void* param) {
             }
         }
 
+#if defined(_WIN32)
         worker->m_task->m_state = -1;
         Blizzard::Thread::Close(worker->m_task);
+#else
+        Blizzard::Thread::ThreadRecord* completedTask = worker->m_task;
+        System_Thread::RunTLSDestructors();
+#endif
         worker->m_task = nullptr;
         worker->m_taskFunction = nullptr;
         worker->m_taskParam = nullptr;
@@ -73,6 +81,10 @@ uint32_t System_Thread::ThreadWorker::Executive(void* param) {
             worker->m_pool->m_idle.push_back(worker);
         }
 
+#if !defined(_WIN32)
+        System_Thread::CompleteNativeTask(completedTask);
+        Blizzard::Thread::Close(completedTask);
+#endif
         Blizzard::Lock::EventSet(worker->m_readyEvent.m_event);
         Blizzard::Lock::EventWaitForever(worker->m_wakeEvent.m_event);
     }
@@ -89,6 +101,9 @@ bool System_Thread::ThreadWorker::Start(Blizzard::Thread::ThreadPoolRecord* pool
     }
 
     if (this->m_thread) {
+#if !defined(_WIN32)
+        this->m_thread->m_worker = this;
+#endif
         GetPriorityLevel(this->m_thread, &this->m_priority);
     }
 

@@ -5,6 +5,9 @@
 #include <functional>
 #include <set>
 #include <vector>
+#if !defined(_WIN32)
+#include <atomic>
+#endif
 #include "Engine/Source/BlizzardCore/Source/System/WindowsIncludes.h"
 #include "Engine/Source/BlizzardCore/Source/System/Lock/Lock.h"
 #include "Engine/Source/BlizzardCore/Source/System/Memory/AllocSTL.h"
@@ -31,12 +34,20 @@ struct ThreadRecord {
     /* 0004 */ uint32_t m_threadId;
     /* 0008 */ void* m_param;
     /* 000C */ uint32_t (*m_function)(void*);
+#if defined(_WIN32)
     /* 0010 */ volatile int32_t m_state;
+#else
+    std::atomic<int32_t> m_state{0};
+#endif
     /* 0014 */ Blizzard::Lock::Atomic m_refCount;
     /* 0018 */ uint32_t m_result;
     /* 001C */ System_Thread::ThreadWorker* m_worker;
     /* 0020 */ uint8_t unused_0020[16];
+#if defined(_WIN32)
     /* 0030 */ char m_name[8];
+#else
+    char* m_name;
+#endif
 };
 
 class ThreadPoolRecord {
@@ -140,9 +151,13 @@ void RunExternalTLSDestructors(void* thread);
 #endif
 bool SetPriorityLevel(Blizzard::Thread::ThreadRecord* thread, int32_t level);
 #if !defined(_WIN32)
-// Platform leaves used by the shared worker algorithm.
+// Platform leaves used by the shared worker algorithm. Zero restores the
+// complete saved affinity snapshot, including CPUs above bit 31.
 void SetWorkerAffinity(Blizzard::Thread::ThreadRecord* thread, int32_t mask);
 int32_t GetWorkerAffinity(Blizzard::Thread::ThreadRecord* thread);
+void CompleteNativeTask(Blizzard::Thread::ThreadRecord* thread);
+bool ValidateNativeCreate(uint32_t (*function)(void*), Blizzard::Thread::ThreadRecord** thread, int32_t flags, int32_t stackSize);
+void ShutdownNativeThreads();
 #endif
 void SetStackTraceEntryPoint(void* entryPoint);
 void ShutdownThreadLocalStorage();

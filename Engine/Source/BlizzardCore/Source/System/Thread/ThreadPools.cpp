@@ -17,6 +17,10 @@ System_Thread::ThreadWorker::ThreadWorker() {
     this->m_task = nullptr;
     this->m_taskFunction = nullptr;
     this->m_taskParam = nullptr;
+#if !defined(_WIN32)
+    this->m_priority = 3;
+    this->m_affinity = 0;
+#endif
 }
 
 // VERIFY: 3cc98b69 manual
@@ -33,7 +37,11 @@ Blizzard::Thread::ThreadPoolRecord::ThreadPoolRecord(uint32_t count, uint32_t ma
             break;
         }
 
+#if defined(_WIN32)
         worker->Start(this, 0, 0);
+#else
+        if (!worker->Start(this, 0, 0)) { delete worker; break; }
+#endif
         this->m_workers.push_back(worker);
         this->m_idle.push_back(worker);
     }
@@ -97,7 +105,12 @@ System_Thread::ThreadWorker* Blizzard::Thread::ThreadPoolRecord::GetWorker(int32
 // VERIFY: 77e1890a manual
 // OFFSET: 0x00451040
 bool System_Thread::CreateDefaultPool() {
+#if defined(_WIN32)
     s_defaultPool = new Blizzard::Thread::ThreadPoolRecord(1, 0, 0);
+#else
+    static std::once_flag initialized;
+    std::call_once(initialized, [] { s_defaultPool = new Blizzard::Thread::ThreadPoolRecord(1, 0, 0); });
+#endif
 
     return s_defaultPool != nullptr;
 }
@@ -105,8 +118,15 @@ bool System_Thread::CreateDefaultPool() {
 // VERIFY: 625cc875 manual
 // OFFSET: 0x004510A0
 bool Blizzard::Thread::CreateFromPool(ThreadPoolRecord* pool, uint32_t (*function)(void*), void* param, ThreadRecord** thread, int32_t flags, int32_t stackSize) {
+#if !defined(_WIN32)
+    if (!System_Thread::ValidateNativeCreate(function, thread, flags, stackSize)) return false;
+#endif
     if (!pool) {
+#if defined(_WIN32)
         if (!System_Thread::s_defaultPool && !System_Thread::CreateDefaultPool()) {
+#else
+        if (!System_Thread::CreateDefaultPool()) {
+#endif
             return false;
         }
 
@@ -121,6 +141,14 @@ bool Blizzard::Thread::CreateFromPool(ThreadPoolRecord* pool, uint32_t (*functio
 
     Blizzard::Lock::EventWaitForever(worker->m_readyEvent.m_event);
     worker->m_task = System_Thread::NewThread(function, param, nullptr);
+#if !defined(_WIN32)
+    if (!worker->m_task) {
+        Blizzard::Lock::EventSet(worker->m_readyEvent.m_event);
+        Blizzard::Lock::ScopedMutex lock(pool->m_mutex.m_mutex);
+        pool->m_idle.push_back(worker);
+        return false;
+    }
+#endif
     worker->m_task->m_state = (flags & 1) == 0;
     worker->m_task->m_worker = worker;
     worker->m_thread->m_worker = worker;
@@ -151,6 +179,9 @@ bool Blizzard::Thread::CreateDetachedFromPool(ThreadPoolRecord* pool, uint32_t (
 // VERIFY: c9ca2e23 auto
 // OFFSET: 0x0044FB30
 void System_Thread::ShutdownThreadSystem() {
+#if !defined(_WIN32)
+    ShutdownNativeThreads();
+#else
     if (s_mainThread) {
         RunTLSDestructors();
         Blizzard::Thread::ThreadRecord* thread = s_mainThread;
@@ -163,4 +194,5 @@ void System_Thread::ShutdownThreadSystem() {
         delete s_defaultPool;
         s_defaultPool = nullptr;
     }
+#endif
 }
