@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <thread>
 #include <SDL.h>
@@ -11,6 +12,8 @@ namespace {
 // successful syscall must not erase the last error reported by a Storm API.
 thread_local uint32_t s_lastError;
 thread_local bool s_reporting;
+struct FatalContext { const char* filename; int32_t line; };
+thread_local FatalContext s_fatalContext{};
 using ErrorHandler = int32_t (STORMAPI*)(uint32_t, const char*, const char*, int32_t, const char*);
 struct Handler { ErrorHandler callback; Handler* next; };
 Handler* s_handlers;
@@ -25,6 +28,87 @@ uint32_t STORMAPI SErrGetLastError() {
 
 void STORMAPI SErrSetLastError(uint32_t error) {
     s_lastError = error;
+}
+
+int32_t STORMAPI SErrGetErrorStr(uint32_t error, char* buffer, uint32_t bufferchars) {
+    if (!buffer || !bufferchars) {
+        SErrSetLastError(STORM_ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    *buffer = 0;
+    // Native messages are explicit legacy mappings and the Win64 fallback
+    // labels, not errno translations or emulated PE message resources.
+    const char* text;
+    switch (error) {
+        case 108:
+            std::snprintf(buffer, bufferchars, "%s", "Invalid or corrupt archive.\n");
+            return 1; // The reference deliberately accepts truncation here.
+        case STORM_ERROR_FILE_NOT_FOUND: text = "The system cannot find the file specified.\r\n"; break;
+        case STORM_ERROR_NOT_ENOUGH_MEMORY: text = "Not enough storage is available to process this command.\r\n"; break;
+        case STORM_ERROR_INVALID_PARAMETER: text = "The parameter is incorrect.\r\n"; break;
+        case STORM_ERROR_ASSERTION: text = "Assertion Failure"; break;
+        case STORM_ERROR_NOT_ARCHIVE: text = "Not Archive"; break;
+        case STORM_ERROR_VERSION_MISMATCH: text = "Version Mismatch"; break;
+        case STORM_ERROR_MEM_NOT_ALLOCATED: text = "Memory Already Freed"; break;
+        case STORM_ERROR_MEM_CORRUPTED: text = "Memory Corrupt"; break;
+        case STORM_ERROR_MEM_INVALID: text = "Memory Invalid Block"; break;
+        case STORM_ERROR_MEM_NOT_FREED: text = "Memory Never Released"; break;
+        case STORM_ERROR_RESOURCES_NOT_RELEASED: text = "Handle Never Released"; break;
+        case STORM_ERROR_OUT_OF_BOUNDS: text = "Access Out Of Bounds"; break;
+        case STORM_ERROR_FILE_CORRUPTED: text = "File Corrupt"; break;
+        case STORM_ERROR_FATAL: text = "Fatal Exception"; break;
+        case STORM_ERROR_FATAL_CONDITION: text = "Fatal Condition"; break;
+        default: return 0;
+    }
+    const size_t length = std::strlen(text);
+    if (length >= bufferchars) return 0;
+    std::memcpy(buffer, text, length + 1);
+    return 1;
+}
+
+void STORMAPI SErrPrepareAppFatal(const char* filename, int32_t line) {
+    s_fatalContext = {filename, line};
+}
+
+void SErrDisplayAppFatalCustomV(uint32_t error, const char* format, va_list args) {
+    const FatalContext context = s_fatalContext;
+    s_fatalContext = {};
+    char buffer[2048]{};
+    std::vsnprintf(buffer, sizeof(buffer), format ? format : "", args);
+    buffer[sizeof(buffer) - 1] = 0;
+    SErrDisplayError(error, context.filename, context.line, buffer, 0, 1, 0x11111111);
+    std::_Exit(1);
+}
+
+void SErrDisplayAppFatalCustom(uint32_t error, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    SErrDisplayAppFatalCustomV(error, format, args);
+    va_end(args);
+}
+
+void SErrDisplayAppFatal(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    SErrDisplayAppFatalCustomV(STORM_ERROR_FATAL_CONDITION, format, args);
+    va_end(args);
+}
+
+[[noreturn]] void SErrDisplayAppFatalMessage(const char* message, const char* filename, int32_t line) {
+    SErrPrepareAppFatal(filename, line);
+    SErrDisplayAppFatal("%s", message ? message : "");
+    std::_Exit(1);
+}
+
+int32_t SErrDisplayErrorFmt(uint32_t error, const char* filename, int32_t line,
+        int32_t recoverable, uint32_t exitCode, const char* format, ...) {
+    char buffer[2048]{};
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(buffer, sizeof(buffer), format ? format : "", args);
+    va_end(args);
+    buffer[sizeof(buffer) - 1] = 0;
+    return SErrDisplayError(error, filename, line, buffer, recoverable, exitCode, 0x11111111);
 }
 
 void SErrInitialize() {

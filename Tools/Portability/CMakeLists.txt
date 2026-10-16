@@ -87,6 +87,11 @@ target_link_libraries(StormRuntimeTest PRIVATE Storm)
 add_test(NAME StormRuntime COMMAND StormRuntimeTest)
 set_tests_properties(StormRuntime PROPERTIES TIMEOUT 20)
 
+add_executable(StormDiagnosticsTest StormDiagnosticsTest.cpp)
+target_link_libraries(StormDiagnosticsTest PRIVATE Storm Threads::Threads)
+add_test(NAME StormDiagnostics COMMAND StormDiagnosticsTest)
+set_tests_properties(StormDiagnostics PROPERTIES TIMEOUT 45)
+
 add_executable(LogDirectoryTest LogDirectoryTest.cpp)
 target_link_libraries(LogDirectoryTest PRIVATE Os Storm Threads::Threads)
 add_test(NAME LogDirectory COMMAND LogDirectoryTest)
