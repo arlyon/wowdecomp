@@ -46,6 +46,29 @@ endif ()
 set(WOWDECOMP_COMPILER "${CMAKE_CXX_COMPILER_ID}")
 message(STATUS "WoW target: ${WOWDECOMP_OS}/${WOWDECOMP_CPU}, ${WOWDECOMP_POINTER_BITS}-bit, ${WOWDECOMP_COMPILER}")
 
+# Filter overlays without treating pointer width as an OS or instruction set.
+# Windows retains both legacy Win32/Win64 directories: their layout guards select
+# the original implementations. POSIX/SDL overlays belong to the native ports.
+function(wowdecomp_filter_platform_sources output)
+    set(sources ${ARGN})
+    if (WOWDECOMP_OS STREQUAL "Windows")
+        list(FILTER sources EXCLUDE REGEX "/(Linux|Darwin|Posix|SDL)/")
+    else ()
+        list(FILTER sources EXCLUDE REGEX "/(Win32|Win64)/")
+        if (WOWDECOMP_OS STREQUAL "Linux")
+            list(FILTER sources EXCLUDE REGEX "/Darwin/")
+        else ()
+            list(FILTER sources EXCLUDE REGEX "/Linux/")
+        endif ()
+        if (WOWDECOMP_CPU STREQUAL "arm64")
+            list(FILTER sources EXCLUDE REGEX "/Arch/X86/")
+        else ()
+            list(FILTER sources EXCLUDE REGEX "/Arch/ARM64/")
+        endif ()
+    endif ()
+    set(${output} ${sources} PARENT_SCOPE)
+endfunction()
+
 # Call once per project after project(). Legacy ARCH macros describe layout only.
 macro(wowdecomp_configure_platform)
     add_compile_definitions(WOWDECOMP_ARCH_${WOWDECOMP_POINTER_BITS}=1)
