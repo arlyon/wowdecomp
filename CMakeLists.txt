@@ -42,6 +42,13 @@ if (APPLE)
     find_package(OpenGL REQUIRED)
 endif ()
 
+option(WOWDECOMP_VULKAN "Build the native Vulkan backend alongside D3D9/DXVK" OFF)
+if (WOWDECOMP_VULKAN)
+    if (CMAKE_VERSION VERSION_LESS 3.16)
+        message(FATAL_ERROR "The native Vulkan build requires CMake 3.16 or newer")
+    endif ()
+    add_compile_definitions(WOWDECOMP_VULKAN=1)
+endif ()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
