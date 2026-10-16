@@ -2,6 +2,7 @@
 #include "Shader.h"
 #include "Slang.h"
 #include "ResidentBuffer.h"
+#include "Coordinates.h"
 #include "Engine/Source/Gx/Blit.h"
 #include "Engine/Source/Gx/Buffer.h"
 #include "Engine/Source/Gx/CGxPool.h"
@@ -147,6 +148,8 @@ struct CGxDeviceVulkan::State {
     VkRenderPass currentPass = VK_NULL_HANDLE;
     VkExtent2D targetExtent{};
     uint64_t drawCount = 0;
+    std::map<uint64_t, unsigned> capturedPasses;
+    void CaptureColour(const std::string& path);
 
     uint32_t MemoryType(uint32_t mask, VkMemoryPropertyFlags flags) const;
     NativeBuffer MakeBuffer(VkDeviceSize size, VkBufferUsageFlags usage);
@@ -1025,20 +1028,15 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, found->second.handle);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 4, sets.data(), 0, nullptr);
     vkCmdBindVertexBuffers(command, 0, static_cast<uint32_t>(vertexBuffers.size()), vertexBuffers.data(), offsets.data());
-    VkViewport viewport{};
-    viewport.x = gx.m_viewport.m_x.m_l * targetExtent.width;
-    viewport.y = (1.0f - gx.m_viewport.m_y.m_l) * targetExtent.height;
-    viewport.width = (gx.m_viewport.m_x.m_h - gx.m_viewport.m_x.m_l) * targetExtent.width;
-    viewport.height = -(gx.m_viewport.m_y.m_h - gx.m_viewport.m_y.m_l) * targetExtent.height;
-    viewport.minDepth = gx.m_viewport.m_z.m_l; viewport.maxDepth = gx.m_viewport.m_z.m_h;
+    const bool textureTarget = gx.m_textureTarget[GxBuffers_Color].m_texture != nullptr;
+    const auto viewport = GxVulkan::MakeViewport(targetExtent, textureTarget,
+        gx.m_viewport.m_x.m_l, gx.m_viewport.m_x.m_h,
+        gx.m_viewport.m_y.m_l, gx.m_viewport.m_y.m_h, gx.m_viewport.m_z.m_l, gx.m_viewport.m_z.m_h);
     vkCmdSetViewport(command, 0, 1, &viewport);
     VkRect2D scissor{{0, 0}, targetExtent};
     if (gx.m_appRenderStates[GxRs_ScissorTest].m_value.m_data.i[0]) {
-        const int left = std::clamp(static_cast<int>(gx.m_scissorRect.minX * targetExtent.width + 0.5f), 0, static_cast<int>(targetExtent.width));
-        const int top = std::clamp(static_cast<int>((1.0f - gx.m_scissorRect.maxY) * targetExtent.height + 0.5f), 0, static_cast<int>(targetExtent.height));
-        const int right = std::clamp(static_cast<int>(gx.m_scissorRect.maxX * targetExtent.width + 0.5f), left, static_cast<int>(targetExtent.width));
-        const int bottom = std::clamp(static_cast<int>((1.0f - gx.m_scissorRect.minY) * targetExtent.height + 0.5f), top, static_cast<int>(targetExtent.height));
-        scissor = {{left, top}, {static_cast<uint32_t>(right - left), static_cast<uint32_t>(bottom - top)}};
+        scissor = GxVulkan::MakeScissor(targetExtent, textureTarget, gx.m_scissorRect.minX,
+            gx.m_scissorRect.maxX, gx.m_scissorRect.minY, gx.m_scissorRect.maxY);
     }
     vkCmdSetScissor(command, 0, 1, &scissor);
     const float blendConstants[] = {1, 1, 1, 1};
@@ -1081,6 +1079,46 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         vkCmdDraw(command, batch.m_count, 1, batch.m_start, 0);
     }
     ++drawCount;
+    if (fixedVertexStage && p && drawCount > 200 &&
+        (p->reflection->sampler_count == 4 || p->reflection->sampler_count == 2)) {
+        if (const char* directory = std::getenv("WOWDECOMP_VULKAN_CAPTURE")) {
+            auto& count = capturedPasses[p->id];
+            if (count < 2) CaptureColour(std::string(directory) + "/pass-" +
+                std::to_string(p->id) + "-" + std::to_string(count++));
+        }
+    }
+}
+
+void CGxDeviceVulkan::State::CaptureColour(const std::string& path) {
+    EndPass();
+    auto* target = gx.m_textureTarget[GxBuffers_Color].m_texture;
+    auto* image = target ? &Texture(target) : nullptr;
+    const VkFormat format = image ? image->format : surfaceFormat;
+    if (format != VK_FORMAT_B8G8R8A8_UNORM && format != VK_FORMAT_R8G8B8A8_UNORM) return;
+    const uint32_t width = image ? image->width : extent.width;
+    const uint32_t height = image ? image->height : extent.height;
+    auto readback = MakeBuffer(static_cast<size_t>(width) * height * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    try {
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {width, height, 1};
+        vkCmdCopyImageToBuffer(command, image ? image->image : swapImages[imageIndex],
+            VK_IMAGE_LAYOUT_GENERAL, readback.buffer, 1, &copy);
+        VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+            0, 1, &barrier, 0, nullptr, 0, nullptr);
+        Submit(false, true);
+        std::ofstream output(path + ".ppm", std::ios::binary);
+        output << "P6\n" << width << ' ' << height << "\n255\n";
+        for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i) {
+            const auto* pixel = readback.mapped + i * 4;
+            const char rgb[] = {static_cast<char>(pixel[format == VK_FORMAT_B8G8R8A8_UNORM ? 2 : 0]),
+                static_cast<char>(pixel[1]), static_cast<char>(pixel[format == VK_FORMAT_B8G8R8A8_UNORM ? 0 : 2])};
+            output.write(rgb, 3);
+        }
+    } catch (...) { DestroyBuffer(readback); throw; }
+    DestroyBuffer(readback);
 }
 
 void CGxDeviceVulkan::State::Submit(bool present, bool resume) {
@@ -1420,6 +1458,10 @@ int32_t CGxDeviceVulkan::TexStretch(CGxTex* dest, const CiRect* destRect,
     auto& state = *m_native;
     if (!dest || !m_context || !state.BeginFrame()) return 0;
     state.EndPass();
+    if (const char* directory = std::getenv("WOWDECOMP_VULKAN_CAPTURE");
+        directory && state.drawCount > 200 && state.capturedPasses[0] < 2) {
+        state.CaptureColour(std::string(directory) + "/source-" + std::to_string(state.capturedPasses[0]++));
+    }
     auto& destination = state.Texture(dest);
     auto* sourceTarget = m_textureTarget[GxBuffers_Color].m_texture;
     auto* sourceImage = sourceTarget ? &state.Texture(sourceTarget) : nullptr;

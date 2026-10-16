@@ -73,12 +73,38 @@ audio correctness, networking, shutdown and unsupported provider behavior still
 need broader testing. Selected imported providers and file paths need further
 review; a successful build/login screen is not proof of complete gameplay.
 
-Normal quit previously aborted during static finalization: POSIX log admission
-and thread creation locks were destroyed before `Blizzard::Using` shutdown
-callbacks used them. These admission primitives now have process lifetime while
-explicit shutdown still joins workers and releases logger/thread resources.
-See [Tools/MacSmoke](../Tools/MacSmoke/README.md) for the opt-in real-client
-SDL normal-quit regression test. The platform suite now passes 15/15, including
-WindowsLeaves, after restoring the unused original Windows logger/pool leaves.
-Native Vulkan and its user-confirmed glow fix remain on `vulkan-macos`, not in
-this macOS/DXVK PR.
+## Native Vulkan integration (`vulkan-macos`)
+
+Native Vulkan is kept on a separate branch above the macOS/DXVK checkpoint,
+without importing Linux OS providers. It submits directly through MoltenVK.
+The Vulkan shader, fixed-function GPU and resident-buffer GPU tests pass with
+validation enabled. The GPU fixture now checks partial offscreen viewports and
+scissors, not just full-size targets: screen subrectangles are bottom-origin,
+whereas texture subrectangles are top-origin, matching the D3D9 backend.
+
+Glow readbacks exposed the importance of that distinction. FFX writes only a
+subrectangle of a padded POT texture. Previously its downsample/blur draws landed
+at the bottom while subsequent texture reads sampled the top, including magenta
+padding. Correcting the offscreen origin puts the blur in the sampled region;
+login-scene captures improved. In-world glow still needs user confirmation.
+
+Optional diagnostic captures:
+
+```sh
+mkdir -p out/glow-capture
+# Add this environment variable to the ordinary native Vulkan launch:
+export WOWDECOMP_VULKAN_CAPTURE="$PWD/out/glow-capture"
+```
+
+This writes binary PPM files for the first two eligible framebuffer copies and
+mixed fixed-vertex/pixel-shader passes with two or four samplers, after 200 draws.
+It submits and waits for readback, so leave it disabled for normal gameplay.
+`source-*.ppm` contains the pre-copy framebuffer; `pass-<shader-id>-*.ppm`
+contains the rendered target, including intentionally unused texture padding.
+
+Normal quit was independently reproduced as exit 134. Debugger traces identified
+log admission and thread creation locks destroyed before `Blizzard::Using`'s
+cross-translation-unit static shutdown callbacks. Their admission primitives now
+have process lifetime; explicit shutdown still joins workers and frees resources.
+The real-client normal-SDL-quit smoke now exits 0 with validation enabled. See
+`Tools/MacSmoke/README.md` for the opt-in interactive integration test.

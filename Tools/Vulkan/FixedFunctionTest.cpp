@@ -2,6 +2,7 @@
 #include "Engine/Source/Gx/CGxDeviceVulkan/Shader.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/Slang.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/ResidentBuffer.h"
+#include "Engine/Source/Gx/CGxDeviceVulkan/Coordinates.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -208,7 +209,8 @@ struct Fixture {
         VkPipelineLayoutCreateInfo pipelineLayout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pipelineLayout.setLayoutCount = 4; pipelineLayout.pSetLayouts = setLayouts.data(); Vk(vkCreatePipelineLayout(device, &pipelineLayout, nullptr, &layout));
         SetShaders(Module("fixed.vert.spv"), Module("fixed.frag.spv"));
     }
-    void SetShaders(VkShaderModule vertex, VkShaderModule pixel, bool legacyVertex = false) {
+    void SetShaders(VkShaderModule vertex, VkShaderModule pixel, bool legacyVertex = false,
+        const VkViewport* requestedViewport = nullptr, const VkRect2D* requestedScissor = nullptr) {
         if (pipeline) { vkDestroyPipeline(device, pipeline, nullptr); pipeline = VK_NULL_HANDLE; }
         VkPipelineShaderStageCreateInfo stages[2]{};
         for (int i = 0; i < 2; ++i) { stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[i].stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT; stages[i].module = i ? pixel : vertex; stages[i].pName = "main"; }
@@ -223,6 +225,8 @@ struct Fixture {
         VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO}; input.vertexBindingDescriptionCount = 1; input.pVertexBindingDescriptions = &binding; input.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size()); input.pVertexAttributeDescriptions = attributes.data();
         VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         VkViewport viewport{0,0,64,64,0,1}; VkRect2D scissor{{0,0},{64,64}};
+        if (requestedViewport) viewport = *requestedViewport;
+        if (requestedScissor) scissor = *requestedScissor;
         VkPipelineViewportStateCreateInfo view{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; view.viewportCount = view.scissorCount = 1; view.pViewports = &viewport; view.pScissors = &scissor;
         VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO}; raster.polygonMode = VK_POLYGON_MODE_FILL; raster.lineWidth = 1;
         VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -352,6 +356,20 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::strcmp(argv[1],"--residency") == 0) { fixture.TestResidency(); return 0; }
         VertexConstants v{}; PixelConstants p{};
         v.projection = v.view = v.normal = Identity(); for (auto& matrix : v.texture) matrix = Identity();
+        // FFX uses a subrectangle of a larger POT render texture. Screen and
+        // texture subrectangles have different origins; full-size tests hide it.
+        for (bool textureTarget : {false, true}) {
+            const auto viewport = GxVulkan::MakeViewport({64,64}, textureTarget, 0,.5f,0,.5f,0,1);
+            const auto scissor = GxVulkan::MakeScissor({64,64}, textureTarget, 0,.5f,0,.5f);
+            Check(scissor.offset.y == (textureTarget ? 0 : 32) && scissor.extent.height == 32,
+                "Offscreen scissor origin does not match Gx/D3D9");
+            fixture.SetShaders(fixture.Module("fixed.vert.spv"), fixture.Module("fixed.frag.spv"), false, &viewport, &scissor);
+            fixture.Draw(v,p,0xFF0000FF);
+            fixture.Pixel(16,textureTarget ? 16 : 48,{0,0,1,1});
+            fixture.Pixel(16,textureTarget ? 48 : 16,{0,0,0,0});
+            fixture.Pixel(48,16,{0,0,0,0});
+        }
+        fixture.SetShaders(fixture.Module("fixed.vert.spv"), fixture.Module("fixed.frag.spv"));
         fixture.Draw(v,p,0xFF0000FF); fixture.Pixel(32,32,{0,0,1,1});
         v.control[0] = {0,0,0,1}; p.stage[0] = {1,0,0,0}; p.options[0] = .1f;
         fixture.Draw(v,p); const std::array<float,4> base{128.f/255,64.f/255,32.f/255,128.f/255}; fixture.Pixel(32,32,base);
