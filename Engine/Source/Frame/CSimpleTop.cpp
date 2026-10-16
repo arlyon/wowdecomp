@@ -960,6 +960,16 @@ int32_t CSimpleTop::OnDisplaySizeChanged(const void* data, void* param) {
     CSimpleTop* top = static_cast<CSimpleTop*>(param);
     void (*callback)(const CSizeEvent&) = top->m_displaySizeCallback;
 
+#if !defined(_WIN32) || defined(WOWDECOMP_VULKAN)
+    if (sizeData->m_w <= 0 || sizeData->m_h <= 0) return 1;
+    if (g_theGxDevicePtr && g_theGxDevicePtr->m_context) {
+        const CRect& rect = g_theGxDevicePtr->DeviceDefWindow();
+        // Publish coordinates before fonts, anchors and callbacks observe the
+        // resize. Offscreen targets must not redefine the presentation canvas.
+        CoordinateSetAspectRatio(CoordinateWindowAspect(rect.maxX - rect.minX, rect.maxY - rect.minY));
+        top->RefreshScreenRect();
+    }
+#endif
     GxuFontWindowSizeChanged();
 
     for (CSimpleFrame* frame = top->m_frames.Head(); frame; frame = top->m_frames.Next(frame)) {
@@ -1147,8 +1157,7 @@ CSimpleTop::CSimpleTop() {
 
     memset(this->m_keydownCapture, 0, sizeof(this->m_keydownCapture));
 
-    NDCToDDC(1.0f, 1.0f, &this->m_rect.maxX, &this->m_rect.maxY);
-    this->m_layoutFlags |= 0x100;
+    this->RefreshScreenRect();
 
     this->m_moveResizeEnabled = 0;
     this->m_moveResizeFrame = nullptr;
