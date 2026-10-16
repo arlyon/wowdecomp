@@ -1,3 +1,8 @@
+#if (defined(__linux__) && !defined(_WIN32))
+#include "Linux/Log.h"
+#define fopen_s System_Log::NativeOpen
+#endif
+#line 1
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -132,7 +137,13 @@ bool Blizzard::Log::Expand(int32_t logClass, const char* name, char* dst, int32_
     Blizzard::Time::BreakTime(System_Log::s_startTime, rec);
 
     char path[1024];
+#if (defined(__linux__) && !defined(_WIN32))
+    Blizzard::String::Copy(path, name, sizeof(path));
+#else
+#line 135
     Blizzard::String::MakeUnivPath(name, path, sizeof(path));
+#endif
+#line 136
 
     char* directory = path;
     char* filename;
@@ -155,7 +166,13 @@ bool Blizzard::Log::Expand(int32_t logClass, const char* name, char* dst, int32_
 
     char base[512];
 
+#if (defined(__linux__) && !defined(_WIN32))
+    if (directory && System_Log::NativeIsAbsolutePath(directory)) {
+#else
+#line 158
     if (directory && Blizzard::File::IsAbsolutePath(directory)) {
+#endif
+#line 159
         base[0] = '\0';
     } else if (!defaultDirectory) {
         if (classDirectory) {
@@ -164,7 +181,13 @@ bool Blizzard::Log::Expand(int32_t logClass, const char* name, char* dst, int32_
             base[0] = '\0';
         }
     } else if (classDirectory) {
+#if (defined(__linux__) && !defined(_WIN32))
+        if (System_Log::NativeIsAbsolutePath(defaultDirectory) && !System_Log::NativeIsAbsolutePath(classDirectory)) {
+#else
+#line 167
         if (Blizzard::File::IsAbsolutePath(defaultDirectory) && !Blizzard::File::IsAbsolutePath(classDirectory)) {
+#endif
+#line 168
             Blizzard::String::Copy(base, defaultDirectory, sizeof(base));
             Blizzard::String::Append(base, classDirectory, sizeof(base));
         } else {
@@ -184,7 +207,13 @@ bool Blizzard::Log::Expand(int32_t logClass, const char* name, char* dst, int32_
     *out = '\0';
 
     if (createDirectory) {
+#if (defined(__linux__) && !defined(_WIN32))
+        System_Log::NativeCreateDirectory(dst, true);
+#else
+#line 187
         Blizzard::File::CreateDirectory(dst, true);
+#endif
+#line 188
     }
 
     const char* source = filename;
@@ -214,7 +243,13 @@ bool Blizzard::Log::Expand(int32_t logClass, const char* name, char* dst, int32_
     }
 
     *out = '\0';
+#if (defined(__linux__) && !defined(_WIN32))
+    // Native paths already use host separators; backslashes are filename bytes.
+#else
+#line 217
     Blizzard::String::MakeBackslashPath(dst, dst, count);
+#endif
+#line 218
 
     return true;
 }
@@ -479,7 +514,13 @@ void System_Log::Init(int32_t logClass) {
 #endif
         Blizzard::Process::GetProcessDirectory(directory, sizeof(directory));
         s_Prefs[0].m_directory = static_cast<char*>(malloc(strlen(directory) + 1));
+#if (defined(__linux__) && !defined(_WIN32))
+        Blizzard::String::Copy(s_Prefs[0].m_directory, directory, static_cast<uint32_t>(strlen(directory) + 1));
+#else
+#line 482
         Blizzard::String::MakeUnivPath(directory, s_Prefs[0].m_directory, static_cast<int32_t>(strlen(directory) + 1));
+#endif
+#line 483
         s_prefCount++;
     }
 
@@ -506,6 +547,10 @@ void System_Log::Init(int32_t logClass) {
 // VERIFY: 88e9144c manual
 // OFFSET: 0x0044CC50
 void System_Log::ShutdownProc() {
+#if (defined(__linux__) && !defined(_WIN32))
+    NativeShutdown();
+#else
+#line 509
     if (s_state <= 0) {
         return;
     }
@@ -523,11 +568,17 @@ void System_Log::ShutdownProc() {
     Blizzard::Lock::MutexDestroy(s_mutex);
     free(s_Prefs);
     free(s_stringPool);
+#endif
+#line 526
 }
 
 // VERIFY: 78f12fb8 auto
 // OFFSET: 0x004519B0
 bool System_Log::Acquire(int32_t logClass) {
+#if (defined(__linux__) && !defined(_WIN32))
+    return NativeAcquire(logClass);
+#else
+#line 531
     if (s_state < 0) {
         return false;
     }
@@ -544,6 +595,8 @@ bool System_Log::Acquire(int32_t logClass) {
     Init(logClass);
 
     return true;
+#endif
+#line 547
 }
 
 // VERIFY: a3c2e8bc manual

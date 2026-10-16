@@ -1,11 +1,19 @@
-#if defined(WOWDECOMP_ARCH_64)
+#if defined(WOWDECOMP_ARCH_64) || (defined(__linux__) && !defined(_WIN32))
+#line 2
 
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if (defined(__linux__) && !defined(_WIN32))
+#include "../Linux/Log.h"
+#include <unistd.h>
+#else
+#line 8
 #include <windows.h>
+#endif
+#line 9
 #include "Engine/Source/BlizzardCore/Source/System/File/File.h"
 #include "Engine/Source/BlizzardCore/Source/System/Lock/Lock.h"
 #include "Engine/Source/BlizzardCore/Source/System/Log/Log.h"
@@ -20,6 +28,14 @@ char* System_Log::DefaultPreamble() {
     Blizzard::Time::TimeRec rec;
     Blizzard::Time::BreakTime(s_startTime, rec);
 
+#if (defined(__linux__) && !defined(_WIN32))
+    char computerName[256];
+    if (gethostname(computerName, sizeof(computerName))) {
+        Blizzard::String::Copy(computerName, "<unknown>", sizeof(computerName));
+    }
+    computerName[sizeof(computerName) - 1] = '\0';
+#else
+#line 23
     char nativeName[1024];
     char computerName[256];
     DWORD size = sizeof(nativeName);
@@ -29,6 +45,8 @@ char* System_Log::DefaultPreamble() {
     } else {
         Blizzard::String::Copy(computerName, "<unknown>", sizeof(computerName));
     }
+#endif
+#line 32
 
     char* preamble = static_cast<char*>(malloc(4096));
     Blizzard::String::Format(preamble, 4096, "\n#-----------------------------------------------------------\n# System started at %04d-%02d-%02d %02d:%02d:%02d.%04d\n# system: %s\n#-----------------------------------------------------------\n", rec.year, rec.month, rec.day, rec.hour, rec.minute, rec.second, rec.nanosecond / 100000, computerName);
@@ -41,6 +59,14 @@ char* System_Log::DefaultDayHeader() {
     Blizzard::Time::TimeRec rec;
     Blizzard::Time::BreakTime(Blizzard::Time::GetTimestamp(), rec);
 
+#if (defined(__linux__) && !defined(_WIN32))
+    char computerName[256];
+    if (gethostname(computerName, sizeof(computerName))) {
+        Blizzard::String::Copy(computerName, "<unknown>", sizeof(computerName));
+    }
+    computerName[sizeof(computerName) - 1] = '\0';
+#else
+#line 44
     char nativeName[1024];
     char computerName[256];
     DWORD size = sizeof(nativeName);
@@ -50,6 +76,8 @@ char* System_Log::DefaultDayHeader() {
     } else {
         Blizzard::String::Copy(computerName, "<unknown>", sizeof(computerName));
     }
+#endif
+#line 53
 
     char* header = static_cast<char*>(malloc(4096));
     Blizzard::String::Format(header, 4096, "\n#-----------------------------------------------------------\n# %04d-%02d-%02d\n# system: %s\n#-----------------------------------------------------------\n", rec.year, rec.month, rec.day, computerName);
@@ -59,6 +87,10 @@ char* System_Log::DefaultDayHeader() {
 
 // OFFSET: 0x004388D0
 uint32_t System_Log::LogThread(void* param) {
+#if (defined(__linux__) && !defined(_WIN32))
+    return NativeLogThread(param);
+#else
+#line 62
     uint32_t lastFlush = static_cast<uint32_t>(Blizzard::Time::Milliseconds());
 
     while (s_state > 0) {
@@ -78,6 +110,8 @@ uint32_t System_Log::LogThread(void* param) {
     s_threadDone = true;
 
     return 0;
+#endif
+#line 81
 }
 
 #endif
