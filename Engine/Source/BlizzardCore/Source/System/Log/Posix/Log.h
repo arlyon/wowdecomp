@@ -1,5 +1,5 @@
-#ifndef BLIZZARD_LOG_LINUX_H
-#define BLIZZARD_LOG_LINUX_H
+#ifndef BLIZZARD_LOG_POSIX_H
+#define BLIZZARD_LOG_POSIX_H
 #include <cstdint>
 #include <cstdio>
 namespace System_Log {

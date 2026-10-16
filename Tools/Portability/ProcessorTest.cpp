@@ -9,7 +9,7 @@
 #endif
 #include "Engine/Source/Os/Processor.h"
 #include "Engine/Source/Os/System.h"
-#include "Engine/Source/Os/Linux/Processor.h"
+#include "Engine/Source/Os/ProcessorFeatures.h"
 
 namespace {
 unsigned failures;
@@ -21,35 +21,35 @@ void Check(bool condition, const char* message) {
 }
 
 void CheckDecoder() {
-    auto result = OsLinuxDecodeProcessorFeatures(nullptr);
+    auto result = OsDecodeProcessorFeatures(nullptr);
     Check(result.features == 0x80000000 && result.vendor == 4, "failed query has no advertised CPU features");
     CpuIdInfo info{};
-    result = OsLinuxDecodeProcessorFeatures(&info);
+    result = OsDecodeProcessorFeatures(&info);
     Check(result.features == 0x80000000 && result.vendor == 0, "unknown vendor remains distinct from failed query");
     const uint32_t sourceBits[] = {0x10, 0x800000, 0x2000000, 0x4000000};
     const uint32_t clientBits[] = {1, 2, 4, 0x10};
     for (unsigned i = 0; i < 4; ++i) {
         info.m_standard1d = sourceBits[i];
-        Check(OsLinuxDecodeProcessorFeatures(&info).features == (0x80000000 | clientBits[i]), "legacy standard feature mapping");
+        Check(OsDecodeProcessorFeatures(&info).features == (0x80000000 | clientBits[i]), "legacy standard feature mapping");
     }
     info.m_standard1d = 0;
     info.m_extended1d = 0x80000000;
-    Check(OsLinuxDecodeProcessorFeatures(&info).features == 0x80000008, "legacy 3DNow feature mapping");
+    Check(OsDecodeProcessorFeatures(&info).features == 0x80000008, "legacy 3DNow feature mapping");
     info = {};
     std::memcpy(info.m_vendor, "GenuineIntel", 12);
     info.m_standard4a = 3u << 26;
-    result = OsLinuxDecodeProcessorFeatures(&info);
+    result = OsDecodeProcessorFeatures(&info);
     Check(result.vendor == 1 && result.features == 0x80000000, "Intel cache leaf must be supported before decoding core count");
     info.m_maxStandard = 4;
-    Check(OsLinuxDecodeProcessorFeatures(&info).features == 0x80000040, "Intel multicore marker");
+    Check(OsDecodeProcessorFeatures(&info).features == 0x80000040, "Intel multicore marker");
     info.m_standard4a = 0;
-    Check(OsLinuxDecodeProcessorFeatures(&info).features == 0x80000000, "Intel single core");
+    Check(OsDecodeProcessorFeatures(&info).features == 0x80000000, "Intel single core");
     std::memcpy(info.m_vendor, "AuthenticAMD", 12);
     info.m_extended8c = 7;
-    result = OsLinuxDecodeProcessorFeatures(&info);
+    result = OsDecodeProcessorFeatures(&info);
     Check(result.vendor == 2 && result.features == 0x80000040, "AMD vendor and multicore marker");
     info.m_extended8c = 0x100;
-    Check(OsLinuxDecodeProcessorFeatures(&info).features == 0x80000000, "AMD core count uses only the low eight bits");
+    Check(OsDecodeProcessorFeatures(&info).features == 0x80000000, "AMD core count uses only the low eight bits");
 }
 
 void CheckHardwareAndCache() {
@@ -80,7 +80,7 @@ void CheckHardwareAndCache() {
 #else
     Check(!available && errno == ENOTSUP, "non-x86 hardware does not advertise x86 capabilities");
 #endif
-    const auto expected = OsLinuxDecodeProcessorFeatures(available ? &info : nullptr);
+    const auto expected = OsDecodeProcessorFeatures(available ? &info : nullptr);
     std::atomic<unsigned> ready{0};
     std::atomic<bool> start{false};
     std::atomic<bool> consistent{true};

@@ -1,5 +1,5 @@
-#ifndef ENGINE_SOURCE_OS_LINUX_PATH_H
-#define ENGINE_SOURCE_OS_LINUX_PATH_H
+#ifndef ENGINE_SOURCE_OS_POSIX_PATH_H
+#define ENGINE_SOURCE_OS_POSIX_PATH_H
 
 #include <algorithm>
 #include <cerrno>
@@ -7,14 +7,14 @@
 #include <filesystem>
 #include <string>
 
-inline std::filesystem::path OsLinuxPath(const char* input) {
+inline std::filesystem::path OsPosixPath(const char* input) {
     std::string path(input);
     std::replace(path.begin(), path.end(), '\\', '/');
     return std::filesystem::path(path);
 }
 
 // These APIs expose the legacy client error domain, not POSIX errno values.
-inline uint32_t OsLinuxFileError(int error) {
+inline uint32_t OsPosixFileError(int error) {
     switch (error) {
         case 0: return 0;
         case ENOENT: return 2;

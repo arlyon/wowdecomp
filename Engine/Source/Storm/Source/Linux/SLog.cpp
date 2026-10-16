@@ -6,7 +6,7 @@
 #include <mutex>
 #include <new>
 #include <string>
-#include "Engine/Source/Os/Linux/Path.h"
+#include "Engine/Source/Os/Posix/Path.h"
 #include "Engine/Source/Storm/H/storm.h"
 
 namespace {
@@ -32,9 +32,9 @@ bool Open(Log& log) {
     if (log.file) return true;
     std::error_code error;
     if (log.path.has_parent_path()) std::filesystem::create_directories(log.path.parent_path(), error);
-    if (error) { SErrSetLastError(OsLinuxFileError(error.value())); return false; }
+    if (error) { SErrSetLastError(OsPosixFileError(error.value())); return false; }
     log.file = std::fopen(log.path.c_str(), log.flags & SLOG_FLAG_APPEND ? "a" : "w");
-    if (!log.file) { SErrSetLastError(OsLinuxFileError(errno)); return false; }
+    if (!log.file) { SErrSetLastError(OsPosixFileError(errno)); return false; }
     return true;
 }
 }
@@ -46,11 +46,11 @@ void SLogInitialize() {}
 int32_t STORMAPI SLogCreate(const char* filename, uint32_t flags, HSLOG* handle) {
     if (handle) *handle = nullptr;
     if (!filename || !*filename || !handle) { SErrSetLastError(STORM_ERROR_INVALID_PARAMETER); return 0; }
-    auto path = OsLinuxPath(filename);
+    auto path = OsPosixPath(filename);
     if (!path.has_parent_path()) {
         std::error_code error;
         const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
-        if (error) { SErrSetLastError(OsLinuxFileError(error.value())); return 0; }
+        if (error) { SErrSetLastError(OsPosixFileError(error.value())); return 0; }
         path = executable.parent_path() / path;
     }
     auto log = new (std::nothrow) Log(std::move(path), flags);
@@ -98,7 +98,7 @@ void STORMAPI SLogVWrite(HSLOG handle, const char* format, va_list args) {
     bool failed = std::fwrite(text, 1, length, log->file) != length;
     if (!length || text[length - 1] != '\n') failed |= std::fputc('\n', log->file) == EOF;
     failed |= std::fflush(log->file) != 0;
-    if (failed) SErrSetLastError(OsLinuxFileError(errno ? errno : EIO));
+    if (failed) SErrSetLastError(OsPosixFileError(errno ? errno : EIO));
 }
 
 void SLogWrite(HSLOG handle, const char* format, ...) {
@@ -111,13 +111,13 @@ void SLogWrite(HSLOG handle, const char* format, ...) {
 void STORMAPI SLogFlush(HSLOG handle) {
     std::lock_guard<std::mutex> lock(s_mutex);
     Log* log = Find(handle);
-    if (log && log->file && std::fflush(log->file)) SErrSetLastError(OsLinuxFileError(errno));
+    if (log && log->file && std::fflush(log->file)) SErrSetLastError(OsPosixFileError(errno));
 }
 
 void STORMAPI SLogFlushAll() {
     std::lock_guard<std::mutex> lock(s_mutex);
     for (Log* log = s_logs; log; log = log->next) {
-        if (log->file && std::fflush(log->file)) SErrSetLastError(OsLinuxFileError(errno));
+        if (log->file && std::fflush(log->file)) SErrSetLastError(OsPosixFileError(errno));
     }
 }
 

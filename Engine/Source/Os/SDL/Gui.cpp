@@ -3,7 +3,7 @@
 #include <SDL.h>
 #include "Engine/Source/Os/Window.h"
 #include "Engine/Source/Os/Input.h"
-#include "Engine/Source/Os/Linux/Window.h"
+#include "Engine/Source/Os/SDL/Window.h"
 
 namespace {
 SDL_Window* s_window;

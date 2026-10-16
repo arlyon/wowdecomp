@@ -1,6 +1,6 @@
 file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/(Win32|Win64)/")
+wowdecomp_filter_platform_sources(PRIVATE_SOURCES ${PRIVATE_SOURCES})
+if (WOWDECOMP_POSIX)
     # This file contains shared throttling logic, despite its original location.
     if (CMAKE_SIZEOF_VOID_P EQUAL 8)
         list(APPEND PRIVATE_SOURCES
@@ -15,8 +15,6 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "${CMAKE_CURRENT_SOURCE_DIR}/Source/Packages/iounit/Win64/IOFileUnit.cpp"
         )
     endif ()
-else ()
-    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Linux/")
 endif ()
 
 add_library(BlizzardCore STATIC
@@ -42,7 +40,7 @@ if(WIN32)
     )
 endif()
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if (WOWDECOMP_POSIX)
     find_package(Threads REQUIRED)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET GLOBAL vorbisfile)

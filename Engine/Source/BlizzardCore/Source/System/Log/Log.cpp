@@ -1,5 +1,6 @@
-#if (defined(__linux__) && !defined(_WIN32))
-#include "Linux/Log.h"
+#include "Engine/Source/Platform/Platform.h"
+#if WOW_PLATFORM_POSIX
+#include "Posix/Log.h"
 #define fopen_s System_Log::NativeOpen
 #endif
 #line 1
@@ -137,7 +138,7 @@ bool Blizzard::Log::Expand(int32_t logClass, const char* name, char* dst, int32_
     Blizzard::Time::BreakTime(System_Log::s_startTime, rec);
 
     char path[1024];
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
     Blizzard::String::Copy(path, name, sizeof(path));
 #else
 #line 135
@@ -166,7 +167,7 @@ bool Blizzard::Log::Expand(int32_t logClass, const char* name, char* dst, int32_
 
     char base[512];
 
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
     if (directory && System_Log::NativeIsAbsolutePath(directory)) {
 #else
 #line 158
@@ -181,7 +182,7 @@ bool Blizzard::Log::Expand(int32_t logClass, const char* name, char* dst, int32_
             base[0] = '\0';
         }
     } else if (classDirectory) {
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
         if (System_Log::NativeIsAbsolutePath(defaultDirectory) && !System_Log::NativeIsAbsolutePath(classDirectory)) {
 #else
 #line 167
@@ -207,7 +208,7 @@ bool Blizzard::Log::Expand(int32_t logClass, const char* name, char* dst, int32_
     *out = '\0';
 
     if (createDirectory) {
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
         System_Log::NativeCreateDirectory(dst, true);
 #else
 #line 187
@@ -243,7 +244,7 @@ bool Blizzard::Log::Expand(int32_t logClass, const char* name, char* dst, int32_
     }
 
     *out = '\0';
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
     // Native paths already use host separators; backslashes are filename bytes.
 #else
 #line 217
@@ -514,7 +515,7 @@ void System_Log::Init(int32_t logClass) {
 #endif
         Blizzard::Process::GetProcessDirectory(directory, sizeof(directory));
         s_Prefs[0].m_directory = static_cast<char*>(malloc(strlen(directory) + 1));
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
         Blizzard::String::Copy(s_Prefs[0].m_directory, directory, static_cast<uint32_t>(strlen(directory) + 1));
 #else
 #line 482
@@ -547,7 +548,7 @@ void System_Log::Init(int32_t logClass) {
 // VERIFY: 88e9144c manual
 // OFFSET: 0x0044CC50
 void System_Log::ShutdownProc() {
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
     NativeShutdown();
 #else
 #line 509
@@ -575,7 +576,7 @@ void System_Log::ShutdownProc() {
 // VERIFY: 78f12fb8 auto
 // OFFSET: 0x004519B0
 bool System_Log::Acquire(int32_t logClass) {
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
     return NativeAcquire(logClass);
 #else
 #line 531

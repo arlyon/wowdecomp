@@ -4,7 +4,7 @@
 #include <SDL.h>
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h"
-#include "Engine/Source/Os/Linux/Window.h"
+#include "Engine/Source/Os/SDL/Window.h"
 
 int32_t CGxDevice::AdapterFormats(EGxApi api, TSGrowableArray<CGxFormat>& formats) {
     formats.SetCount(0);

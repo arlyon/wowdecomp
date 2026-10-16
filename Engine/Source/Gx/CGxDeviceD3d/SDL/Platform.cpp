@@ -1,7 +1,7 @@
 #include <SDL.h>
 #include "Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h"
 #include "Engine/Source/Os/Window.h"
-#include "Engine/Source/Os/Linux/Window.h"
+#include "Engine/Source/Os/SDL/Window.h"
 
 namespace {
 void SetClientRect(CGxDeviceD3d& device, CGxFormat* format = nullptr) {

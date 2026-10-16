@@ -1,5 +1,5 @@
 #include "WoW/Source/Client.h"
-#include "WoW/Source/Linux/Startup.h"
+#include "WoW/Source/Posix/Startup.h"
 #include <cstdio>
 #include <SDL.h>
 

@@ -4,7 +4,7 @@
 #include <string>
 #include <SDL.h>
 #include "Engine/Source/Os/OsIME.h"
-#include "Engine/Source/Os/Linux/Window.h"
+#include "Engine/Source/Os/SDL/Window.h"
 
 namespace {
 uint32_t s_enableCount;

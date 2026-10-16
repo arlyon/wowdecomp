@@ -1,5 +1,5 @@
 #include "Engine/Source/Os/OsFile.h"
-#include "Engine/Source/Os/Linux/Path.h"
+#include "Engine/Source/Os/Posix/Path.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include <cctype>
 #include <cstring>
@@ -16,12 +16,12 @@
 namespace {
 int Fail(int error) {
     errno = error;
-    SErrSetLastError(error == ENOTSUP ? 50 : OsLinuxFileError(error));
+    SErrSetLastError(error == ENOTSUP ? 50 : OsPosixFileError(error));
     return 0;
 }
 bool Path(const char* name, std::string& path) {
     if (!name || !*name) { Fail(EINVAL); return false; }
-    path = OsLinuxPath(name).string();
+    path = OsPosixPath(name).string();
     return true;
 }
 struct Handle { int fd; dev_t device; ino_t inode; uint32_t access, share; };

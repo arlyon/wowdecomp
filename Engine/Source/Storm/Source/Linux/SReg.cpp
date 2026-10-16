@@ -1,5 +1,5 @@
 #include "Engine/Source/Storm/H/storm.h"
-#include "Engine/Source/Os/Linux/Path.h"
+#include "Engine/Source/Os/Posix/Path.h"
 #include <charconv>
 #include <cstdlib>
 #include <cstring>
@@ -13,7 +13,7 @@ struct FD {
     int fd = -1;
     ~FD() { if (fd >= 0) close(fd); }
 };
-bool Fail(int error) { SErrSetLastError(OsLinuxFileError(error)); return false; }
+bool Fail(int error) { SErrSetLastError(OsPosixFileError(error)); return false; }
 std::string Encode(const std::string& text) {
     static const char hex[] = "0123456789abcdef";
     std::string result;

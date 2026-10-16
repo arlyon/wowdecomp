@@ -5,7 +5,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #else
-#include "Engine/Source/BlizzardCore/Source/System/Time/Linux/Native.h"
+#include "Engine/Source/BlizzardCore/Source/System/Time/Posix/Native.h"
 #endif
 #include "Engine/Source/BlizzardCore/Source/System/Time/Time.h"
 

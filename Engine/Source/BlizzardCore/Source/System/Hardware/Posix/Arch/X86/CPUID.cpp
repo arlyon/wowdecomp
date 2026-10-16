@@ -1,16 +1,10 @@
 #include <cerrno>
-#include <cstdint>
-#include <mutex>
-#include <unistd.h>
-#if defined(__i386__) || defined(__x86_64__)
 #include <cpuid.h>
-#endif
 #include "Engine/Source/BlizzardCore/Source/System/Hardware/Hardware.h"
 
 bool System_Hardware::ReadCPUID(CPUIDInfo* info) {
     if (!info) { errno = EINVAL; return false; }
     *info = {};
-#if defined(__i386__) || defined(__x86_64__)
     unsigned a, b, c, d;
     if (!__get_cpuid(0, &a, &b, &c, &d) || !a) return false;
     info->m_maxLeaf = a;
@@ -39,24 +33,4 @@ bool System_Hardware::ReadCPUID(CPUIDInfo* info) {
         info->m_ext8Ecx = c;
     }
     return true;
-#else
-    errno = ENOTSUP;
-    return false;
-#endif
-}
-
-uint32_t System_Hardware::GetProcessorCount() {
-    const long count = sysconf(_SC_NPROCESSORS_ONLN);
-    if (count < 1) return 0;
-    if (static_cast<uint64_t>(count) > UINT32_MAX) { errno = EOVERFLOW; return 0; }
-    return static_cast<uint32_t>(count);
-}
-
-uint32_t Blizzard::Hardware::GetProcessorFeatures() {
-    static std::once_flag initialized;
-    std::call_once(initialized, [] {
-        System_Hardware::InitProcessorFeatures();
-        System_Hardware::s_initialized = true;
-    });
-    return System_Hardware::s_processorFeatures.m_features;
 }

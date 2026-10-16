@@ -23,7 +23,11 @@ else ()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
     find_package(Threads REQUIRED)
-    file(GLOB FMODEX_PLATFORM_SOURCES CONFIGURE_DEPENDS "${FMODEX_DIR}/linux/src/*.cpp")
+    string(TOLOWER "${WOWDECOMP_OS}" FMODEX_OS)
+    file(GLOB FMODEX_PLATFORM_SOURCES CONFIGURE_DEPENDS
+        "${FMODEX_DIR}/${FMODEX_OS}/src/*.cpp"
+        "${FMODEX_DIR}/posix/src/*.cpp"
+        "${FMODEX_DIR}/sdl/src/*.cpp")
     # These two files contain the original portable C DSP paths as well as
     # optional Win32 SIMD calls; Linux uses the C paths, not the x86 assembly.
     list(APPEND FMODEX_PLATFORM_SOURCES

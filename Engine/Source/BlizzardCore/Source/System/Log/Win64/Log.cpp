@@ -1,4 +1,5 @@
-#if defined(WOWDECOMP_ARCH_64) || (defined(__linux__) && !defined(_WIN32))
+#include "Engine/Source/Platform/Platform.h"
+#if defined(WOWDECOMP_ARCH_64) || WOW_PLATFORM_POSIX
 #line 2
 
 #include <cstdarg>
@@ -6,8 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#if (defined(__linux__) && !defined(_WIN32))
-#include "../Linux/Log.h"
+#if WOW_PLATFORM_POSIX
+#include "../Posix/Log.h"
 #include <unistd.h>
 #else
 #line 8
@@ -28,7 +29,7 @@ char* System_Log::DefaultPreamble() {
     Blizzard::Time::TimeRec rec;
     Blizzard::Time::BreakTime(s_startTime, rec);
 
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
     char computerName[256];
     if (gethostname(computerName, sizeof(computerName))) {
         Blizzard::String::Copy(computerName, "<unknown>", sizeof(computerName));
@@ -59,7 +60,7 @@ char* System_Log::DefaultDayHeader() {
     Blizzard::Time::TimeRec rec;
     Blizzard::Time::BreakTime(Blizzard::Time::GetTimestamp(), rec);
 
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
     char computerName[256];
     if (gethostname(computerName, sizeof(computerName))) {
         Blizzard::String::Copy(computerName, "<unknown>", sizeof(computerName));
@@ -87,7 +88,7 @@ char* System_Log::DefaultDayHeader() {
 
 // OFFSET: 0x004388D0
 uint32_t System_Log::LogThread(void* param) {
-#if (defined(__linux__) && !defined(_WIN32))
+#if WOW_PLATFORM_POSIX
     return NativeLogThread(param);
 #else
 #line 62

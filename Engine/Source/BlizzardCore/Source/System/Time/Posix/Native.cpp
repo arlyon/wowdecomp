@@ -4,7 +4,7 @@
 #include <ctime>
 #include <limits>
 #include "Engine/Source/BlizzardCore/Source/System/Time/Time.h"
-#include "Engine/Source/BlizzardCore/Source/System/Time/Linux/Native.h"
+#include "Engine/Source/BlizzardCore/Source/System/Time/Posix/Native.h"
 
 namespace {
 constexpr int64_t NanosecondsPerSecond = 1000000000;

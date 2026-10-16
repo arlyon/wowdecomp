@@ -1,5 +1,5 @@
-#ifndef ENGINE_SOURCE_OS_LINUX_WINDOW_H
-#define ENGINE_SOURCE_OS_LINUX_WINDOW_H
+#ifndef ENGINE_SOURCE_OS_SDL_WINDOW_H
+#define ENGINE_SOURCE_OS_SDL_WINDOW_H
 
 #include <cstdint>
 struct SDL_WindowEvent;

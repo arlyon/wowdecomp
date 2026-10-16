@@ -1,17 +1,14 @@
 file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
 
-if (WIN32)
-    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Linux/")
-elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/(Win32|Win64)/|/CGxDevice(D3d9Ex|OpenGL)/")
+wowdecomp_filter_platform_sources(PRIVATE_SOURCES ${PRIVATE_SOURCES})
+if (WOWDECOMP_POSIX)
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/CGxDevice(D3d9Ex|OpenGL)/")
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../../cmake")
     find_package(DXVKNative REQUIRED)
     if (NOT TARGET PkgConfig::SDL2)
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET GLOBAL sdl2>=2.0.22)
     endif ()
-else ()
-    message(FATAL_ERROR "Unsupported graphics platform: ${CMAKE_SYSTEM_NAME}")
 endif ()
 
 add_library(Gx STATIC
@@ -23,7 +20,7 @@ target_include_directories(Gx
         ${CMAKE_SOURCE_DIR}
 )
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if (WOWDECOMP_POSIX)
     target_link_libraries(Gx PUBLIC DXVKNative::D3D9 PRIVATE PkgConfig::SDL2)
 endif ()
 

@@ -8,6 +8,8 @@ endif ()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 get_filename_component(WOWDECOMP_ROOT "../.." ABSOLUTE)
+include("${WOWDECOMP_ROOT}/cmake/WowPlatform.cmake")
+wowdecomp_configure_platform()
 find_package(Threads REQUIRED)
 enable_testing()
 
@@ -17,7 +19,7 @@ add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Tempest" Tempest)
 # This independent test project supplies it without changing the client build.
 target_include_directories(Os PUBLIC "${WOWDECOMP_ROOT}")
 target_include_directories(Tempest PUBLIC "${WOWDECOMP_ROOT}")
-add_library(StormLocks STATIC "${WOWDECOMP_ROOT}/Engine/Source/Storm/Source/Linux/SCritSect.cpp")
+add_library(StormLocks STATIC "${WOWDECOMP_ROOT}/Engine/Source/Storm/Source/Posix/SCritSect.cpp")
 target_include_directories(StormLocks PUBLIC "${WOWDECOMP_ROOT}")
 target_link_libraries(StormLocks PUBLIC Threads::Threads)
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Storm" Storm)
@@ -38,7 +40,7 @@ add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/SoundEngine" SoundEngine)
 target_include_directories(SoundEngine PRIVATE "${WOWDECOMP_ROOT}")
 add_executable(NativeSoundTest NativeSoundTest.cpp)
 target_include_directories(NativeSoundTest PRIVATE
-    "${WOWDECOMP_ROOT}/Engine/Source/SoundEngine/fmodex/linux/src")
+    "${WOWDECOMP_ROOT}/Engine/Source/SoundEngine/fmodex/sdl/src")
 target_link_libraries(NativeSoundTest PRIVATE fmodex)
 add_test(NAME NativeSound COMMAND NativeSoundTest)
 set_tests_properties(NativeSound PROPERTIES ENVIRONMENT "SDL_AUDIODRIVER=dummy" TIMEOUT 20)
@@ -159,11 +161,19 @@ target_link_options(WowSocketTest PRIVATE -Wl,--gc-sections
     -Wl,--wrap=send -Wl,--wrap=recv -Wl,--wrap=poll -Wl,--wrap=pthread_create)
 add_test(NAME WowSocket COMMAND WowSocketTest)
 set_tests_properties(WowSocket PROPERTIES TIMEOUT 35)
+add_executable(NativeStartupTest NativeStartupTest.cpp
+    "${WOWDECOMP_ROOT}/WoW/Source/Posix/Arch/X86/FloatingPoint.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/Linux/Startup.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/Posix/BotCheck.cpp")
+target_link_libraries(NativeStartupTest PRIVATE Storm)
+add_test(NAME NativeStartup COMMAND NativeStartupTest)
+set_tests_properties(NativeStartup PROPERTIES TIMEOUT 20)
+
 add_executable(NativeUnavailableTest NativeUnavailableTest.cpp
     "${WOWDECOMP_ROOT}/WoW/Source/Battlenet/Battlenet.cpp"
     "${WOWDECOMP_ROOT}/WoW/Source/Battlenet/BSN/BSNCpp.cpp"
-    "${WOWDECOMP_ROOT}/WoW/Source/Battlenet/Linux/Library.cpp"
-    "${WOWDECOMP_ROOT}/WoW/Source/Glue/Linux/PatchDownloadGlue.cpp")
+    "${WOWDECOMP_ROOT}/WoW/Source/Battlenet/Unavailable/Library.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Source/Glue/Unavailable/PatchDownloadGlue.cpp")
 target_link_libraries(NativeUnavailableTest PRIVATE Storm)
 add_test(NAME NativeUnavailable COMMAND NativeUnavailableTest)
 set_tests_properties(NativeUnavailable PROPERTIES TIMEOUT 10)
