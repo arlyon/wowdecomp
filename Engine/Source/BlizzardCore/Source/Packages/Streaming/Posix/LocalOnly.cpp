@@ -5,6 +5,12 @@
 // platform, so shutdown has no resources to release.
 void StopStreaming() {}
 
+char* GetComponentVersionData(uint32_t* size) {
+    if (size) *size = 0;
+    errno = ENOTSUP;
+    return nullptr;
+}
+
 namespace {
 bool Unsupported() {
     errno = ENOTSUP;

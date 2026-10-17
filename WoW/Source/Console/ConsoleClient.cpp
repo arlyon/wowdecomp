@@ -1,7 +1,6 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
-#include <malloc.h>
 #include <new>
 #include <typeinfo>
 #include "ConsoleClient.h"

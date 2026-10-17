@@ -1,4 +1,7 @@
 #include "Engine/Source/Storm/H/storm.h"
+#include <cstdlib>
+
+void StormExitProcess(int32_t code) { std::exit(code); }
 
 int32_t STORMAPI SCreateProcess(const char* appName, char*, void (*)(void*), void*) {
     if (!appName || !*appName) {

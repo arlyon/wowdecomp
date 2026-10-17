@@ -6,7 +6,7 @@ add_library(jpeg STATIC
     ${PRIVATE_SOURCES}
 )
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if (NOT MSVC)
     # Keep the existing C++ linkage of this legacy C library; its sources use
     # register, which was removed from C++17.
     set_property(TARGET jpeg PROPERTY CXX_STANDARD 14)

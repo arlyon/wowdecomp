@@ -1,7 +1,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#if defined(_MSC_VER)
 #include <malloc.h>
+#else
+#include <alloca.h>
+#define _alloca alloca
+#endif
 #include <new>
 #include <typeinfo>
 #include "Engine/Source/Model2/M2Shared.h"

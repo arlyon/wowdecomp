@@ -11,11 +11,21 @@
 // System/Log/Native; this provider owns only the POSIX lifecycle leaves.
 
 namespace {
-std::mutex lifecycle;
-std::condition_variable changed;
-unsigned entering = 0;
-bool stopped = false;
-bool shutdownComplete = false;
+struct LogLifecycle {
+    std::mutex mutex;
+    std::condition_variable changed;
+    unsigned entering = 0;
+    bool stopped = false;
+    bool shutdownComplete = false;
+};
+LogLifecycle& Lifecycle() {
+    // Blizzard::Using invokes NativeShutdown from cross-TU static destructors.
+    // Ordinary globals here can already be destroyed at that point on Darwin.
+    // Retain only the admission primitives for process lifetime; NativeShutdown
+    // still joins the worker, flushes logs and releases all logger resources.
+    static auto* state = new LogLifecycle;
+    return *state;
+}
 }
 
 int System_Log::NativeHostname(char* name, uint32_t count) {
@@ -39,6 +49,7 @@ int System_Log::NativeOpen(FILE** stream, const char* path, const char* mode) {
 }
 
 bool System_Log::NativeAcquire(int32_t logClass) {
+    auto& [lifecycle, changed, entering, stopped, shutdownComplete] = Lifecycle();
     if (logClass < 0) return false;
     {
         std::unique_lock<std::mutex> lock(lifecycle);
@@ -70,15 +81,16 @@ bool System_Log::NativeAcquire(int32_t logClass) {
 }
 
 void System_Log::NativeShutdown() {
+    auto& [lifecycle, changed, entering, stopped, shutdownComplete] = Lifecycle();
     {
         std::unique_lock<std::mutex> lock(lifecycle);
         if (stopped) {
-            changed.wait(lock, [] { return shutdownComplete; });
+            changed.wait(lock, [] { return Lifecycle().shutdownComplete; });
             return;
         }
         stopped = true;
         s_state = -1;
-        changed.wait(lock, [] { return entering == 0; });
+        changed.wait(lock, [] { return Lifecycle().entering == 0; });
     }
     if (s_thread) {
         Blizzard::Thread::WaitForever(s_thread);
@@ -107,6 +119,7 @@ void System_Log::NativeShutdown() {
 }
 
 uint32_t System_Log::NativeLogThread(void*) {
+    auto& [lifecycle, changed, entering, stopped, shutdownComplete] = Lifecycle();
     uint32_t lastFlush = static_cast<uint32_t>(Blizzard::Time::Milliseconds());
     for (;;) {
         {

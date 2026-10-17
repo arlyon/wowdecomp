@@ -1,5 +1,9 @@
 file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
 wowdecomp_filter_platform_sources(PRIVATE_SOURCES ${PRIVATE_SOURCES})
+if (APPLE)
+    # Shared POSIX providers replace the imported monolithic Mac providers.
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/(Packages/.*/Mac|System/(Debug|File|Hardware|Lock|Log|Thread|Time|URL)/Mac)/")
+endif ()
 if (WOWDECOMP_POSIX)
     # These original Windows translation units have explicit native-extension
     # counterparts. OS leaves are linked separately; never import Win64 sources.
@@ -7,6 +11,12 @@ if (WOWDECOMP_POSIX)
         "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/Log/Log.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/Thread/ThreadPools.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/Source/Packages/iounit/IOFileUnit.cpp")
+endif ()
+
+if (NOT WIN32)
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Win(32|64)/")
+else ()
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Mac/")
 endif ()
 
 add_library(BlizzardCore STATIC
@@ -29,6 +39,11 @@ if(WIN32)
     target_link_libraries(BlizzardCore
         PUBLIC
             wininet
+    )
+elseif(APPLE)
+    target_link_libraries(BlizzardCore
+        PUBLIC
+            CURL::libcurl
     )
 endif()
 

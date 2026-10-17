@@ -24,6 +24,12 @@ else ()
     pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
     find_package(Threads REQUIRED)
     string(TOLOWER "${WOWDECOMP_OS}" FMODEX_OS)
+    if (APPLE)
+        # Keep the existing Darwin runtime leaf, with shared POSIX networking
+        # and SDL output providers rather than the old Mac copies.
+        set(FMODEX_OS darwin)
+        list(APPEND FMODEX_SOURCES "${FMODEX_DIR}/mac/src/fmod_os_misc.cpp")
+    endif ()
     file(GLOB FMODEX_PLATFORM_SOURCES CONFIGURE_DEPENDS
         "${FMODEX_DIR}/${FMODEX_OS}/src/*.cpp"
         "${FMODEX_DIR}/posix/src/*.cpp"

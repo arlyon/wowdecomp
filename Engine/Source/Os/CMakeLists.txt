@@ -1,10 +1,20 @@
 if (WOWDECOMP_POSIX)
     file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "Native/*.cpp" "Posix/*.cpp" "SDL/*.cpp" "${WOWDECOMP_OS}/*.cpp")
     list(APPEND PRIVATE_SOURCES Time.cpp Processor.cpp Path.cpp)
+    if (APPLE)
+        list(APPEND PRIVATE_SOURCES Mac/OsCall.cpp Mac/OsFile.cpp Mac/OsMemory.cpp
+            Mac/OsSecureRandom.cpp Mac/System.cpp Mac/Path.cpp)
+    endif ()
 else ()
     file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
 endif ()
 wowdecomp_filter_platform_sources(PRIVATE_SOURCES ${PRIVATE_SOURCES})
+
+if (NOT WIN32)
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Win(32|64)/")
+else ()
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/Mac/")
+endif ()
 
 add_library(Os STATIC
     ${PRIVATE_SOURCES}
@@ -32,3 +42,14 @@ if(WIN32)
             version
     )
 endif()
+if (APPLE)
+    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    find_library(CARBON_FRAMEWORK Carbon REQUIRED)
+    target_link_libraries(Os
+        PUBLIC
+            SDL2::SDL2
+            CURL::libcurl
+            ${COREFOUNDATION_FRAMEWORK}
+            ${CARBON_FRAMEWORK}
+    )
+endif ()

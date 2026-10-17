@@ -6,6 +6,10 @@
 
 struct tagRECT;
 
+#if !defined(_WIN32)
+#include "Engine/Source/Os/SDL/Window.h"
+#endif
+
 enum OSINPUT {
     OS_INPUT_CAPTURE_CHANGED = 0,
     OS_INPUT_CHAR = 1,
