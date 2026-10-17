@@ -6,8 +6,9 @@ Stack: `main -> base (#2) -> posix (#5) -> macos (#6)`, parallel to Linux.
 
 The native ARM64 Release client builds and renders through **D3D9 -> DXVK Native
 -> Vulkan loader -> MoltenVK -> Metal**. The imported OpenGL implementation is
-preserved but is not currently selected or qualified. Direct Vulkan integration
-is the next step; do not confuse it with DXVK's Vulkan implementation.
+preserved but is not currently selected or qualified. The separate `vulkan-macos`
+branch also builds a direct Vulkan/Slang client through MoltenVK, without DXVK;
+see the native Vulkan section below.
 
 The port adapts coolzoom/zz's work from
 [SatyPardus/wowdecomp#8](https://github.com/SatyPardus/wowdecomp/pull/8), snapshot
@@ -64,21 +65,60 @@ Ninja 1.13.2:
   and triangle `ff0000`, using SDL2 2.32.10, MoltenVK package 1.4.2 and Vulkan
   loader 1.4.363.0. Earlier smoke evidence also exists on M4 Max/macOS 26.7.
 
-The latest POSIX cloud-noise fix normalizes samples by `RAND_MAX`, avoiding
-wrapped density patterns on non-Windows CRTs. Revalidate sky/cloud rendering in
-world after rebuilding with this fix.
+The POSIX cloud-noise fix normalizes samples by `RAND_MAX`, avoiding wrapped
+density patterns on non-Windows CRTs. The user confirmed improved in-world
+rendering after the authentication and sky/cloud fixes.
 
 No Windows or Intel macOS build has been verified here. Fullscreen/Retina resize,
-audio correctness, networking, shutdown and unsupported provider behavior still
+audio correctness, networking edge cases and unsupported provider behavior still
 need broader testing. Selected imported providers and file paths need further
 review; a successful build/login screen is not proof of complete gameplay.
 
-Normal quit previously aborted during static finalization: POSIX log admission
-and thread creation locks were destroyed before `Blizzard::Using` shutdown
-callbacks used them. These admission primitives now have process lifetime while
-explicit shutdown still joins workers and releases logger/thread resources.
-See [Tools/MacSmoke](../Tools/MacSmoke/README.md) for the opt-in real-client
-SDL normal-quit regression test. The platform suite now passes 15/15, including
-WindowsLeaves, after restoring the unused original Windows logger/pool leaves.
-Native Vulkan and its user-confirmed glow fix remain on `vulkan-macos`, not in
-this macOS/DXVK PR.
+## Native Vulkan integration (`vulkan-macos`)
+
+Native Vulkan is kept on a separate branch above the macOS/DXVK checkpoint,
+without importing Linux OS providers. It submits directly through MoltenVK.
+After building the pinned shader dependencies described in the root README:
+
+```sh
+cmake -S . -B out/client-vulkan-mac -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DWOWDECOMP_VULKAN=ON -DWOWDECOMP_DXVK=OFF \
+  -DWOWDECOMP_MOJOSHADER_SOURCE="$PWD/out/deps/mojoshader" \
+  -DWOWDECOMP_SLANG_SOURCE="$PWD/out/deps/slang" \
+  -DWOWDECOMP_SLANGC="$PWD/out/deps/slang-build/Release/bin/slangc"
+cmake --build out/client-vulkan-mac --target Wow --parallel 8
+```
+
+Both builds write `bin/Mac/Wow`; preserve reference executables or use separate
+runtime directories when comparing backends. Use the same loader/ICD environment
+as the DXVK launch above, with `WOWDECOMP_GX_BACKEND=vulkan` instead of
+`DXVK_WSI_DRIVER`. Add `WOWDECOMP_VULKAN_VALIDATION=1` and the appropriate
+`VK_LAYER_PATH` to enable installed validation layers.
+
+The Vulkan shader, fixed-function GPU and resident-buffer GPU tests pass with
+validation enabled. The GPU fixture now checks partial offscreen viewports and
+scissors, not just full-size targets: screen subrectangles are bottom-origin,
+whereas texture subrectangles are top-origin, matching the D3D9 backend.
+
+Glow readbacks exposed the importance of that distinction. FFX writes only a
+subrectangle of a padded POT texture. Previously its downsample/blur draws landed
+at the bottom while subsequent texture reads sampled the top, including magenta
+padding. Correcting the offscreen origin puts the blur in the sampled region;
+the user confirmed the pink glow is solved in-world. Temporary readback and
+shader-dump instrumentation used to isolate this bug has been removed; the
+partial-target GPU regression remains. Offline shader recovery tools are still
+available under `Tools/Vulkan`.
+
+Normal quit was independently reproduced as exit 134. Debugger traces identified
+log admission and thread creation locks destroyed before `Blizzard::Using`'s
+cross-translation-unit static shutdown callbacks. Their admission primitives now
+have process lifetime; explicit shutdown still joins workers and frees resources.
+The real-client normal-SDL-quit smoke now exits 0 for both rebuilt Vulkan and
+DXVK clients (with Vulkan validation enabled for the native backend). See
+`Tools/MacSmoke/README.md` for the opt-in interactive integration test.
+
+The platform suite now passes 15/15, including WindowsLeaves, after restoring
+the unused original Windows logger/pool leaves. The CPU layout and renderer
+selection suite passes 5/5; enable it with `WOWDECOMP_PORTABILITY_TESTS=ON` as
+described in the root README.

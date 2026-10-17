@@ -82,6 +82,7 @@ class CLayoutFrame {
     int32_t PtInFrameRect(const C2Vector& point);
     void RegisterResize(CLayoutFrame* frame, uint32_t dependency);
     void Resize(int32_t force);
+    void RefreshScreenRect();
     float Right();
     void SetAllPoints(CLayoutFrame* relative, int32_t doResize);
     void SetClampedToScreen(int32_t clamped);

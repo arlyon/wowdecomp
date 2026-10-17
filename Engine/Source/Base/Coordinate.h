@@ -1,6 +1,8 @@
 #ifndef ENGINE_SOURCE_BASE_COORDINATE_H
 #define ENGINE_SOURCE_BASE_COORDINATE_H
 
+float CoordinateWindowAspect(float width, float height);
+float CoordinateWindowUiScale(float width, float height);
 float CoordinateGetAspectCompensation();
 float CoordinateGetAspectRatio();
 void CoordinateSetAspectRatio(float aspect);

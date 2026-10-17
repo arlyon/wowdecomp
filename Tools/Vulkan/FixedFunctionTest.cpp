@@ -1,0 +1,415 @@
+#include <vulkan/vulkan.h>
+#include "Engine/Source/Gx/CGxDeviceVulkan/Shader.h"
+#include "Engine/Source/Gx/CGxDeviceVulkan/Slang.h"
+#include "Engine/Source/Gx/CGxDeviceVulkan/ResidentBuffer.h"
+#include "Engine/Source/Gx/CGxDeviceVulkan/Coordinates.h"
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <stdexcept>
+#include <vector>
+
+namespace {
+void Check(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+void Vk(VkResult result) { if (result != VK_SUCCESS) throw std::runtime_error("Vulkan fixture error " + std::to_string(result)); }
+using Matrix = std::array<float, 16>;
+Matrix Identity() { Matrix m{}; m[0] = m[5] = m[10] = m[15] = 1; return m; }
+struct VertexConstants { Matrix projection, view, normal; std::array<Matrix, 8> texture; std::array<std::array<float, 4>, 8> control; };
+struct PixelConstants { std::array<float, 4> options; std::array<std::array<float, 4>, 8> stage; };
+static_assert(sizeof(VertexConstants) == 832 && sizeof(PixelConstants) == 144, "Fixed shader uniform ABI changed");
+struct Vertex { float position[3], normal[3]; uint32_t colour; float uv[8][2]; };
+struct Buffer { VkBuffer handle{}; VkDeviceMemory memory{}; void* mapped{}; };
+struct Image { VkImage handle{}; VkDeviceMemory memory{}; VkImageView view{}; };
+struct Fixture {
+    VkInstance instance{}; VkPhysicalDevice physical{}; VkDevice device{}; VkQueue queue{};
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    VkCommandPool commandPool{}; VkCommandBuffer command{}; VkRenderPass pass{}; VkFramebuffer framebuffer{};
+    VkPipelineLayout layout{}; VkPipeline pipeline{}; VkDescriptorPool descriptorPool{}; VkSampler sampler{};
+    std::array<VkDescriptorSetLayout, 4> setLayouts{}; std::array<VkDescriptorSet, 4> sets{};
+    std::vector<Buffer> buffers; std::vector<Image> images; std::vector<VkShaderModule> modules;
+    GxVulkan::ResidentBuffer resident;
+    std::vector<GxVulkan::Buffer> retired;
+    uint64_t residentFrame = 0, residentDrawUploads = 0;
+    Buffer vertices{}, vertexUniform{}, pixelUniform{}, alphaUniform{}, staging{}, readback{}; Image target{};
+    ~Fixture() {
+        if (device) {
+            vkDeviceWaitIdle(device);
+            resident.Destroy(device);
+            for (auto& buffer : retired) GxVulkan::DestroyBuffer(device, buffer);
+            if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
+            if (framebuffer) vkDestroyFramebuffer(device, framebuffer, nullptr);
+            if (pass) vkDestroyRenderPass(device, pass, nullptr);
+            if (layout) vkDestroyPipelineLayout(device, layout, nullptr);
+            if (descriptorPool) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+            for (auto set : setLayouts) if (set) vkDestroyDescriptorSetLayout(device, set, nullptr);
+            if (sampler) vkDestroySampler(device, sampler, nullptr);
+            for (auto module : modules) vkDestroyShaderModule(device, module, nullptr);
+            for (auto image : images) { if (image.view) vkDestroyImageView(device, image.view, nullptr); if (image.handle) vkDestroyImage(device, image.handle, nullptr); if (image.memory) vkFreeMemory(device, image.memory, nullptr); }
+            for (auto buffer : buffers) { if (buffer.mapped) vkUnmapMemory(device, buffer.memory); if (buffer.handle) vkDestroyBuffer(device, buffer.handle, nullptr); if (buffer.memory) vkFreeMemory(device, buffer.memory, nullptr); }
+            if (commandPool) vkDestroyCommandPool(device, commandPool, nullptr);
+            vkDestroyDevice(device, nullptr);
+        }
+        if (instance) vkDestroyInstance(instance, nullptr);
+    }
+    uint32_t Memory(uint32_t bits, VkMemoryPropertyFlags flags) {
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
+            if ((bits & (1u << i)) && (memoryProperties.memoryTypes[i].propertyFlags & flags) == flags) return i;
+        throw std::runtime_error("No fixture memory type");
+    }
+    Buffer MakeBuffer(size_t size, VkBufferUsageFlags usage) {
+        buffers.emplace_back(); auto& result = buffers.back();
+        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; info.size = size; info.usage = usage;
+        Vk(vkCreateBuffer(device, &info, nullptr, &result.handle));
+        VkMemoryRequirements requirements; vkGetBufferMemoryRequirements(device, result.handle, &requirements);
+        VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex = Memory(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        Vk(vkAllocateMemory(device, &allocate, nullptr, &result.memory)); Vk(vkBindBufferMemory(device, result.handle, result.memory, 0));
+        Vk(vkMapMemory(device, result.memory, 0, size, 0, &result.mapped)); return result;
+    }
+    Image MakeImage(uint32_t size, VkImageUsageFlags usage) {
+        images.emplace_back(); auto& result = images.back();
+        VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; info.imageType = VK_IMAGE_TYPE_2D;
+        info.format = VK_FORMAT_R8G8B8A8_UNORM; info.extent = {size, size, 1}; info.mipLevels = info.arrayLayers = 1;
+        info.samples = VK_SAMPLE_COUNT_1_BIT; info.tiling = VK_IMAGE_TILING_OPTIMAL; info.usage = usage;
+        Vk(vkCreateImage(device, &info, nullptr, &result.handle));
+        VkMemoryRequirements requirements; vkGetImageMemoryRequirements(device, result.handle, &requirements);
+        VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex = Memory(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        Vk(vkAllocateMemory(device, &allocate, nullptr, &result.memory)); Vk(vkBindImageMemory(device, result.handle, result.memory, 0));
+        VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO}; view.image = result.handle; view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view.format = info.format; view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        Vk(vkCreateImageView(device, &view, nullptr, &result.view)); return result;
+    }
+    void Begin() {
+        Vk(vkResetCommandPool(device, commandPool, 0));
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; Vk(vkBeginCommandBuffer(command, &begin));
+    }
+    void Submit() {
+        Vk(vkEndCommandBuffer(command)); VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
+        Vk(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE)); Vk(vkQueueWaitIdle(queue));
+    }
+    void Barrier(VkImage image, VkImageLayout oldLayout, VkImageLayout next, VkAccessFlags src, VkAccessFlags dst, VkPipelineStageFlags before, VkPipelineStageFlags after) {
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; barrier.image = image;
+        barrier.oldLayout = oldLayout; barrier.newLayout = next; barrier.srcAccessMask = src; barrier.dstAccessMask = dst;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(command, before, after, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
+    VkShaderModule Module(const char* name) {
+        std::ifstream stream(std::string(WOWDECOMP_SLANG_TEST_DIR) + '/' + name, std::ios::binary | std::ios::ate);
+        const std::streamoff length = stream.tellg(); Check(stream && length >= 20 && length % 4 == 0, "Missing authored Slang module");
+        std::vector<uint32_t> words(static_cast<size_t>(length) / 4); stream.seekg(0); stream.read(reinterpret_cast<char*>(words.data()), length);
+        Check(static_cast<bool>(stream), "Cannot read authored Slang module");
+        return Module(words);
+    }
+    VkShaderModule Module(const std::vector<uint32_t>& words) {
+        VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; info.codeSize = words.size() * 4; info.pCode = words.data();
+        VkShaderModule module; Vk(vkCreateShaderModule(device, &info, nullptr, &module)); modules.push_back(module); return module;
+    }
+    void Init() {
+        VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO}; app.apiVersion = VK_API_VERSION_1_1;
+        VkInstanceCreateInfo create{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; create.pApplicationInfo = &app;
+        uint32_t count = 0;
+        Vk(vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr));
+        std::vector<VkExtensionProperties> extensions(count);
+        Vk(vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data()));
+        const char* portability = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+        if (std::any_of(extensions.begin(), extensions.end(), [portability](const auto& extension) {
+            return std::strcmp(extension.extensionName, portability) == 0;
+        })) {
+            create.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+            create.enabledExtensionCount = 1; create.ppEnabledExtensionNames = &portability;
+        }
+        Vk(vkCreateInstance(&create, nullptr, &instance));
+        count = 0; Vk(vkEnumeratePhysicalDevices(instance, &count, nullptr)); Check(count != 0, "No Vulkan device for GPU regression test");
+        std::vector<VkPhysicalDevice> devices(count); Vk(vkEnumeratePhysicalDevices(instance, &count, devices.data()));
+        uint32_t family = 0; bool found = false;
+        for (auto candidate : devices) {
+            vkGetPhysicalDeviceQueueFamilyProperties(candidate, &count, nullptr); std::vector<VkQueueFamilyProperties> queues(count);
+            vkGetPhysicalDeviceQueueFamilyProperties(candidate, &count, queues.data());
+            for (uint32_t i = 0; i < count; ++i) if (queues[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { physical = candidate; family = i; found = true; break; }
+            if (found) break;
+        }
+        Check(found, "No graphics queue for GPU regression test"); vkGetPhysicalDeviceMemoryProperties(physical, &memoryProperties);
+        const float priority = 1; VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+        queueInfo.queueFamilyIndex = family; queueInfo.queueCount = 1; queueInfo.pQueuePriorities = &priority;
+        VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; deviceInfo.queueCreateInfoCount = 1; deviceInfo.pQueueCreateInfos = &queueInfo;
+        Vk(vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, nullptr));
+        extensions.resize(count);
+        Vk(vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, extensions.data()));
+        const char* subset = "VK_KHR_portability_subset";
+        if (std::any_of(extensions.begin(), extensions.end(), [subset](const auto& extension) {
+            return std::strcmp(extension.extensionName, subset) == 0;
+        })) {
+            deviceInfo.enabledExtensionCount = 1; deviceInfo.ppEnabledExtensionNames = &subset;
+        }
+        Vk(vkCreateDevice(physical, &deviceInfo, nullptr, &device)); vkGetDeviceQueue(device, family, 0, &queue);
+        VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; pool.queueFamilyIndex = family;
+        Vk(vkCreateCommandPool(device, &pool, nullptr, &commandPool));
+        VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; allocate.commandPool = commandPool;
+        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; allocate.commandBufferCount = 1; Vk(vkAllocateCommandBuffers(device, &allocate, &command));
+        vertices = MakeBuffer(sizeof(Vertex) * 6, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        vertexUniform = MakeBuffer(sizeof(VertexConstants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        pixelUniform = MakeBuffer(sizeof(PixelConstants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        alphaUniform = MakeBuffer(16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        std::memset(alphaUniform.mapped, 0, 16);
+        staging = MakeBuffer(16 * 16 * 4 * 2, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        readback = MakeBuffer(64 * 64 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        auto base = MakeImage(16, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        auto mask = MakeImage(16, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        target = MakeImage(64, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        auto* texels = static_cast<uint8_t*>(staging.mapped);
+        for (int y = 0; y < 16; ++y) for (int x = 0; x < 16; ++x) {
+            const int offset = (y * 16 + x) * 4; texels[offset] = 128; texels[offset + 1] = 64; texels[offset + 2] = 32; texels[offset + 3] = 128;
+            const int masked = offset + 1024; texels[masked] = texels[masked + 1] = texels[masked + 2] = 255;
+            const float dx = (x + .5f) / 16 - .5f, dy = (y + .5f) / 16 - .5f;
+            texels[masked + 3] = dx * dx + dy * dy < .16f ? 255 : 0;
+        }
+        Begin();
+        for (unsigned i = 0; i < 2; ++i) {
+            const auto image = i ? mask : base;
+            Barrier(image.handle, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            VkBufferImageCopy copy{}; copy.bufferOffset = i * 1024; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {16,16,1};
+            vkCmdCopyBufferToImage(command, staging.handle, image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            Barrier(image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        }
+        Submit();
+        VkSamplerCreateInfo sample{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO}; sample.magFilter = sample.minFilter = VK_FILTER_NEAREST;
+        sample.addressModeU = sample.addressModeV = sample.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; Vk(vkCreateSampler(device, &sample, nullptr, &sampler));
+        for (unsigned i = 0; i < 4; ++i) {
+            std::vector<VkDescriptorSetLayoutBinding> bindings;
+            if (i == 1 || i == 3) bindings.push_back({0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, i == 1 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+            if (i == 3) bindings.push_back({1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+            if (i == 2) for (unsigned slot = 0; slot < 8; ++slot) bindings.push_back({slot, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+            VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; info.bindingCount = static_cast<uint32_t>(bindings.size()); info.pBindings = bindings.data();
+            Vk(vkCreateDescriptorSetLayout(device, &info, nullptr, &setLayouts[i]));
+        }
+        const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8}};
+        VkDescriptorPoolCreateInfo descriptors{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; descriptors.maxSets = 4; descriptors.poolSizeCount = 2; descriptors.pPoolSizes = sizes;
+        Vk(vkCreateDescriptorPool(device, &descriptors, nullptr, &descriptorPool));
+        VkDescriptorSetAllocateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; set.descriptorPool = descriptorPool; set.descriptorSetCount = 4; set.pSetLayouts = setLayouts.data();
+        Vk(vkAllocateDescriptorSets(device, &set, sets.data()));
+        VkDescriptorBufferInfo uniform[] = {{vertexUniform.handle, 0, sizeof(VertexConstants)}, {pixelUniform.handle, 0, sizeof(PixelConstants)}, {alphaUniform.handle, 0, 16}};
+        std::array<VkDescriptorImageInfo, 8> textures{}; std::vector<VkWriteDescriptorSet> writes;
+        for (unsigned i = 0; i < 3; ++i) { VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; write.dstSet = sets[i == 0 ? 1 : 3]; write.dstBinding = i == 2 ? 1 : 0; write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; write.pBufferInfo = &uniform[i]; writes.push_back(write); }
+        for (unsigned i = 0; i < 8; ++i) { textures[i] = {sampler, i == 1 ? mask.view : base.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; write.dstSet = sets[2]; write.dstBinding = i; write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; write.pImageInfo = &textures[i]; writes.push_back(write); }
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        VkAttachmentDescription attachment{}; attachment.format = VK_FORMAT_R8G8B8A8_UNORM; attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference reference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}; VkSubpassDescription subpass{}; subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; subpass.colorAttachmentCount = 1; subpass.pColorAttachments = &reference;
+        VkRenderPassCreateInfo render{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO}; render.attachmentCount = 1; render.pAttachments = &attachment; render.subpassCount = 1; render.pSubpasses = &subpass;
+        Vk(vkCreateRenderPass(device, &render, nullptr, &pass));
+        VkFramebufferCreateInfo frame{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; frame.renderPass = pass; frame.attachmentCount = 1; frame.pAttachments = &target.view; frame.width = frame.height = 64; frame.layers = 1;
+        Vk(vkCreateFramebuffer(device, &frame, nullptr, &framebuffer));
+        VkPipelineLayoutCreateInfo pipelineLayout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pipelineLayout.setLayoutCount = 4; pipelineLayout.pSetLayouts = setLayouts.data(); Vk(vkCreatePipelineLayout(device, &pipelineLayout, nullptr, &layout));
+        SetShaders(Module("fixed.vert.spv"), Module("fixed.frag.spv"));
+    }
+    void SetShaders(VkShaderModule vertex, VkShaderModule pixel, bool legacyVertex = false,
+        const VkViewport* requestedViewport = nullptr, const VkRect2D* requestedScissor = nullptr) {
+        if (pipeline) { vkDestroyPipeline(device, pipeline, nullptr); pipeline = VK_NULL_HANDLE; }
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        for (int i = 0; i < 2; ++i) { stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[i].stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT; stages[i].module = i ? pixel : vertex; stages[i].pName = "main"; }
+        VkVertexInputBindingDescription binding{0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
+        std::vector<VkVertexInputAttributeDescription> attributes{{0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,position)},{3,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,normal)},{4,0,VK_FORMAT_R8G8B8A8_UNORM,offsetof(Vertex,colour)}};
+        for (unsigned i = 0; i < 8; ++i) attributes.push_back({6+i,0,VK_FORMAT_R32G32_SFLOAT,static_cast<uint32_t>(offsetof(Vertex,uv)+i*8)});
+        if (legacyVertex) {
+            std::vector<VkVertexInputAttributeDescription> used;
+            for (auto attribute : attributes) if (attribute.location == 0 || attribute.location == 4 || attribute.location == 7) used.push_back(attribute);
+            attributes = used;
+        }
+        VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO}; input.vertexBindingDescriptionCount = 1; input.pVertexBindingDescriptions = &binding; input.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size()); input.pVertexAttributeDescriptions = attributes.data();
+        VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkViewport viewport{0,0,64,64,0,1}; VkRect2D scissor{{0,0},{64,64}};
+        if (requestedViewport) viewport = *requestedViewport;
+        if (requestedScissor) scissor = *requestedScissor;
+        VkPipelineViewportStateCreateInfo view{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; view.viewportCount = view.scissorCount = 1; view.pViewports = &viewport; view.pScissors = &scissor;
+        VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO}; raster.polygonMode = VK_POLYGON_MODE_FILL; raster.lineWidth = 1;
+        VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineColorBlendAttachmentState colour{}; colour.colorWriteMask = 15;
+        VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; blend.attachmentCount = 1; blend.pAttachments = &colour;
+        VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO}; info.stageCount = 2; info.pStages = stages; info.pVertexInputState = &input; info.pInputAssemblyState = &assembly;
+        info.pViewportState = &view; info.pRasterizationState = &raster; info.pMultisampleState = &samples; info.pColorBlendState = &blend; info.layout = layout; info.renderPass = pass;
+        Vk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline));
+    }
+    void Draw(VertexConstants v, PixelConstants p, uint32_t colour = 0xFFFFFFFF, bool residentVertices = false) {
+        std::memcpy(vertexUniform.mapped, &v, sizeof(v)); std::memcpy(pixelUniform.mapped, &p, sizeof(p));
+        const float uv[6][2] = {{0,0},{1,0},{0,1},{0,1},{1,0},{1,1}}; Vertex data[6]{};
+        for (unsigned i = 0; i < 6; ++i) { data[i].position[0] = uv[i][0] * 2 - 1; data[i].position[1] = uv[i][1] * 2 - 1; data[i].normal[2] = 1; data[i].colour = colour; for (auto& coordinate : data[i].uv) { coordinate[0] = uv[i][0]; coordinate[1] = uv[i][1]; } }
+        std::memcpy(vertices.mapped, data, sizeof(data)); Begin(); VkClearValue clear{};
+        const auto vertexBuffer = residentVertices ? resident.Resolve(device, memoryProperties, command,
+            ++residentFrame, data, sizeof(data), retired, residentDrawUploads) : vertices.handle;
+        VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; begin.renderPass = pass; begin.framebuffer = framebuffer; begin.renderArea.extent = {64,64}; begin.clearValueCount = 1; begin.pClearValues = &clear;
+        vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE); vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        const VkDeviceSize offset = 0; vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &offset);
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 4, sets.data(), 0, nullptr); vkCmdDraw(command, 6, 1, 0, 0); vkCmdEndRenderPass(command);
+        Barrier(target.handle, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{}; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}; copy.imageExtent = {64,64,1};
+        vkCmdCopyImageToBuffer(command, target.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.handle, 1, &copy);
+        VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER}; host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; host.buffer = readback.handle; host.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr); Submit();
+    }
+    void TestResidency() {
+        uint64_t uploaded = 0;
+        const auto resolve = [&](uint64_t frame, const void* data, size_t bytes) {
+            return resident.Resolve(device, memoryProperties, command, frame, data, bytes, retired, uploaded);
+        };
+        const auto copy = [&](VkBuffer source, VkDeviceSize offset, VkDeviceSize bytes, VkDeviceSize destination) {
+            VkBufferMemoryBarrier ready{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+            ready.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; ready.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            ready.srcQueueFamilyIndex = ready.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            ready.buffer = source; ready.size = VK_WHOLE_SIZE;
+            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, nullptr, 1, &ready, 0, nullptr);
+            const VkBufferCopy region{offset,destination,bytes};
+            vkCmdCopyBuffer(command, source, readback.handle, 1, &region);
+        };
+        const auto submit = [&] {
+            VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+            host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            host.buffer = readback.handle; host.size = VK_WHOLE_SIZE;
+            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                0, 0, nullptr, 1, &host, 0, nullptr);
+            Submit();
+            for (auto& buffer : retired) GxVulkan::DestroyBuffer(device, buffer);
+            retired.clear();
+        };
+        const auto equal = [&](size_t offset, const void* expected, size_t bytes) {
+            Check(std::memcmp(static_cast<uint8_t*>(readback.mapped)+offset,expected,bytes)==0,
+                "Resident GPU snapshot changed unexpectedly");
+        };
+        const uint32_t a[] = {11,22,33}, b[] = {44,55,66}, c[] = {77,88,99};
+        Begin();
+        const auto first = resolve(1,a,sizeof(a));
+        Check(uploaded == sizeof(a), "Initial resident upload count is incorrect");
+        Check(resolve(1,a,sizeof(a)) == first && uploaded == sizeof(a), "Unchanged mesh was reuploaded");
+        resident.MarkDirty();
+        const auto second = resolve(1,b,sizeof(b));
+        Check(first != second, "Mid-frame mutation overwrote an in-flight snapshot");
+        copy(first,0,sizeof(a),0); copy(second,0,sizeof(b),16); submit();
+        equal(0,a,sizeof(a)); equal(16,b,sizeof(b));
+        Begin();
+        const auto warmBytes = uploaded;
+        for (unsigned draw = 0; draw < 20; ++draw)
+            Check(resolve(2,b,sizeof(b)) == second, "Resident handle was not stable across frames");
+        Check(uploaded == warmBytes, "Steady-state mesh draws performed another upload");
+        copy(second,0,sizeof(b),0); submit(); equal(0,b,sizeof(b));
+        Begin(); resident.MarkDirty();
+        const auto updated = resolve(3,c,sizeof(c));
+        Check(updated == second, "Completed-frame buffer was unnecessarily replaced");
+        std::array<uint8_t,16> grown{}; for (unsigned i = 0; i < 13; ++i) grown[i] = static_cast<uint8_t>(100+i);
+        const auto resized = resolve(3,grown.data(),13);
+        Check(resized != updated, "Resize replaced data still referenced in this frame");
+        copy(updated,0,sizeof(c),0); copy(resized,0,16,16); submit();
+        equal(0,c,sizeof(c)); equal(16,grown.data(),16);
+        Begin(); grown[13] = 201;
+        const auto resizedWithinPadding = resolve(4,grown.data(),14);
+        Check(resizedWithinPadding == resized, "Same-capacity update should reuse a completed buffer");
+        copy(resizedWithinPadding,0,16,0);
+        resident.Retire(retired); // Logical destruction before submission must preserve the recorded read.
+        submit(); equal(0,grown.data(),16);
+        Begin();
+        std::vector<uint8_t> large(68*1024*1024,0x5A); large.back() = 0xC3;
+        const auto largeBuffer = resolve(5,large.data(),large.size());
+        const auto afterLargeUpload = uploaded;
+        for (unsigned draw = 0; draw < 20; ++draw) resolve(5,large.data(),large.size());
+        Check(uploaded == afterLargeUpload, "Large resident mesh was repeatedly copied");
+        copy(largeBuffer,large.size()-16,16,0); submit(); equal(0,large.data()+large.size()-16,16);
+        VertexConstants vertex{}; PixelConstants pixel{};
+        vertex.projection = vertex.view = vertex.normal = Identity();
+        for (auto& matrix : vertex.texture) matrix = Identity();
+        residentFrame = 5;
+        Draw(vertex,pixel,0xFF0000FF,true); Pixel(32,32,{0,0,1,1});
+        const auto firstDrawUpload = residentDrawUploads;
+        Draw(vertex,pixel,0xFF0000FF,true); Pixel(32,32,{0,0,1,1});
+        Check(residentDrawUploads == firstDrawUpload, "Resident rendered geometry was reuploaded");
+        resident.MarkDirty();
+        Draw(vertex,pixel,0xFFFF0000,true); Pixel(32,32,{1,0,0,1});
+        Check(residentDrawUploads > firstDrawUpload, "Mutated rendered geometry was not uploaded");
+        std::cout << "GPU residency: retained data, mutation, resize, deferred destruction, 68 MiB mesh and rendered pixels passed\n";
+    }
+    void Pixel(unsigned x, unsigned y, const std::array<float,4>& expected) {
+        const auto* bytes = static_cast<const uint8_t*>(readback.mapped) + (y * 64 + x) * 4;
+        for (unsigned i = 0; i < 4; ++i) if (std::fabs(bytes[i] - expected[i] * 255) > 2)
+            throw std::runtime_error("GPU colour mismatch at channel " + std::to_string(i) + ": " + std::to_string(bytes[i]) + " expected " + std::to_string(expected[i]*255));
+    }
+};
+std::array<float,4> Combine(const std::array<float,4>& tex, const std::array<float,4>& current, const std::array<float,4>& diffuse, unsigned operation) {
+    std::array<float,4> result{};
+    for (unsigned i = 0; i < 4; ++i) {
+        float value = 0;
+        switch (operation) { case 0:value=tex[i]*current[i];break; case 1:value=2*tex[i]*current[i];break; case 2:value=tex[i]+current[i];break; case 3:value=current[i];break; case 4:value=current[i]*current[3]+tex[i]*(1-current[3]);break; case 5:value=tex[i]*diffuse[3]+current[i]*(1-diffuse[3]);break; }
+        result[i] = std::fmax(0.f,std::fmin(1.f,value));
+    }
+    return result;
+}
+}
+int main(int argc, char** argv) {
+    try {
+        Fixture fixture; fixture.Init();
+        if (argc == 2 && std::strcmp(argv[1],"--residency") == 0) { fixture.TestResidency(); return 0; }
+        VertexConstants v{}; PixelConstants p{};
+        v.projection = v.view = v.normal = Identity(); for (auto& matrix : v.texture) matrix = Identity();
+        // FFX uses a subrectangle of a larger POT render texture. Screen and
+        // texture subrectangles have different origins; full-size tests hide it.
+        for (bool textureTarget : {false, true}) {
+            const auto viewport = GxVulkan::MakeViewport({64,64}, textureTarget, 0,.5f,0,.5f,0,1);
+            const auto scissor = GxVulkan::MakeScissor({64,64}, textureTarget, 0,.5f,0,.5f);
+            Check(scissor.offset.y == (textureTarget ? 0 : 32) && scissor.extent.height == 32,
+                "Offscreen scissor origin does not match Gx/D3D9");
+            fixture.SetShaders(fixture.Module("fixed.vert.spv"), fixture.Module("fixed.frag.spv"), false, &viewport, &scissor);
+            fixture.Draw(v,p,0xFF0000FF);
+            fixture.Pixel(16,textureTarget ? 16 : 48,{0,0,1,1});
+            fixture.Pixel(16,textureTarget ? 48 : 16,{0,0,0,0});
+            fixture.Pixel(48,16,{0,0,0,0});
+        }
+        fixture.SetShaders(fixture.Module("fixed.vert.spv"), fixture.Module("fixed.frag.spv"));
+        fixture.Draw(v,p,0xFF0000FF); fixture.Pixel(32,32,{0,0,1,1});
+        v.control[0] = {0,0,0,1}; p.stage[0] = {1,0,0,0}; p.options[0] = .1f;
+        fixture.Draw(v,p); const std::array<float,4> base{128.f/255,64.f/255,32.f/255,128.f/255}; fixture.Pixel(32,32,base);
+        v.control[1] = {1,0,0,1}; p.stage[1] = {1,0,0,0}; fixture.Draw(v,p);
+        fixture.Pixel(32,32,base); fixture.Pixel(3,3,{0,0,0,0});
+        v.texture[1][12] = .5f; v.control[1][2] = 1; fixture.Draw(v,p);
+        fixture.Pixel(32,32,{0,0,0,0}); fixture.Pixel(8,32,base);
+        v.texture[1] = Identity(); v.control[1][2] = 0; p.stage[1] = {}; p.options[0] = 0;
+        for (unsigned stage = 1; stage < 8; ++stage) {
+            v.control[stage] = {static_cast<float>(stage),0,0,1};
+            p.stage[stage] = {1,3,3,0};
+        }
+        p.stage[7] = {1,2,3,0}; fixture.Draw(v,p);
+        fixture.Pixel(32,32,{1,128.f/255,64.f/255,128.f/255});
+        for (unsigned stage = 1; stage < 8; ++stage) p.stage[stage] = {};
+        const std::array<float,4> diffuse{64.f/255,128.f/255,192.f/255,64.f/255};
+        for (unsigned operation = 0; operation < 6; ++operation) {
+            p.stage[0] = {1,static_cast<float>(operation),static_cast<float>(operation),0};
+            fixture.Draw(v,p,0x404080C0); fixture.Pixel(32,32,Combine(base,diffuse,diffuse,operation));
+            p.stage[0] = {1,0,0,0}; p.stage[1] = {1,static_cast<float>(operation),static_cast<float>(operation),0};
+            fixture.Draw(v,p,0x404080C0); fixture.Pixel(32,32,Combine({1,1,1,1},Combine(base,diffuse,diffuse,0),diffuse,operation)); p.stage[1] = {};
+        }
+        // Synthetic SM2: position/colour passthrough and TEXCOORD1 for the mask.
+        // Test both mixed-stage directions using genuinely recovered Slang.
+        constexpr uint32_t legacyVertex[] = {
+            0xFFFE0200, 0x0200001F, 0x80000000, 0x900F0000,
+            0x0200001F, 0x8000000A, 0x900F0001,
+            0x0200001F, 0x80010005, 0x900F0002,
+            0x02000001, 0xC00F0000, 0x90E40000,
+            0x02000001, 0xD00F0000, 0x90E40001,
+            0x02000001, 0xE00F0001, 0x90E40002, 0x0000FFFF
+        };
+        constexpr uint32_t legacyPixel[] = {0xFFFF0200, 0x02000001, 0x800F0800, 0xA0E40000, 0x0000FFFF};
+        GxVulkan::SlangCompiler compiler;
+        fixture.SetShaders(fixture.Module(compiler.Compile(GxVulkan::RecoverSlangSource(legacyVertex,sizeof(legacyVertex)),true)),fixture.Module("fixed.frag.spv"),true);
+        p = {}; p.options[0] = .1f; p.stage[0] = p.stage[1] = {1,0,0,0};
+        fixture.Draw(v,p); fixture.Pixel(32,32,base); fixture.Pixel(3,3,{0,0,0,0});
+        fixture.SetShaders(fixture.Module("fixed.vert.spv"),fixture.Module(compiler.Compile(GxVulkan::RecoverSlangSource(legacyPixel,sizeof(legacyPixel)),false)));
+        p.options = {.2f,.4f,.6f,.8f}; fixture.Draw(v,p); fixture.Pixel(32,32,p.options);
+        std::cout << "GPU fixed-function colour, mask, UV/transform, six texture operations and mixed shader stages passed\n";
+        return 0;
+    } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+}
