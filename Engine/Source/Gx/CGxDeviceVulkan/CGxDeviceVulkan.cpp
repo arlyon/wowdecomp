@@ -2,6 +2,8 @@
 #include "Shader.h"
 #include "Slang.h"
 #include "ResidentBuffer.h"
+#include "ResourceCache.h"
+#include "Timing.h"
 #include "Engine/Source/Gx/Blit.h"
 #include "Engine/Source/Gx/Buffer.h"
 #include "Engine/Source/Gx/CGxPool.h"
@@ -14,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -21,6 +24,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -60,16 +64,7 @@ struct CachedGeometry {
     uint32_t index = 0, bytes = 0;
     GxVulkan::ResidentBuffer resident;
 };
-struct NativeImage {
-    VkImage image = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
-    VkSampler sampler = VK_NULL_HANDLE;
-    VkFormat format = VK_FORMAT_UNDEFINED;
-    uint32_t width = 0, height = 0, levels = 1, layers = 1;
-    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-};
+using NativeImage = GxVulkan::Image;
 struct NativeShader {
     uint64_t id;
     GxVulkan::Shader reflection;
@@ -124,8 +119,10 @@ struct CGxDeviceVulkan::State {
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     std::array<VkDescriptorSetLayout, 4> descriptorLayouts{};
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    NativeBuffer upload;
-    VkDeviceSize uploadOffset = 0;
+    NativeBuffer upload, residentStaging;
+    VkDeviceSize uploadOffset = 0, residentStagingOffset = 0;
+    GxVulkan::UploadStats residentAllocations;
+    uint64_t stagingArenaAllocations = 0;
     NativeImage depth, white;
     std::map<CGxPool*, std::vector<uint8_t>> pools;
     std::map<CGxBuf*, CachedGeometry> geometry;
@@ -133,6 +130,7 @@ struct CGxDeviceVulkan::State {
     uint64_t bufferFrame = 0, residentUploadBytes = 0;
     std::map<CGxTex*, NativeImage> textures;
     std::vector<NativeImage> retiredImages;
+    std::unique_ptr<GxVulkan::ResourceCache> resourceCache;
     std::map<CGxShader*, NativeShader> shaders;
     uint64_t nextShader = 1;
     GxVulkan::SlangCompiler shaderCompiler;
@@ -142,9 +140,19 @@ struct CGxDeviceVulkan::State {
     std::vector<VkFramebuffer> framebuffers;
     VkRenderPass currentPass = VK_NULL_HANDLE;
     VkExtent2D targetExtent{};
-    uint64_t drawCount = 0;
+    uint64_t drawCount = 0, triangleCount = 0;
+    std::ofstream profile;
+    VkQueryPool timestamps = VK_NULL_HANDLE;
+    uint32_t timestampBits = 0;
+    uint64_t profileFrame = 0, frameDrawStart = 0, frameTriangleStart = 0, frameReadbacks = 0;
+    uint64_t lockScans = 0, lockVisits = 0, lockDirtyMarks = 0, streamLocks = 0;
+    uint64_t textureCacheHits = 0, textureCacheLookups = 0;
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point previousFrameStart{}, recordStart{};
+    double intervalMs = 0, fenceWaitMs = 0, acquireMs = 0;
+    std::string pendingProfile;
+    void CollectProfile();
 
-    uint32_t MemoryType(uint32_t mask, VkMemoryPropertyFlags flags) const;
     NativeBuffer MakeBuffer(VkDeviceSize size, VkBufferUsageFlags usage);
     void DestroyBuffer(NativeBuffer& buffer);
     NativeImage MakeImage(uint32_t width, uint32_t height, uint32_t levels, uint32_t layers,
@@ -167,11 +175,6 @@ struct CGxDeviceVulkan::State {
     void Draw(CGxBatch& batch, bool indexed);
 };
 
-uint32_t CGxDeviceVulkan::State::MemoryType(uint32_t mask, VkMemoryPropertyFlags flags) const {
-    for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
-        if ((mask & (1u << i)) && (memoryProperties.memoryTypes[i].propertyFlags & flags) == flags) return i;
-    throw std::runtime_error("Vulkan device has no suitable memory type");
-}
 NativeBuffer CGxDeviceVulkan::State::MakeBuffer(VkDeviceSize size, VkBufferUsageFlags usage) {
     return GxVulkan::CreateBuffer(device, memoryProperties, size, usage,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -181,36 +184,10 @@ void CGxDeviceVulkan::State::DestroyBuffer(NativeBuffer& buffer) {
 }
 NativeImage CGxDeviceVulkan::State::MakeImage(uint32_t width, uint32_t height, uint32_t levels,
     uint32_t layers, VkFormat format, VkImageAspectFlags aspect, VkImageUsageFlags usage) {
-    NativeImage image;
-    image.width = width; image.height = height; image.levels = levels; image.layers = layers;
-    image.format = format; image.aspect = aspect;
-    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    info.flags = layers == 6 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
-    info.imageType = VK_IMAGE_TYPE_2D; info.format = format; info.extent = {width, height, 1};
-    info.mipLevels = levels; info.arrayLayers = layers; info.samples = VK_SAMPLE_COUNT_1_BIT;
-    info.tiling = VK_IMAGE_TILING_OPTIMAL; info.usage = usage; info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    GX_VK(vkCreateImage(device, &info, nullptr, &image.image));
-    try {
-        VkMemoryRequirements requirements;
-        vkGetImageMemoryRequirements(device, image.image, &requirements);
-        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocation.allocationSize = requirements.size;
-        allocation.memoryTypeIndex = MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        GX_VK(vkAllocateMemory(device, &allocation, nullptr, &image.memory));
-        GX_VK(vkBindImageMemory(device, image.image, image.memory, 0));
-        VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        view.image = image.image; view.viewType = layers == 6 ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D;
-        view.format = format; view.subresourceRange = {aspect, 0, levels, 0, layers};
-        GX_VK(vkCreateImageView(device, &view, nullptr, &image.view));
-    } catch (...) { DestroyImage(image); throw; }
-    return image;
+    return resourceCache->AcquireImage({width, height, levels, layers, format, aspect, usage});
 }
 void CGxDeviceVulkan::State::DestroyImage(NativeImage& image) {
-    if (image.sampler) vkDestroySampler(device, image.sampler, nullptr);
-    if (image.view) vkDestroyImageView(device, image.view, nullptr);
-    if (image.image) vkDestroyImage(device, image.image, nullptr);
-    if (image.memory) vkFreeMemory(device, image.memory, nullptr);
-    image = {};
+    GxVulkan::DestroyImage(device, image);
 }
 void CGxDeviceVulkan::State::Barrier(VkImage image, VkImageAspectFlags aspect,
     uint32_t levels, uint32_t layers, VkImageLayout oldLayout, VkImageLayout newLayout) {
@@ -283,7 +260,9 @@ void CGxDeviceVulkan::State::Initialize() {
             VkBool32 present = false;
             GX_VK(vkGetPhysicalDeviceSurfaceSupportKHR(candidate, family, surface, &present));
             if (present && queues[family].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-                physical = candidate; queueFamily = family; break;
+                physical = candidate; queueFamily = family;
+                timestampBits = queues[family].timestampValidBits;
+                break;
             }
         }
         if (physical) break;
@@ -311,6 +290,17 @@ void CGxDeviceVulkan::State::Initialize() {
     create.enabledExtensionCount = static_cast<uint32_t>(extensions.size()); create.ppEnabledExtensionNames = extensions.data();
     GX_VK(vkCreateDevice(physical, &create, nullptr, &device));
     vkGetDeviceQueue(device, queueFamily, 0, &queue);
+    resourceCache = std::make_unique<GxVulkan::ResourceCache>(device, memoryProperties);
+    if (const char* path = std::getenv("WOWDECOMP_VULKAN_PROFILE"); path && *path) {
+        profile.open(path);
+        if (!profile) throw std::runtime_error("Cannot open Vulkan frame profile output");
+        profile << "frame,interval_ms,record_ms,fence_wait_ms,acquire_ms,width,height,draws,triangles,upload_bytes,textures,pipelines,readbacks,resident_upload_bytes,resident_bytes,retired_buffer_bytes,geometry_lock_scans,geometry_lock_visits,geometry_dirty_marks,stream_locks,image_allocations,resident_staging_allocations,resident_device_allocations,resident_staging_reuses,staging_arena_allocations,staging_arena_bytes,texture_cache_hits,texture_cache_lookups,image_cache_reuses,resource_cache_bytes,resource_cache_evictions,resident_device_reuses,gpu_ms\n";
+        if (timestampBits) {
+            VkQueryPoolCreateInfo query{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            query.queryType = VK_QUERY_TYPE_TIMESTAMP; query.queryCount = 2;
+            GX_VK(vkCreateQueryPool(device, &query, nullptr, &timestamps));
+        }
+    }
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     poolInfo.queueFamilyIndex = queueFamily; poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     GX_VK(vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool));
@@ -419,19 +409,46 @@ void CGxDeviceVulkan::State::RecreateSwapchain() {
     gx.m_viewportDirty = 1; resize = false;
 }
 
+void CGxDeviceVulkan::State::CollectProfile() {
+    if (!profile.is_open() || pendingProfile.empty()) return;
+    profile << pendingProfile << ',';
+    if (timestamps) {
+        uint64_t results[4]{};
+        const auto status = vkGetQueryPoolResults(device, timestamps, 0, 2, sizeof(results), results,
+            sizeof(uint64_t) * 2, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        if (status == VK_SUCCESS && results[1] && results[3])
+            profile << GxVulkan::TimestampMilliseconds(results[0], results[2], timestampBits, properties.limits.timestampPeriod);
+    }
+    profile << '\n';
+    if (profileFrame % 120 == 0) profile.flush();
+    pendingProfile.clear();
+}
+
 bool CGxDeviceVulkan::State::BeginFrame() {
     if (recording) return true;
     int width, height;
     SDL_Vulkan_GetDrawableSize(window, &width, &height);
     if (width <= 0 || height <= 0 || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return false;
+    const auto frameStart = profile.is_open() ? Clock::now() : Clock::time_point{};
+    if (profile.is_open()) {
+        intervalMs = previousFrameStart.time_since_epoch().count() ?
+            std::chrono::duration<double, std::milli>(frameStart - previousFrameStart).count() : 0;
+        previousFrameStart = frameStart;
+    }
     GX_VK(vkWaitForFences(device, 1, &fence, true, UINT64_MAX));
+    if (profile.is_open()) {
+        fenceWaitMs = std::chrono::duration<double, std::milli>(Clock::now() - frameStart).count();
+        CollectProfile();
+        frameDrawStart = drawCount; frameTriangleStart = triangleCount; frameReadbacks = 0;
+    }
     for (auto framebuffer : framebuffers) vkDestroyFramebuffer(device, framebuffer, nullptr);
     framebuffers.clear();
-    for (auto& image : retiredImages) DestroyImage(image);
-    retiredImages.clear();
-    for (auto& buffer : retiredBuffers) DestroyBuffer(buffer);
-    retiredBuffers.clear();
+    // Images and resident buffers share one idle budget. Neither can be reused
+    // until the submission fence has completed; staging is destroyed normally.
+    if (!resourceCache->Collect(fence, retiredImages, retiredBuffers))
+        throw std::runtime_error("Vulkan retirement fence was not complete after waiting");
     if (resize) RecreateSwapchain();
+    const auto acquireStart = profile.is_open() ? Clock::now() : Clock::time_point{};
     VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE, &imageIndex);
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         RecreateSwapchain();
@@ -439,15 +456,26 @@ bool CGxDeviceVulkan::State::BeginFrame() {
     }
     if (result == VK_SUBOPTIMAL_KHR) resize = true;
     else VkCheck(result, "vkAcquireNextImageKHR");
+    if (profile.is_open()) {
+        recordStart = Clock::now();
+        acquireMs = std::chrono::duration<double, std::milli>(recordStart - acquireStart).count();
+    }
     GX_VK(vkResetCommandPool(device, commandPool, 0));
     GX_VK(vkResetDescriptorPool(device, descriptorPool, 0));
     uploadOffset = 0;
+    // The previous submission has completed. Borrowed resident staging ranges
+    // must not be recycled at a readback/resume within the same frame.
+    residentStagingOffset = 0;
     residentUploadBytes = 0;
     ++bufferFrame;
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     GX_VK(vkBeginCommandBuffer(command, &begin));
     recording = true; acquirePending = true;
+    if (timestamps) {
+        vkCmdResetQueryPool(command, timestamps, 0, 2);
+        vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
+    }
     Barrier(swapImages[imageIndex], VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
     if (depth.layout == VK_IMAGE_LAYOUT_UNDEFINED) {
         Barrier(depth.image, depth.aspect, 1, 1, depth.layout, VK_IMAGE_LAYOUT_GENERAL);
@@ -521,6 +549,9 @@ void CGxDeviceVulkan::State::BeginPass() {
 void CGxDeviceVulkan::State::Destroy() {
     if (device) {
         vkDeviceWaitIdle(device);
+        CollectProfile();
+        if (profile.is_open()) profile.close();
+        if (timestamps) { vkDestroyQueryPool(device, timestamps, nullptr); timestamps = VK_NULL_HANDLE; }
         if (commandPool) vkResetCommandPool(device, commandPool, 0);
         recording = inPass = false;
         for (auto framebuffer : framebuffers) vkDestroyFramebuffer(device, framebuffer, nullptr);
@@ -542,6 +573,8 @@ void CGxDeviceVulkan::State::Destroy() {
         for (auto& buffer : retiredBuffers) DestroyBuffer(buffer);
         retiredBuffers.clear();
         DestroyImage(white); DestroyImage(depth); DestroyBuffer(upload);
+        DestroyBuffer(residentStaging);
+        resourceCache.reset();
         for (auto view : swapViews) if (view) vkDestroyImageView(device, view, nullptr);
         swapViews.clear(); swapImages.clear();
         if (swapchain) vkDestroySwapchainKHR(device, swapchain, nullptr);
@@ -585,29 +618,42 @@ NativeImage& CGxDeviceVulkan::State::Texture(CGxTex* texture) {
         }
         return white;
     }
-    auto found = textures.find(texture);
-    if (found == textures.end() || texture->m_needsCreation) {
-        EndPass();
-        if (found != textures.end()) {
-            retiredImages.push_back(found->second); textures.erase(found);
+    // std::map keeps entry addresses stable. Creation publishes this pointer;
+    // TexDestroy and State::Destroy invalidate it on texture/device teardown.
+    // Updates and sampler changes still run through the common path below.
+    auto* cached = static_cast<NativeImage*>(texture->m_apiSpecificData);
+    if (cached && !texture->m_needsCreation) {
+        if (profile.is_open()) ++textureCacheHits;
+    } else {
+        if (profile.is_open()) ++textureCacheLookups;
+        auto found = textures.find(texture);
+        if (found == textures.end() || texture->m_needsCreation) {
+            EndPass();
+            if (found != textures.end()) {
+                retiredImages.push_back(found->second);
+                // A failed recreation must not leave a dangling fast-path pointer.
+                texture->m_apiSpecificData = nullptr;
+                textures.erase(found);
+            }
+            uint32_t width, height, baseMip, mipCount;
+            gx.ITexWHDStartEnd(texture, width, height, baseMip, mipCount);
+            VkFormat format = TextureFormat(texture->m_format);
+            VkImageAspectFlags aspect = texture->m_format == GxTex_D24X8 ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+            VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            if (texture->m_flags.m_renderTarget) usage |= aspect == VK_IMAGE_ASPECT_DEPTH_BIT ?
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            const uint32_t levels = texture->m_flags.m_renderTarget ? 1 : mipCount - baseMip;
+            NativeImage image = MakeImage(width, height, std::max(levels, 1u), texture->m_target == GxTex_CubeMap ? 6 : 1,
+                format, aspect, usage);
+            Barrier(image.image, image.aspect, image.levels, image.layers, image.layout, VK_IMAGE_LAYOUT_GENERAL);
+            image.layout = VK_IMAGE_LAYOUT_GENERAL;
+            found = textures.emplace(texture, image).first;
+            texture->m_needsCreation = 0; texture->m_needsFlagUpdate = 1;
         }
-        uint32_t width, height, baseMip, mipCount;
-        gx.ITexWHDStartEnd(texture, width, height, baseMip, mipCount);
-        VkFormat format = TextureFormat(texture->m_format);
-        VkImageAspectFlags aspect = texture->m_format == GxTex_D24X8 ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-        VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (texture->m_flags.m_renderTarget) usage |= aspect == VK_IMAGE_ASPECT_DEPTH_BIT ?
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        const uint32_t levels = texture->m_flags.m_renderTarget ? 1 : mipCount - baseMip;
-        NativeImage image = MakeImage(width, height, std::max(levels, 1u), texture->m_target == GxTex_CubeMap ? 6 : 1,
-            format, aspect, usage);
-        Barrier(image.image, image.aspect, image.levels, image.layers, image.layout, VK_IMAGE_LAYOUT_GENERAL);
-        image.layout = VK_IMAGE_LAYOUT_GENERAL;
-        found = textures.emplace(texture, image).first;
-        texture->m_apiSpecificData = &found->second;
-        texture->m_needsCreation = 0; texture->m_needsFlagUpdate = 1;
+        cached = &found->second;
+        texture->m_apiSpecificData = cached;
     }
-    NativeImage& image = found->second;
+    NativeImage& image = *cached;
     if (!image.sampler || texture->m_needsFlagUpdate) {
         if (image.sampler) {
             NativeImage old; old.sampler = image.sampler; retiredImages.push_back(old);
@@ -709,9 +755,28 @@ std::pair<VkBuffer, VkDeviceSize> CGxDeviceVulkan::State::Geometry(CGxBuf* buffe
         cached.resident.MarkDirty();
         cached.pool = buffer->m_pool; cached.index = buffer->m_index; cached.bytes = buffer->m_size;
     }
-    if (cached.resident.NeedsUpload(buffer->m_size)) EndPass();
-    return {cached.resident.Resolve(device, memoryProperties, command, bufferFrame,
-        data.data() + buffer->m_index, buffer->m_size, retiredBuffers, residentUploadBytes), 0};
+    GxVulkan::StagingSlice staging;
+    const VkDeviceSize paddedBytes = (static_cast<VkDeviceSize>(buffer->m_size) + 3) & ~VkDeviceSize(3);
+    if (cached.resident.NeedsUpload(buffer->m_size)) {
+        EndPass();
+        // A bounded, fence-reused arena removes one Vulkan allocation per small
+        // upload without consuming the transient vertex/uniform upload budget.
+        // Large uploads and overflow retain the dedicated-allocation path.
+        constexpr VkDeviceSize stagingCapacity = 4 * 1024 * 1024;
+        if (paddedBytes <= stagingCapacity) {
+            if (!residentStaging.buffer) {
+                residentStaging = MakeBuffer(stagingCapacity, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                if (profile.is_open()) ++stagingArenaAllocations;
+            }
+            if (residentStagingOffset <= residentStaging.size - paddedBytes)
+                staging = {&residentStaging, residentStagingOffset};
+        }
+    }
+    const auto result = cached.resident.Resolve(device, memoryProperties, command, bufferFrame,
+        data.data() + buffer->m_index, buffer->m_size, retiredBuffers, residentUploadBytes,
+        staging, profile.is_open() ? &residentAllocations : nullptr, resourceCache.get());
+    if (staging.buffer) residentStagingOffset += paddedBytes;
+    return {result, 0};
 }
 void CGxDeviceVulkan::State::RetireGeometry(CGxBuf* buffer) {
     auto found = geometry.find(buffer);
@@ -1063,12 +1128,18 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         vkCmdDraw(command, batch.m_count, 1, batch.m_start, 0);
     }
     ++drawCount;
+    if (profile.is_open()) {
+        if (batch.m_primType == GxPrim_Triangles) triangleCount += batch.m_count / 3;
+        else if ((batch.m_primType == GxPrim_TriangleStrip || batch.m_primType == GxPrim_TriangleFan) && batch.m_count > 2)
+            triangleCount += batch.m_count - 2;
+    }
 }
 
 void CGxDeviceVulkan::State::Submit(bool present, bool resume) {
     EndPass();
     if (present) Barrier(swapImages[imageIndex], VK_IMAGE_ASPECT_COLOR_BIT, 1, 1,
         VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    if (present && timestamps) vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, 1);
     GX_VK(vkEndCommandBuffer(command));
     GX_VK(vkResetFences(device, 1, &fence));
     const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -1088,7 +1159,31 @@ void CGxDeviceVulkan::State::Submit(bool present, bool resume) {
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) resize = true;
         else VkCheck(result, "vkQueuePresentKHR");
     }
+    if (present && profile.is_open()) {
+        uint64_t residentBytes = 0, retiredBytes = 0;
+        for (const auto& entry : geometry) residentBytes += entry.second.resident.Size();
+        for (const auto& buffer : retiredBuffers) retiredBytes += buffer.size;
+        std::ostringstream row;
+        row << ++profileFrame << ',' << intervalMs << ','
+            << std::chrono::duration<double, std::milli>(Clock::now() - recordStart).count() << ','
+            << fenceWaitMs << ',' << acquireMs << ',' << extent.width << ',' << extent.height << ','
+            << drawCount - frameDrawStart << ',' << triangleCount - frameTriangleStart << ','
+            << uploadOffset << ',' << textures.size() << ',' << pipelines.size() << ',' << frameReadbacks
+            << ',' << residentUploadBytes << ',' << residentBytes << ',' << retiredBytes
+            << ',' << lockScans << ',' << lockVisits << ',' << lockDirtyMarks << ',' << streamLocks << ',' << resourceCache->Stats().imageAllocations
+            << ',' << residentAllocations.stagingAllocations << ',' << residentAllocations.deviceAllocations
+            << ',' << residentAllocations.stagingReuses << ',' << stagingArenaAllocations << ',' << residentStaging.size
+            << ',' << textureCacheHits << ',' << textureCacheLookups
+            << ',' << resourceCache->Stats().imageReuses << ',' << resourceCache->CachedBytes()
+            << ',' << resourceCache->Stats().evictions << ',' << residentAllocations.deviceReuses;
+        pendingProfile = row.str();
+        lockScans = lockVisits = lockDirtyMarks = streamLocks = stagingArenaAllocations = 0;
+        resourceCache->ResetStats();
+        residentAllocations = {};
+        textureCacheHits = textureCacheLookups = 0;
+    }
     if (resume) {
+        ++frameReadbacks;
         GX_VK(vkWaitForFences(device, 1, &fence, true, UINT64_MAX));
         GX_VK(vkResetCommandPool(device, commandPool, 0));
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -1303,12 +1398,20 @@ char* CGxDeviceVulkan::BufLock(CGxBuf* buffer) {
     const uint64_t required = static_cast<uint64_t>(buffer->m_index) + buffer->m_size;
     if (required > INT32_MAX) throw std::runtime_error("Gx buffer size overflow");
     if (data.size() < required) data.resize(std::max<uint64_t>(required, std::max(pool->m_size, 0)));
-    for (auto& entry : m_native->geometry) {
-        const auto& cached = entry.second;
-        if (cached.pool == pool && cached.index < required &&
-            buffer->m_index < static_cast<uint64_t>(cached.index) + cached.bytes)
-            entry.second.resident.MarkDirty();
-    }
+    // Geometry() never caches stream pools. UI/font/particle locks must not
+    // walk every resident mesh just to discover that none can alias this pool.
+    if (pool->m_usage != GxPoolUsage_Stream) {
+        if (m_native->profile.is_open()) ++m_native->lockScans;
+        for (auto& entry : m_native->geometry) {
+            if (m_native->profile.is_open()) ++m_native->lockVisits;
+            const auto& cached = entry.second;
+            if (cached.pool == pool && cached.index < required &&
+                buffer->m_index < static_cast<uint64_t>(cached.index) + cached.bytes) {
+                entry.second.resident.MarkDirty();
+                if (m_native->profile.is_open()) ++m_native->lockDirtyMarks;
+            }
+        }
+    } else if (m_native->profile.is_open()) ++m_native->streamLocks;
     return reinterpret_cast<char*>(data.data() + buffer->m_index);
 }
 int32_t CGxDeviceVulkan::BufUnlock(CGxBuf* buffer, uint32_t size) {

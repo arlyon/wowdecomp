@@ -1,4 +1,5 @@
 #include "Engine/Source/Gx/CGxDeviceVulkan/Shader.h"
+#include "Engine/Source/Gx/CGxDeviceVulkan/Timing.h"
 #if defined(WOWDECOMP_TEST_SLANG_COMPILER)
 #include "Engine/Source/Gx/CGxDeviceVulkan/Slang.h"
 #endif
@@ -57,6 +58,12 @@ constexpr uint32_t relativeVertex[] = {
 int main() {
     try {
         using namespace GxVulkan;
+        Check(TimestampMilliseconds(100, 1100, 64, 1000) == 1.0, "GPU timestamp units are incorrect");
+        Check(TimestampMilliseconds(250, 5, 8, 1000) == 0.011, "GPU timestamp wraparound is incorrect");
+        Reject([&] { TimestampMilliseconds(0, 1, 0, 1); });
+        Reject([&] { TimestampMilliseconds(0, 1, 65, 1); });
+        Reject([&] { TimestampMilliseconds(0, 1, 64, 0); });
+        Reject([&] { TimestampMilliseconds(0, 1, 64, NAN); });
         auto v = TranslateShader(vertex, sizeof(vertex));
         auto p = TranslateShader(pixel, sizeof(pixel));
         const auto recovered = RecoverSlangSource(pixel, sizeof(pixel));

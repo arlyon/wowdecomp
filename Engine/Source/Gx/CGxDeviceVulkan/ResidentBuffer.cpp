@@ -1,4 +1,5 @@
 #include "ResidentBuffer.h"
+#include "ResourceCache.h"
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -19,7 +20,7 @@ VkDeviceSize AlignedSize(VkDeviceSize bytes) {
 Buffer CreateBuffer(VkDevice device, const VkPhysicalDeviceMemoryProperties& memory,
     VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) {
     Buffer buffer;
-    buffer.size = size;
+    buffer.size = size; buffer.usage = usage; buffer.properties = properties;
     VkBufferCreateInfo create{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     create.size = size; create.usage = usage; create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     Check(vkCreateBuffer(device, &create, nullptr, &buffer.buffer), "vkCreateBuffer");
@@ -35,6 +36,7 @@ Buffer CreateBuffer(VkDevice device, const VkPhysicalDeviceMemoryProperties& mem
         VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         allocate.allocationSize = requirements.size; allocate.memoryTypeIndex = type;
         Check(vkAllocateMemory(device, &allocate, nullptr, &buffer.memory), "vkAllocateMemory(buffer)");
+        buffer.allocationBytes = requirements.size;
         Check(vkBindBufferMemory(device, buffer.buffer, buffer.memory, 0), "vkBindBufferMemory");
         if (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
             Check(vkMapMemory(device, buffer.memory, 0, size, 0, reinterpret_cast<void**>(&buffer.mapped)), "vkMapMemory(buffer)");
@@ -60,34 +62,48 @@ void ResidentBuffer::Retire(std::vector<Buffer>& retired) {
 }
 VkBuffer ResidentBuffer::Resolve(VkDevice device, const VkPhysicalDeviceMemoryProperties& memory,
     VkCommandBuffer command, uint64_t frame, const void* data, VkDeviceSize bytes,
-    std::vector<Buffer>& retired, uint64_t& uploadedBytes) {
+    std::vector<Buffer>& retired, uint64_t& uploadedBytes, StagingSlice borrowed, UploadStats* stats, ResourceCache* cache) {
     const auto size = AlignedSize(bytes);
     if (!data || !frame) throw std::invalid_argument("Invalid resident buffer source/frame");
     if (NeedsUpload(bytes)) {
         // Never overwrite a snapshot already referenced by commands in this
         // frame. Older frames have completed before the renderer calls Resolve.
         const bool replace = !m_buffer.buffer || m_buffer.size != size || m_usedFrame == frame;
+        if (borrowed.buffer && (!borrowed.buffer->buffer || !borrowed.buffer->mapped ||
+            borrowed.offset % 4 || borrowed.offset > borrowed.buffer->size ||
+            size > borrowed.buffer->size - borrowed.offset))
+            throw std::invalid_argument("Invalid borrowed resident staging range");
         Buffer destination;
-        Buffer staging;
+        Buffer ownedStaging;
         try {
-            staging = CreateBuffer(device, memory, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            std::memcpy(staging.mapped, data, static_cast<size_t>(bytes));
-            if (size != bytes) std::memset(staging.mapped + bytes, 0, static_cast<size_t>(size - bytes));
-            if (replace) destination = CreateBuffer(device, memory, size,
-                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            // Reserve ownership records before recording any commands; an
-            // allocation failure must not free memory referenced by the queue.
-            retired.reserve(retired.size() + (replace && m_buffer.buffer ? 2 : 1));
+            if (!borrowed.buffer) {
+                ownedStaging = CreateBuffer(device, memory, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                if (stats) ++stats->stagingAllocations;
+            }
+            if (replace) {
+                bool reused = false;
+                destination = cache ? cache->AcquireBuffer(size, reused) : CreateBuffer(device, memory, size,
+                    ResourceCache::ResidentUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                if (stats) {
+                    if (reused) ++stats->deviceReuses;
+                    else ++stats->deviceAllocations;
+                }
+            }
+            // Reserve ownership before touching storage or recording commands.
+            retired.reserve(retired.size() + (replace && m_buffer.buffer ? 1 : 0) + (!borrowed.buffer ? 1 : 0));
         } catch (...) {
-            DestroyBuffer(device, staging); DestroyBuffer(device, destination); throw;
+            DestroyBuffer(device, ownedStaging); DestroyBuffer(device, destination); throw;
         }
+        const auto& source = borrowed.buffer ? *borrowed.buffer : ownedStaging;
+        const auto sourceOffset = borrowed.buffer ? borrowed.offset : 0;
+        std::memcpy(source.mapped + sourceOffset, data, static_cast<size_t>(bytes));
+        if (size != bytes) std::memset(source.mapped + sourceOffset + bytes, 0, static_cast<size_t>(size - bytes));
         if (replace) { Retire(retired); m_buffer = destination; }
-        retired.push_back(staging);
-        VkBufferCopy copy{0, 0, size};
-        vkCmdCopyBuffer(command, staging.buffer, m_buffer.buffer, 1, &copy);
+        if (!borrowed.buffer) retired.push_back(ownedStaging);
+        else if (stats) ++stats->stagingReuses;
+        VkBufferCopy copy{sourceOffset, 0, size};
+        vkCmdCopyBuffer(command, source.buffer, m_buffer.buffer, 1, &copy);
         VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;

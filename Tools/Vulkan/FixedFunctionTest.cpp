@@ -3,6 +3,8 @@
 #include "Engine/Source/Gx/CGxDeviceVulkan/Slang.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/ResidentBuffer.h"
 #include <array>
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -34,10 +36,12 @@ struct Fixture {
     std::vector<GxVulkan::Buffer> retired;
     uint64_t residentFrame = 0, residentDrawUploads = 0;
     Buffer vertices{}, vertexUniform{}, pixelUniform{}, alphaUniform{}, staging{}, readback{}; Image target{};
+    GxVulkan::Buffer borrowedStaging;
     ~Fixture() {
         if (device) {
             vkDeviceWaitIdle(device);
             resident.Destroy(device);
+            GxVulkan::DestroyBuffer(device, borrowedStaging);
             for (auto& buffer : retired) GxVulkan::DestroyBuffer(device, buffer);
             if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
             if (framebuffer) vkDestroyFramebuffer(device, framebuffer, nullptr);
@@ -229,10 +233,21 @@ struct Fixture {
         host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; host.buffer = readback.handle; host.size = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr); Submit();
     }
-    void TestResidency() {
+    void TestResidency(VkDeviceSize stagingCapacity = 0) {
+        const bool reuseStaging = stagingCapacity != 0;
         uint64_t uploaded = 0;
+        if (reuseStaging) borrowedStaging = GxVulkan::CreateBuffer(device, memoryProperties, stagingCapacity,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkDeviceSize stagingOffset = 0;
+        GxVulkan::UploadStats stats;
         const auto resolve = [&](uint64_t frame, const void* data, size_t bytes) {
-            return resident.Resolve(device, memoryProperties, command, frame, data, bytes, retired, uploaded);
+            GxVulkan::StagingSlice borrowed;
+            const VkDeviceSize padded = (bytes + 3) & ~VkDeviceSize(3);
+            if (reuseStaging && resident.NeedsUpload(bytes) && padded <= stagingCapacity - stagingOffset)
+                borrowed = {&borrowedStaging, stagingOffset};
+            const auto result = resident.Resolve(device, memoryProperties, command, frame, data, bytes, retired, uploaded, borrowed, &stats);
+            if (borrowed.buffer) stagingOffset += padded;
+            return result;
         };
         const auto copy = [&](VkBuffer source, VkDeviceSize offset, VkDeviceSize bytes, VkDeviceSize destination) {
             VkBufferMemoryBarrier ready{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
@@ -254,6 +269,7 @@ struct Fixture {
             Submit();
             for (auto& buffer : retired) GxVulkan::DestroyBuffer(device, buffer);
             retired.clear();
+            stagingOffset = 0; // Submit() waited for the fixture queue, as the renderer fence does.
         };
         const auto equal = [&](size_t offset, const void* expected, size_t bytes) {
             Check(std::memcmp(static_cast<uint8_t*>(readback.mapped)+offset,expected,bytes)==0,
@@ -296,6 +312,23 @@ struct Fixture {
         for (unsigned draw = 0; draw < 20; ++draw) resolve(5,large.data(),large.size());
         Check(uploaded == afterLargeUpload, "Large resident mesh was repeatedly copied");
         copy(largeBuffer,large.size()-16,16,0); submit(); equal(0,large.data()+large.size()-16,16);
+        Check(stats.deviceAllocations == 4, "Resident destination allocation count changed");
+        const unsigned expectedReuses = stagingCapacity == 16 ? 3 : (reuseStaging ? 5 : 0);
+        Check(stats.stagingAllocations == 6 - expectedReuses, "Unexpected dedicated staging allocation count");
+        Check(stats.stagingReuses == expectedReuses, "Unexpected staging reuse count");
+        if (reuseStaging) {
+            GxVulkan::ResidentBuffer invalid;
+            auto unmapped = borrowedStaging; unmapped.mapped = nullptr;
+            auto missing = borrowedStaging; missing.buffer = VK_NULL_HANDLE;
+            const GxVulkan::StagingSlice bad[] = {{&borrowedStaging, 1}, {&borrowedStaging, stagingCapacity},
+                {&borrowedStaging, UINT64_MAX}, {&unmapped, 0}, {&missing, 0}};
+            for (auto range : bad) {
+                bool rejected = false;
+                try { invalid.Resolve(device, memoryProperties, command, 6, a, sizeof(a), retired, uploaded, range); }
+                catch (const std::invalid_argument&) { rejected = true; }
+                Check(rejected, "Invalid borrowed staging range was accepted");
+            }
+        }
         VertexConstants vertex{}; PixelConstants pixel{};
         vertex.projection = vertex.view = vertex.normal = Identity();
         for (auto& matrix : vertex.texture) matrix = Identity();
@@ -307,7 +340,42 @@ struct Fixture {
         resident.MarkDirty();
         Draw(vertex,pixel,0xFFFF0000,true); Pixel(32,32,{1,0,0,1});
         Check(residentDrawUploads > firstDrawUpload, "Mutated rendered geometry was not uploaded");
-        std::cout << "GPU residency: retained data, mutation, resize, deferred destruction, 68 MiB mesh and rendered pixels passed\n";
+        std::cout << "GPU residency (" << (reuseStaging ? "reused" : "dedicated")
+            << " staging): retained data, mutation, resize, deferred destruction, 68 MiB mesh and rendered pixels passed\n";
+    }
+    void BenchmarkUploads(bool reuseStaging) {
+        constexpr unsigned count = 64, frames = 32, bytes = 4096;
+        auto arena = GxVulkan::CreateBuffer(device, memoryProperties, count * bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        std::vector<GxVulkan::ResidentBuffer> meshes(count);
+        GxVulkan::UploadStats stats;
+        std::array<uint8_t, bytes> data{};
+        uint64_t uploaded = 0;
+        std::vector<double> timings;
+        for (unsigned frame = 1; frame <= frames; ++frame) {
+            Begin();
+            const auto start = std::chrono::steady_clock::now();
+            for (unsigned i = 0; i < count; ++i) {
+                data[0] = static_cast<uint8_t>(frame + i);
+                meshes[i].MarkDirty();
+                meshes[i].Resolve(device, memoryProperties, command, frame, data.data(), bytes, retired, uploaded,
+                    reuseStaging ? GxVulkan::StagingSlice{&arena, i * bytes} : GxVulkan::StagingSlice{}, &stats);
+            }
+            timings.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count());
+            Submit();
+            for (auto& buffer : retired) GxVulkan::DestroyBuffer(device, buffer);
+            retired.clear();
+        }
+        Check(stats.deviceAllocations == count, "Warm resident buffers were unnecessarily replaced");
+        Check(stats.stagingAllocations == (reuseStaging ? 0 : count * frames), "Staging benchmark allocation count mismatch");
+        Check(stats.stagingReuses == (reuseStaging ? count * frames : 0), "Staging benchmark reuse count mismatch");
+        std::sort(timings.begin(), timings.end());
+        std::cout << "upload_benchmark mode=" << (reuseStaging ? "reused" : "dedicated")
+            << " uploads=" << count * frames << " staging_allocations=" << stats.stagingAllocations
+            << " device_allocations=" << stats.deviceAllocations << " median_record_us=" << (timings[15] + timings[16]) / 2
+            << " p95_record_us=" << timings[30] << '\n';
+        for (auto& mesh : meshes) mesh.Destroy(device);
+        GxVulkan::DestroyBuffer(device, arena);
     }
     void Pixel(unsigned x, unsigned y, const std::array<float,4>& expected) {
         const auto* bytes = static_cast<const uint8_t*>(readback.mapped) + (y * 64 + x) * 4;
@@ -328,7 +396,19 @@ std::array<float,4> Combine(const std::array<float,4>& tex, const std::array<flo
 int main(int argc, char** argv) {
     try {
         Fixture fixture; fixture.Init();
-        if (argc == 2 && std::strcmp(argv[1],"--residency") == 0) { fixture.TestResidency(); return 0; }
+        if (argc == 2 && std::strcmp(argv[1],"--residency") == 0) {
+            fixture.TestResidency();
+            Fixture reused; reused.Init(); reused.TestResidency(2048);
+            Fixture overflow; overflow.Init(); overflow.TestResidency(16);
+            return 0;
+        }
+        if (argc == 2 && (std::strcmp(argv[1],"--upload-benchmark") == 0 || std::strcmp(argv[1],"--upload-benchmark-reverse") == 0)) {
+            VkPhysicalDeviceProperties properties; vkGetPhysicalDeviceProperties(fixture.physical, &properties);
+            std::cout << "upload_benchmark device=" << properties.deviceName << '\n';
+            const bool reverse = std::strcmp(argv[1],"--upload-benchmark-reverse") == 0;
+            fixture.BenchmarkUploads(reverse); fixture.BenchmarkUploads(!reverse);
+            return 0;
+        }
         VertexConstants v{}; PixelConstants p{};
         v.projection = v.view = v.normal = Identity(); for (auto& matrix : v.texture) matrix = Identity();
         fixture.Draw(v,p,0xFF0000FF); fixture.Pixel(32,32,{0,0,1,1});
