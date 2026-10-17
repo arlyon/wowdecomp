@@ -662,12 +662,18 @@ void CGlueMgr::HandleDisplaySizeChanged(const CSizeEvent& event) {
         CLayoutFrame::ResizePending();
     }
 
+#if !defined(_WIN32) || defined(WOWDECOMP_VULKAN)
+    // Coordinate/font/layout updates have already run in CSimpleTop. Keep
+    // login fields and the current glue screen alive during compositor resize.
+    CGlueMgr::m_aspect = aspect;
+#else
     if (fabs(CGlueMgr::m_aspect - aspect) < 0.01f) {
         return;
     }
 
     CGlueMgr::m_aspect = aspect;
     CGlueMgr::m_reload = 1;
+#endif
 }
 
 // VERIFY: e486096e manual

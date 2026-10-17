@@ -13,6 +13,10 @@ wowdecomp_configure_platform()
 find_package(Threads REQUIRED)
 enable_testing()
 
+add_executable(CoordinateTest CoordinateTest.cpp "${WOWDECOMP_ROOT}/Engine/Source/Base/Coordinate.cpp")
+target_include_directories(CoordinateTest PRIVATE "${WOWDECOMP_ROOT}")
+add_test(NAME Coordinate COMMAND CoordinateTest)
+
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Os" Os)
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Tempest" Tempest)
 # Production modules normally inherit the repository root as CMAKE_SOURCE_DIR.
@@ -27,6 +31,20 @@ target_include_directories(Storm PUBLIC "${WOWDECOMP_ROOT}")
 add_executable(StormSyncTest StormSyncTest.cpp)
 target_link_libraries(StormSyncTest PRIVATE Storm Threads::Threads)
 add_test(NAME StormSync COMMAND StormSyncTest)
+
+add_executable(RootLayoutTest RootLayoutTest.cpp
+    "${WOWDECOMP_ROOT}/Engine/Source/Base/CDataAllocator.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Base/Coordinate.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Base/Status.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Frame/CLayoutFrame.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Frame/CFramePoint.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/FrameXML/LoadXML.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/FrameXML/XMLTree.cpp")
+target_compile_definitions(RootLayoutTest PRIVATE WOWDECOMP_ARCH_64=1)
+target_compile_options(RootLayoutTest PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(RootLayoutTest PRIVATE -Wl,--gc-sections)
+target_link_libraries(RootLayoutTest PRIVATE Storm Tempest expat)
+add_test(NAME RootLayout COMMAND RootLayoutTest)
 set_tests_properties(StormSync PROPERTIES TIMEOUT 20)
 add_executable(StormThreadTest StormThreadTest.cpp)
 target_link_libraries(StormThreadTest PRIVATE Storm Threads::Threads)
@@ -196,6 +214,24 @@ if (DXVKNative_FOUND)
 else ()
     message(STATUS "DXVK Native not found; only the CPU portability tests will be built")
 endif ()
+
+# Exercise the real public selection API without linking or initializing GPUs.
+# Linux section GC isolates these functions, like the socket contract tests above.
+foreach (backend dxvk vulkan both)
+    add_executable(GxBackend-${backend} GxBackendTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/Gx.cpp")
+    target_include_directories(GxBackend-${backend} PRIVATE "${WOWDECOMP_ROOT}")
+    target_link_libraries(GxBackend-${backend} PRIVATE Storm)
+    target_compile_options(GxBackend-${backend} PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(GxBackend-${backend} PRIVATE -Wl,--gc-sections)
+    if (NOT backend STREQUAL "vulkan")
+        target_compile_definitions(GxBackend-${backend} PRIVATE WOWDECOMP_DXVK=1)
+    endif ()
+    if (NOT backend STREQUAL "dxvk")
+        target_compile_definitions(GxBackend-${backend} PRIVATE WOWDECOMP_VULKAN=1)
+    endif ()
+    add_test(NAME GxBackend-${backend} COMMAND GxBackend-${backend})
+endforeach ()
 
 add_library(NativeLibraryFixture SHARED LibraryFixture.cpp)
 

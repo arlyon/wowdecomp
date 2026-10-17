@@ -727,6 +727,19 @@ void CLayoutFrame::Resize(int32_t force) {
     }
 }
 
+// The screen root has no anchors: update its cached rectangle explicitly, then
+// use the normal dependency notifications to relayout children in place.
+void CLayoutFrame::RefreshScreenRect() {
+    const CRect previous = this->m_rect;
+    this->m_rect.minX = this->m_rect.minY = 0.0f;
+    NDCToDDC(1.0f, 1.0f, &this->m_rect.maxX, &this->m_rect.maxY);
+    this->m_layoutFlags |= 0x100;
+    if (previous.minX != this->m_rect.minX || previous.minY != this->m_rect.minY ||
+        previous.maxX != this->m_rect.maxX || previous.maxY != this->m_rect.maxY) {
+        this->OnFrameSizeChanged(previous);
+    }
+}
+
 // VERIFY: 2a588003 manual
 // OFFSET: 0x00489E90
 bool CLayoutFrame::SetLayoutScale(float scale, bool force) {

@@ -9,6 +9,13 @@
 #include "Engine/Source/Tempest/C3Vector.h"
 #include "Engine/Source/Tempest/CImVector.h"
 #include "Engine/Source/Storm/H/storm.h"
+#if defined(WOWDECOMP_VULKAN)
+#include "Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.h"
+#endif
+#if !defined(_WIN32)
+#include <cstring>
+#include <stdexcept>
+#endif
 
 // STATIC: 0x00A2D57C
 static const uint32_t s_texelSize[GxTexFormats_Last] = { 0, 4, 4, 2, 2, 2, 2, 4, 4, 2, 4, 4, 4 };
@@ -39,7 +46,11 @@ static BlitFormat s_blitFormats[GxTexFormats_Last] = {
 };
 
 // STATIC: 0x00AD87E4
-const char* g_gxApiNames[GxApis_Last] = { "OpenGL", "D3D9", "D3D9Ex", "D3D10", "D3D11", "GLL" };
+const char* g_gxApiNames[GxApis_Last] = { "OpenGL", "D3D9", "D3D9Ex", "D3D10", "D3D11", "GLL"
+#if defined(WOWDECOMP_VULKAN)
+    , "Vulkan"
+#endif
+};
 
 // STATIC: 0x00AD8AC0
 static uint32_t s_vertexSize[GxVertexBufferFormats_Last] = { 12, 24, 28, 32, 36, 40, 44, 16, 24, 32, 20, 28, 48, 48 };
@@ -115,6 +126,28 @@ static int (*s_drawListSorters[GxuSorts_Last])(const void*, const void*) = { Dra
 // VERIFY: 0b88acbc auto
 // OFFSET: 0x008C8DE0
 EGxApi GxDefaultApi() {
+#if !defined(_WIN32)
+    if (const char* backend = std::getenv("WOWDECOMP_GX_BACKEND")) {
+        if (std::strcmp(backend, "dxvk") == 0) {
+#if defined(WOWDECOMP_DXVK)
+            return GxApi_D3d9;
+#else
+            throw std::invalid_argument("DXVK backend was not built");
+#endif
+        }
+        if (std::strcmp(backend, "vulkan") == 0) {
+#if defined(WOWDECOMP_VULKAN)
+            return GxApi_Vulkan;
+#else
+            throw std::invalid_argument("Vulkan backend was not built");
+#endif
+        }
+        throw std::invalid_argument("WOWDECOMP_GX_BACKEND must be vulkan or dxvk");
+    }
+#if defined(WOWDECOMP_VULKAN)
+    return GxApi_Vulkan;
+#endif
+#endif
     return GxApi_D3d9;
 }
 
@@ -132,7 +165,14 @@ int32_t GxApiSupported(EGxApi api) {
             return 0;
     }
 #else
+#if defined(WOWDECOMP_VULKAN)
+    if (api == GxApi_Vulkan) return 1;
+#endif
+#if defined(WOWDECOMP_DXVK)
     return api == GxApi_D3d9;
+#else
+    return 0;
+#endif
 #endif
 }
 
@@ -205,8 +245,13 @@ CGxDevice* CreateGxDevice(EGxApi api, GxWindowProc windowProc, const CGxFormat& 
             break;
     }
 #else
-    if (api != GxApi_D3d9) return nullptr;
-    CGxDevice* device = CreateCGxDeviceD3d();
+    CGxDevice* device = nullptr;
+#if defined(WOWDECOMP_VULKAN)
+    if (api == GxApi_Vulkan) device = CreateCGxDeviceVulkan();
+#endif
+#if defined(WOWDECOMP_DXVK)
+    if (api == GxApi_D3d9) device = CreateCGxDeviceD3d();
+#endif
     if (!device) return nullptr;
     g_theGxDevicePtr = device;
 #endif
