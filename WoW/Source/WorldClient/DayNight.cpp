@@ -1,4 +1,5 @@
 #include "WoW/Source/WorldClient/DayNight__DNInfo.h"
+#include "WoW/Source/WorldClient/CloudNoise.h"
 #include <cmath>
 #include <new>
 #include <typeinfo>
@@ -617,7 +618,7 @@ void DayNight::ApplyFogSettings(const SMOFog::Fog* fog) {
 static void InitCloudNoise() {
     for (uint32_t i = 0; i < 256; i++) {
         int32_t value = rand();
-        s_cloudNoise[i] = 1.0f - (value * 0.000030518509f + value * 0.000030518509f);
+        s_cloudNoise[i] = DayNight::CloudNoiseSample(value, RAND_MAX);
     }
 
     for (uint32_t i = 0; i < 256; i++) {
@@ -1867,7 +1868,7 @@ void DayNight::RenderSky(CPortalView* view) {
 
 // VERIFY: 9ccd52e0 manual
 // OFFSET: 0x007F0D40
-DayNight::LightQueue::LightQueue(const uint32_t* params) : CMemBlock(sizeof(LightQE) * params[0], 0, typeid(LightQE).raw_name(), SLOG_OBJECT) {
+DayNight::LightQueue::LightQueue(const uint32_t* params) : CMemBlock(sizeof(LightQE) * params[0], 0, STORM_TYPE_NAME(LightQE), SLOG_OBJECT) {
     uint32_t count = params[0];
     uint32_t chunk = params[1];
 
@@ -2357,7 +2358,7 @@ void DayNight::UnloadMap() {
     }
 
     s_areaLightOverrides.m_count = 0;
-    s_lightAllocator.Clear(typeid(LightRec).raw_name(), SLOG_OBJECT, 1);
+    s_lightAllocator.Clear(STORM_TYPE_NAME(LightRec), SLOG_OBJECT, 1);
 
     if (DayNight::g_forceFullUpdate) {
         if (DayNight::g_clouds.m_textures[0]) {
@@ -3224,7 +3225,7 @@ void DayNight::AddLightOverride(int32_t lightId, int32_t overrideId, uint32_t du
         return;
     }
 
-    void* data = s_lightAllocator.GetData(0, typeid(LightRec).raw_name(), SLOG_OBJECT);
+    void* data = s_lightAllocator.GetData(0, STORM_TYPE_NAME(LightRec), SLOG_OBJECT);
 
     if (!data) {
         return;

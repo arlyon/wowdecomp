@@ -501,3 +501,80 @@ int32_t STORMAPI SCmdProcess(const char* cmdline, int32_t skipprogname, int32_t 
 
     return result;
 }
+
+#if !defined(_WIN32)
+#include <cerrno>
+#include <cstdio>
+#include <string>
+
+static constexpr uint32_t s_openFailed = 110; // Win32 ERROR_OPEN_FAILED, retained for callbacks.
+
+// Native leaves retain the shared command grammar and response-file parser.
+void GenerateError(void (STORMAPI* callback)(_CMDERROR*), uint32_t code, const char* item) {
+    const char* format;
+    switch (code) {
+        case STORM_ERROR_BAD_ARGUMENT: format = "Invalid argument: %s\n"; break;
+        case STORM_ERROR_NOT_ENOUGH_ARGUMENTS: format = "The syntax of the command is incorrect.\n"; break;
+        case s_openFailed: format = "Unable to open response file: %s\n"; break;
+        default: return;
+    }
+    char text[256];
+    std::snprintf(text, sizeof(text), format, item);
+    SErrSetLastError(code);
+    _CMDERROR error{code, item, text};
+    callback(&error);
+}
+
+static bool ReadCommandFile(const char* filename, std::string& data) {
+    FILE* file = std::fopen(filename, "rb");
+    if (!file) return false;
+    char buffer[4096];
+    bool ok = true;
+    for (;;) {
+        size_t count = std::fread(buffer, 1, sizeof(buffer), file);
+        if (count > data.max_size() - data.size() - 1) { errno = EOVERFLOW; ok = false; break; }
+        data.append(buffer, count);
+        if (count != sizeof(buffer)) { ok = !std::ferror(file); break; }
+    }
+    if (std::fclose(file) != 0) ok = false;
+    return ok;
+}
+
+int32_t ProcessFile(const char* filename, _PROCESSING* processing, CMDDEF** nextarg,
+                    int32_t (STORMAPI* extra)(const char*), void (STORMAPI* error)(_CMDERROR*)) {
+    std::string data;
+    if (!ReadCommandFile(filename, data)) {
+        if (error) GenerateError(error, s_openFailed, filename);
+        return 0;
+    }
+    const char* current = data.c_str();
+    return ProcessString(&current, processing, nextarg, extra, error);
+}
+
+int32_t STORMAPI SCmdProcessCommandLine(int32_t (STORMAPI* extra)(const char*), void (STORMAPI* error)(_CMDERROR*)) {
+    std::string args, command;
+    if (!ReadCommandFile("/proc/self/cmdline", args)) return 0;
+    size_t start = args.find('\0'); // argv[0] is not a command argument.
+    if (start == std::string::npos) { errno = EIO; return 0; }
+    for (++start; start < args.size();) {
+        size_t end = args.find('\0', start);
+        if (end == std::string::npos) { errno = EIO; return 0; }
+        std::string arg = args.substr(start, end - start);
+        // The original tokenizer has no quote escape and drops empty tokens;
+        // its fixed token buffer cannot represent more than 255 bytes.
+        if (arg.empty() || arg.size() > 255 || arg.find('"') != std::string::npos) {
+            if (error) GenerateError(error, STORM_ERROR_BAD_ARGUMENT, arg.c_str());
+            SErrSetLastError(STORM_ERROR_BAD_ARGUMENT);
+            errno = ENOTSUP;
+            return 0;
+        }
+        if (!command.empty()) command += ' ';
+        bool quote = arg.find_first_of(" ,;\t\n\r\x1A") != std::string::npos;
+        if (quote) command += '"';
+        command += arg;
+        if (quote) command += '"';
+        start = end + 1;
+    }
+    return SCmdProcess(command.c_str(), 0, extra, error);
+}
+#endif

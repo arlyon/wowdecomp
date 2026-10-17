@@ -121,6 +121,7 @@ EGxApi GxDefaultApi() {
 // VERIFY: cef2b995 auto
 // OFFSET: 0x006811D0
 int32_t GxApiSupported(EGxApi api) {
+#if defined(_WIN32)
     switch (api) {
         case GxApi_OpenGl:
         case GxApi_D3d9:
@@ -130,6 +131,9 @@ int32_t GxApiSupported(EGxApi api) {
         default:
             return 0;
     }
+#else
+    return api == GxApi_D3d9;
+#endif
 }
 
 // VERIFY: 619cba02 auto
@@ -177,6 +181,7 @@ int32_t GxVertexHasAttrib(EGxVertexBufferFormat format, EGxVertexAttrib attrib) 
 // VERIFY: ca53a8f5 auto
 // OFFSET: 0x00681290
 CGxDevice* CreateGxDevice(EGxApi api, GxWindowProc windowProc, const CGxFormat& format) {
+#if defined(_WIN32)
     CGxDevice* device;
 
     switch (api) {
@@ -199,13 +204,21 @@ CGxDevice* CreateGxDevice(EGxApi api, GxWindowProc windowProc, const CGxFormat& 
             device = g_theGxDevicePtr;
             break;
     }
-
+#else
+    if (api != GxApi_D3d9) return nullptr;
+    CGxDevice* device = CreateCGxDeviceD3d();
+    if (!device) return nullptr;
+    g_theGxDevicePtr = device;
+#endif
     if (device->DeviceCreate(windowProc, format)) {
         return g_theGxDevicePtr;
     }
 
     if (g_theGxDevicePtr) {
         delete g_theGxDevicePtr;
+#if !defined(_WIN32)
+        g_theGxDevicePtr = nullptr;
+#endif
     }
 
     return nullptr;

@@ -1,11 +1,15 @@
 file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
+
 wowdecomp_filter_platform_sources(PRIVATE_SOURCES ${PRIVATE_SOURCES})
 if (WOWDECOMP_POSIX)
     list(REMOVE_ITEM PRIVATE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/CGxDeviceD3d/CGxDeviceD3d.cpp")
-endif ()
-
-if (NOT WIN32)
-    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/CGxDevice(D3d|D3d9Ex|OpenGL)/")
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "/CGxDevice(D3d9Ex|OpenGL)/")
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../../cmake")
+    find_package(DXVKNative REQUIRED)
+    if (NOT TARGET PkgConfig::SDL2)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET GLOBAL sdl2>=2.0.22)
+    endif ()
 endif ()
 
 add_library(Gx STATIC
@@ -17,14 +21,14 @@ target_include_directories(Gx
         ${CMAKE_SOURCE_DIR}
 )
 
-target_link_libraries(Gx
-    PRIVATE
-        d3d9.lib
-)
+if (WOWDECOMP_POSIX)
+    target_link_libraries(Gx PUBLIC DXVKNative::D3D9 PRIVATE PkgConfig::SDL2)
+endif ()
 
 if (WIN32)
     target_link_libraries(Gx
         PRIVATE
+            d3d9.lib
             nvapi
             opengl32.lib
     )

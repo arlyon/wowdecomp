@@ -9,6 +9,8 @@ SteelseriesMouse::~SteelseriesMouse() {
 
 // VERIFY: c632886d manual
 // OFFSET: 0x008C2F50
+#if defined(_WIN32)
+#line 12
 WowMouse::WowMouse() {
     void* window = OsGuiGetWindow(0);
 
@@ -18,6 +20,15 @@ WowMouse::WowMouse() {
         this->m_hidManager->EnumerateDevices();
     }
 }
+
+#else
+WowMouse::WowMouse() : m_hidManager(HidManager::Create()) {
+    // The unavailable backend owns no window and never emits specialty input.
+    this->m_hidManager->SetWindow(nullptr);
+    this->m_hidManager->EnumerateDevices();
+}
+#endif
+#line 21
 
 // VERIFY: 39a94fcf manual
 // OFFSET: [0x008C2ED0, 0x008C2FC0]

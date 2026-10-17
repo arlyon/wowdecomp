@@ -31,7 +31,13 @@ void ClientServices::InitLoginServerCVars(int32_t overwrite, const char* locale)
     char localeDir[260];
 
     if (locale && *locale) {
+#if defined(_WIN32)
+#line 34
         SStrPrintf(localeDir, sizeof(localeDir), "data\\%s\\", locale);
+#else
+        SStrPrintf(localeDir, sizeof(localeDir), "Data\\%s\\", locale);
+#endif
+#line 35
     } else {
         localeDir[0] = '\0';
     }

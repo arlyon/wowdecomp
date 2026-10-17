@@ -1,5 +1,41 @@
 #include <cstdint>
+#if defined(_WIN32)
 #include <windows.h>
+#define BASE_RECYCLER_GUARD
+#define BASE_RECYCLER_LOAD(pointer) *pointer
+#define BASE_RECYCLER_STORE(pointer, value) *pointer = value
+#define BASE_RECYCLER_CAS(pointer, value, expected) InterlockedCompareExchangePointer(pointer, value, expected)
+#define BASE_RECYCLER_INCREMENT(pointer) InterlockedIncrement(reinterpret_cast<volatile LONG*>(pointer))
+#define BASE_RECYCLER_DECREMENT(pointer) InterlockedDecrement(reinterpret_cast<volatile LONG*>(pointer))
+#else
+#include <cstring>
+#include <mutex>
+namespace {
+std::mutex s_recyclerLists;
+// All list accesses hold s_recyclerLists. Byte copies avoid accessing a typed
+// Node*/NodeBlock* slot through an incompatible void** lvalue.
+void* RecyclerLoad(const void* pointer) {
+    void* value;
+    std::memcpy(&value, pointer, sizeof(value));
+    return value;
+}
+void RecyclerStore(void* pointer, void* value) {
+    std::memcpy(pointer, &value, sizeof(value));
+}
+void* RecyclerCompareExchange(void** pointer, void* value, void* expected) {
+    void* previous = RecyclerLoad(pointer);
+    if (previous == expected) RecyclerStore(pointer, value);
+    return previous;
+}
+}
+#define BASE_RECYCLER_LOAD(pointer) RecyclerLoad(pointer)
+#define BASE_RECYCLER_STORE(pointer, value) RecyclerStore(pointer, value)
+#define BASE_RECYCLER_GUARD std::lock_guard<std::mutex> listGuard(s_recyclerLists);
+#define BASE_RECYCLER_CAS(pointer, value, expected) RecyclerCompareExchange(pointer, value, expected)
+#define BASE_RECYCLER_INCREMENT(pointer) __atomic_add_fetch(pointer, 1, __ATOMIC_SEQ_CST)
+#define BASE_RECYCLER_DECREMENT(pointer) __atomic_sub_fetch(pointer, 1, __ATOMIC_SEQ_CST)
+#endif
+#line 3
 #include "Engine/Source/Base/CDataRecycler.h"
 #include "Engine/Source/Storm/H/storm.h"
 
@@ -51,7 +87,7 @@ void CDataRecycler::FreeData(void* data, const char* fileName, int32_t lineNumbe
 
 // VERIFY: da650ee0 manual
 // OFFSET: 0x0095CE30
-void CDataRecycler::Link(Node** list, NodeBlock* nodeBlock) {
+void CDataRecycler::Link(Node** list, NodeBlock* nodeBlock) { BASE_RECYCLER_GUARD
     Node* node = nodeBlock->m_nodes;
 
     for (uint32_t i = 0; i < this->m_nodesPerBlock - 1; i++) {
@@ -65,26 +101,26 @@ void CDataRecycler::Link(Node** list, NodeBlock* nodeBlock) {
     do {
         head = *list;
         last->m_next = head;
-    } while (InterlockedCompareExchangePointer(reinterpret_cast<void**>(list), nodeBlock->m_nodes, head) != head);
+    } while (BASE_RECYCLER_CAS(reinterpret_cast<void**>(list), nodeBlock->m_nodes, head) != head);
 }
 
 // VERIFY: 1f959b49 manual
 // OFFSET: 0x0095CE90
-void CDataRecycler::Link(void** list, void* item) {
+void CDataRecycler::Link(void** list, void* item) { BASE_RECYCLER_GUARD
     void* head;
 
     do {
-        head = *list;
-        *static_cast<void**>(item) = head;
-    } while (InterlockedCompareExchangePointer(list, item, head) != head);
+        head = BASE_RECYCLER_LOAD(list);
+        BASE_RECYCLER_STORE(static_cast<void**>(item), head);
+    } while (BASE_RECYCLER_CAS(list, item, head) != head);
 }
 
 // INLINED
-void* CDataRecycler::Unlink(void** list) {
+void* CDataRecycler::Unlink(void** list) { BASE_RECYCLER_GUARD
     void* item;
 
-    for (item = *list; *list; item = *list) {
-        if (InterlockedCompareExchangePointer(list, *static_cast<void**>(item), item) == item) {
+    for (item = BASE_RECYCLER_LOAD(list); BASE_RECYCLER_LOAD(list); item = BASE_RECYCLER_LOAD(list)) {
+        if (BASE_RECYCLER_CAS(list, BASE_RECYCLER_LOAD(static_cast<void**>(item)), item) == item) {
             break;
         }
     }
@@ -112,7 +148,7 @@ void CDataRecycler::GetData(void*& data, uint32_t& bytes, const char* fileName, 
     Node* node = static_cast<Node*>(this->Unlink(reinterpret_cast<void**>(&this->m_nodeFullList)));
 
     if (node) {
-        InterlockedIncrement(reinterpret_cast<volatile LONG*>(&this->m_nodesRecyclable));
+        BASE_RECYCLER_INCREMENT(&this->m_nodesRecyclable);
         data = node->m_data;
         bytes = node->m_bytes;
         this->Link(reinterpret_cast<void**>(&this->m_nodeEmptyList), node);
@@ -125,7 +161,7 @@ void CDataRecycler::GetData(void*& data, uint32_t& bytes, const char* fileName, 
 // VERIFY: 6af524b4 manual
 // OFFSET: 0x0095CFB0
 void CDataRecycler::PutData(void* data, uint32_t bytes, const char* fileName, int32_t lineNumber) {
-    if (InterlockedDecrement(reinterpret_cast<volatile LONG*>(&this->m_nodesRecyclable)) >= 0) {
+    if (BASE_RECYCLER_DECREMENT(&this->m_nodesRecyclable) >= 0) {
         Node* node;
 
         for (node = static_cast<Node*>(this->Unlink(reinterpret_cast<void**>(&this->m_nodeEmptyList))); !node; node = static_cast<Node*>(this->Unlink(reinterpret_cast<void**>(&this->m_nodeEmptyList)))) {
@@ -138,7 +174,7 @@ void CDataRecycler::PutData(void* data, uint32_t bytes, const char* fileName, in
         node->m_bytes = bytes;
         this->Link(reinterpret_cast<void**>(&this->m_nodeFullList), node);
     } else {
-        InterlockedIncrement(reinterpret_cast<volatile LONG*>(&this->m_nodesRecyclable));
+        BASE_RECYCLER_INCREMENT(&this->m_nodesRecyclable);
         this->FreeData(data, fileName, lineNumber);
     }
 }

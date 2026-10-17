@@ -7,30 +7,48 @@ set(FMODEX_FLAC_DIR ${FMODEX_DIR}/lib/flac-1.1.4)
 
 file(GLOB FMODEX_SOURCES CONFIGURE_DEPENDS
     "${FMODEX_DIR}/src/*.cpp"
-    "${FMODEX_DIR}/win32/src/*.cpp"
-    "${FMODEX_DIR}/win32/src/asio/*.cpp"
     "${FMODEX_DIR}/lib/ogg_vorbis/ogg/src/*.c"
     "${FMODEX_DIR}/lib/ogg_vorbis/vorbis/lib/*.c"
     "${FMODEX_FLAC_DIR}/src/libFLAC/*.c"
-    "${FMODEX_DIR}/lib/openal/utils/*.cpp"
     "${FMODEX_DIR}/lib/freeverb/*.cpp"
     "${FMODEX_DIR}/lib/sfx/foreverb/*.cpp"
 )
 
-add_library(fmodex STATIC ${FMODEX_SOURCES})
+if (WIN32)
+    file(GLOB FMODEX_PLATFORM_SOURCES CONFIGURE_DEPENDS
+        "${FMODEX_DIR}/win32/src/*.cpp"
+        "${FMODEX_DIR}/win32/src/asio/*.cpp"
+        "${FMODEX_DIR}/lib/openal/utils/*.cpp")
+else ()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    find_package(Threads REQUIRED)
+    string(TOLOWER "${WOWDECOMP_OS}" FMODEX_OS)
+    file(GLOB FMODEX_PLATFORM_SOURCES CONFIGURE_DEPENDS
+        "${FMODEX_DIR}/${FMODEX_OS}/src/*.cpp"
+        "${FMODEX_DIR}/posix/src/*.cpp"
+        "${FMODEX_DIR}/sdl/src/*.cpp")
+    # These two files contain the original portable C DSP paths as well as
+    # optional Win32 SIMD calls; Linux uses the C paths, not the x86 assembly.
+    list(APPEND FMODEX_PLATFORM_SOURCES
+        "${FMODEX_DIR}/win32/src/fmod_dsp_distortion.cpp"
+        "${FMODEX_DIR}/win32/src/fmod_dsp_resampler_linear.cpp")
+endif ()
+
+add_library(fmodex STATIC ${FMODEX_SOURCES} ${FMODEX_PLATFORM_SOURCES})
 
 target_include_directories(fmodex
     PUBLIC
         ${FMODEX_DIR}/src
     PRIVATE
-        ${FMODEX_DIR}/win32/src
+        $<$<PLATFORM_ID:Windows>:${FMODEX_DIR}/win32/src>
         ${FMODEX_DIR}/lib/ogg_vorbis/ogg/include
         ${FMODEX_DIR}/lib/ogg_vorbis/vorbis/include
         ${FMODEX_DIR}/lib/ogg_vorbis/vorbis/lib
         ${FMODEX_FLAC_DIR}/include
         ${FMODEX_FLAC_DIR}/src/libFLAC/include
         ${FMODEX_DIR}/lib/openal/include
-        ${FMODEX_DIR}/win32/lib/wmsdk/include
+        $<$<PLATFORM_ID:Windows>:${FMODEX_DIR}/win32/lib/wmsdk/include>
         ${FMODEX_DIR}/lib/sfx/foreverb
         ${FMODEX_DIR}/lib/freeverb
 )
@@ -41,18 +59,19 @@ target_compile_definitions(fmodex
         FLAC__HAS_OGG=1
 )
 
-target_link_libraries(fmodex
-    INTERFACE
-        winmm
-        ws2_32
-        msacm32
-)
+if (WIN32)
+    target_link_libraries(fmodex INTERFACE winmm ws2_32 msacm32)
+else ()
+    # Preserve this vendor source dialect (register remains valid in C++14).
+    set_target_properties(fmodex PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED YES)
+    target_link_libraries(fmodex PUBLIC PkgConfig::SDL2 Threads::Threads ${CMAKE_DL_LIBS})
+endif ()
 
 if (MSVC)
     target_compile_options(fmodex PRIVATE /MP)
 endif ()
 
-if (CMAKE_SIZEOF_VOID_P EQUAL 4)
+if (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
     target_compile_definitions(fmodex
         PRIVATE
             FLAC__CPU_IA32

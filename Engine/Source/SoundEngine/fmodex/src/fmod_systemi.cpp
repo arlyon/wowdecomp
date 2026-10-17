@@ -3365,7 +3365,14 @@ FMOD_RESULT SystemI::release()
 {
     FMOD_RESULT result;
 
+#if defined(PLATFORM_LINUX)
+    // An output can own an open/running backend before init commits.
+    if (mInitialized || mOutput)
+#else
+#line 3368
     if (mInitialized)
+#endif
+#line 3369
     {
         result = closeEx(false);
         if (result != FMOD_OK)
@@ -5437,6 +5444,16 @@ FMOD_RESULT SystemI::closeEx(bool calledfrominit)
     FMOD_RESULT result;
     int count;
 
+#if defined(PLATFORM_LINUX)
+    // Drain native callbacks before releasing any graph or partial-init state.
+    if (!calledfrominit && mOutput && mOutput->mDescription.stop)
+    {
+        mOutput->readfrommixer = Output::mixCallback;
+        mOutput->mDescription.stop(mOutput);
+    }
+#endif
+
+#line 5440
     recordStop();
 
     if (!calledfrominit)
@@ -5468,7 +5485,14 @@ FMOD_RESULT SystemI::closeEx(bool calledfrominit)
         }
     #endif
 
+#if defined(PLATFORM_LINUX)
+        if ((gGlobal->gSystemInitCount == 1 && mInitialized) ||
+            (gGlobal->gSystemInitCount == 0 && !mInitialized))
+#else
+#line 5471
         if (gGlobal->gSystemInitCount == 1 && mInitialized)
+#endif
+#line 5472
         {
             result = AsyncThread::shutDown();
             if (result != FMOD_OK)
@@ -5525,8 +5549,12 @@ FMOD_RESULT SystemI::closeEx(bool calledfrominit)
     {
         if (mOutput->mDescription.stop)
         {
+#if !defined(PLATFORM_LINUX)
+#line 5528
             mOutput->readfrommixer = Output::mixCallback;
             mOutput->mDescription.stop(mOutput);
+#endif
+#line 5530
         }
         else if (mOutput->mDescription.polling)
         {

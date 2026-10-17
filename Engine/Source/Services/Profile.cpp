@@ -1,7 +1,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#if defined(_WIN32)
 #include <mbstring.h>
+#else
+#include <cctype>
+#endif
+#line 5
 #include <new>
 #include "Engine/Source/Services/Profile.h"
 #include "Engine/Source/BlizzardCore/SFile2-Core.h"
@@ -10,6 +15,8 @@
 // VERIFY: c051543c auto
 // OFFSET: 0x004BBCB0
 static void StrTrimTrailingSpace(char* str) {
+#if defined(_WIN32)
+#line 13
     char* ptr = str + SStrLen(str) - 1;
 
     if (ptr >= str) {
@@ -19,6 +26,12 @@ static void StrTrimTrailingSpace(char* str) {
 
         ptr[1] = '\0';
     }
+#else
+    char* end = str + SStrLen(str);
+    while (end > str && std::isspace(static_cast<unsigned char>(end[-1]))) --end;
+    *end = '\0';
+#endif
+#line 22
 }
 
 // VERIFY: 74491526 manual

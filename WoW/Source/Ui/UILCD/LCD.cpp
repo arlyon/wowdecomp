@@ -1,3 +1,8 @@
+#if !defined(_WIN32)
+#include "LCD.h"
+#endif
+#if defined(_WIN32)
+#line 1
 #include "LCD.h"
 #include <cmath>
 #include <cstring>
@@ -382,7 +387,8 @@ void CGLCD::Logout() {
         CGLCD::m_lcd->Update();
     }
 }
-
+#endif
+#line 386
 // VERIFY: 6c3ba040 auto
 // OFFSET: 0x00847E90
 void LCDHANDLE::SetText(const char* text) {
@@ -447,6 +453,8 @@ int32_t CGLCD::GetScreenFromName(const char* name) {
     return -1;
 }
 
+#if defined(_WIN32)
+#line 450
 // VERIFY: 81ad9697 auto
 // OFFSET: 0x00848010
 static bool IsAsianLocale() {
@@ -1832,3 +1840,4 @@ bool CGLCD::LoadLayout() {
     XMLTree_Free(tree);
     return true;
 }
+#endif

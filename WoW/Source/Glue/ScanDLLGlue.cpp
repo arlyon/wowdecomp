@@ -1,3 +1,7 @@
+#if !defined(_WIN32)
+#define InterlockedExchange(pointer, value) __atomic_exchange_n(pointer, value, __ATOMIC_SEQ_CST)
+#endif
+#line 1
 #include "ScanDLLGlue.h"
 #include <new>
 #include "Engine/Source/Base/CDataStore.h"

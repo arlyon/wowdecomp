@@ -399,27 +399,13 @@
         #undef FMOD_SUPPORT_WASAPI
     #endif
 
-#elif defined(PLATFORM_LINUX64)
-
-    #define FMOD_SUPPORT_OSS
-    #define FMOD_SUPPORT_ALSA
-    #define FMOD_SUPPORT_ESD
-    #define FMOD_SUPPORT_NEURAL
-
-    #undef  FMOD_SUPPORT_ASF
-
-    #undef FMOD_SUPPORT_MYEARS
-
 #elif defined(PLATFORM_LINUX)
 
-    #define FMOD_SUPPORT_OSS
-    #define FMOD_SUPPORT_ALSA
-    #define FMOD_SUPPORT_ESD
-    #define FMOD_SUPPORT_SIMD
-    #define FMOD_SUPPORT_NEURAL
-
-    #undef  FMOD_SUPPORT_ASF
-
+    // Native SDL2 output uses the shared C mixer, with no Windows SIMD objects.
+    #undef FMOD_SUPPORT_RECORDING
+    #undef FMOD_SUPPORT_ASF
+    #undef FMOD_SUPPORT_CDDA
+    #undef FMOD_SUPPORT_NET
     #undef FMOD_SUPPORT_MYEARS
 
 #elif defined(PLATFORM_XBOX)
@@ -942,6 +928,7 @@
 
 #endif
 
+#line 945
 #ifdef FMOD_STATICFORPLUGINS
 
     #undef FMOD_SUPPORT_DSOUND

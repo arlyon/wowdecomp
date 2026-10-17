@@ -196,6 +196,11 @@ static const uint32_t s_outdoorZoomTiles[6] = { 14, 12, 10, 8, 6, 4 };
 // STATIC: 0x00A41E1C
 static const float s_indoorZoomRadius[6] = { 150.0f, 120.0f, 90.0f, 60.0f, 40.0f, 25.0f };
 
+#if !defined(_WIN32)
+// Keep this cache TU-local, distinct from WorldClient/Map.h's global.
+#define s_mapId s_minimapMapId
+#endif
+#line 199
 // STATIC: 0x00AF4E48
 static int32_t s_mapId = -1;
 
@@ -403,7 +408,7 @@ int32_t CGMinimapFrame::GetObjectType() {
 // VERIFY: 185b6554 auto
 // OFFSET: 0x00514230
 CSimpleFrame* CGMinimapFrame::Create(CSimpleFrame* parent) {
-    void* data = CGMinimapFrame::s_minimapHeap.GetData(0, typeid(CGMinimapFrame).raw_name(), SLOG_OBJECT);
+    void* data = CGMinimapFrame::s_minimapHeap.GetData(0, STORM_TYPE_NAME(CGMinimapFrame), SLOG_OBJECT);
     return data ? new (data) CGMinimapFrame(parent) : nullptr;
 }
 
@@ -533,7 +538,7 @@ CGMinimapFrame::CGMinimapFrame(CSimpleFrame* parent) : CSimpleFrame(parent) {
 
     this->m_blipFrameLevel = this->m_level + 3;
 
-    void* data = CSimpleTexture::s_allocator.GetData(0, typeid(CSimpleTexture).raw_name(), SLOG_OBJECT);
+    void* data = CSimpleTexture::s_allocator.GetData(0, STORM_TYPE_NAME(CSimpleTexture), SLOG_OBJECT);
     CSimpleTexture* texture = data ? new (data) CSimpleTexture(this, 2, 1) : nullptr;
     this->m_playerTexture = texture;
     texture->SetPoint(FRAMEPOINT_CENTER, this, FRAMEPOINT_CENTER, 0.001f, 0.001f, 1);

@@ -45,7 +45,14 @@ void SARC4ProcessBuffer(uint8_t* data, uint32_t length, const SARC4Key* inKey, S
         state[y] = swap;
         stream |= state[static_cast<uint8_t>(state[x] + state[y])] << 24;
 
+#if defined(_WIN32)
         *reinterpret_cast<uint32_t*>(data + i) ^= stream;
+#else
+        uint32_t word;
+        memcpy(&word, data + i, sizeof(word));
+        word ^= stream;
+        memcpy(data + i, &word, sizeof(word));
+#endif
     }
 
     for (; i < length; i++) {

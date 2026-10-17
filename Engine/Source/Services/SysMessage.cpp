@@ -56,7 +56,7 @@ int32_t SysMsgAdd(CStatus* status) {
 // OFFSET: 0x004B4FF0
 int32_t SysMsgVPrintf(STATUS_TYPE severity, uint32_t flags, const char* format, va_list args) {
     char buffer[256];
-    _vsnprintf(buffer, sizeof(buffer), format, args);
+    STORM_VSNPRINTF(buffer, sizeof(buffer), format, args);
     buffer[255] = '\0';
 
     if (severity < STATUS_NUMTYPES) {
@@ -76,7 +76,7 @@ int32_t SysMsgPrintf(STATUS_TYPE severity, uint32_t flags, const char* format, .
 
     if (format) {
         char buffer[256];
-        _vsnprintf(buffer, sizeof(buffer), format, args);
+        STORM_VSNPRINTF(buffer, sizeof(buffer), format, args);
         buffer[255] = '\0';
 
         if (severity < STATUS_NUMTYPES) {

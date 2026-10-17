@@ -1,3 +1,7 @@
+#if !defined(_WIN32)
+#include <cfloat>
+#endif
+#line 1
 #include "World.h"
 #include <cstdlib>
 #include <new>

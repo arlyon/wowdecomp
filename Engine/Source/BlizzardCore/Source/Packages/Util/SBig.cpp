@@ -1,7 +1,7 @@
 #include "SBig.h"
 #include <cstdint>
 #include <cstring>
-#include <malloc.h>
+#include "Engine/Source/BlizzardCore/Source/System/Memory/Stack.h"
 #include <vector>
 
 // INLINED

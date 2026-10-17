@@ -1,3 +1,7 @@
+#if !defined(_WIN32)
+#include "Engine/Source/BlizzardCore/SFile2-Core.h"
+#endif
+#line 1
 #include "MapArea.h"
 #include <cstring>
 #include "Engine/Source/Services/AsyncFile.h"
