@@ -82,6 +82,29 @@ logger off in `WowClient` with `-DWOWCLIENT_CRASH_LOG=OFF`.
 | `WOWCLIENT_CRASH_LOG` | `ON` | Build `WowClient` with the crash logger |
 | `WOWCLIENT_OUTPUT_OVERRIDE` | empty | Name the `WowClient` executable something other than `WowClient64` / `WowClient32` |
 
+### Platform foundation and macOS handoff
+
+See [Platform portability](docs/PlatformPortability.md) for target OS/CPU/layout
+selection, shared SDL/POSIX layers, and the remaining Darwin and ARM64 integration
+inventory. macOS client builds are not enabled yet.
+
+### Linux portability regression tests
+
+The native OS and maths tests are independent of the client build and need no game data, Vulkan,
+or working display. They require a C++17 compiler, CMake 3.13 or newer, pkg-config and SDL2 development
+files (2.0.22 or newer, for extended text-event ownership). Input tests use SDL's dummy video driver
+without touching the desktop:
+
+```sh
+cmake -S Tools/Portability -B out/portability-tests -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build out/portability-tests --parallel
+ctest --test-dir out/portability-tests --output-on-failure
+```
+
+Optionally set `WOWDECOMP_MSVC_BASE` to an explicit Git revision to register the preprocessing
+preservation check in CTest (requires Python 3). This checks active MSVC-macro source, not Windows
+binary matching or decompilation coverage. These test targets do not build or launch the game.
+
 ### Adding platforms
 
 See [Platform boundaries](docs/PlatformBoundaries.md) for the additive provider

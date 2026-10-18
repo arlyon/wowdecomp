@@ -13,27 +13,32 @@ project(wowdecomp CXX C)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
-    message(FATAL_ERROR "wowdecomp targets Windows only.")
-endif ()
-
 include(cmake/WowPlatform.cmake)
 wowdecomp_configure_platform()
-if (WOWDECOMP_CPU STREQUAL "arm64")
-    message(FATAL_ERROR "Target identity supports ARM64; the client still requires architecture-specific implementations.")
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+if (WOWDECOMP_OS STREQUAL "Darwin")
+    message(FATAL_ERROR "macOS platform identity is ready; Darwin OS leaves and client integration are not implemented yet. See docs/PlatformPortability.md.")
+endif ()
+if (WOWDECOMP_POSIX)
+    find_package(Threads REQUIRED)
+endif ()
+if (WOWDECOMP_CPU STREQUAL "arm64" OR (WOWDECOMP_POSIX AND WOWDECOMP_ARCH_32))
+    message(FATAL_ERROR "The native client currently requires x86-64; Windows also supports x86. ARM64 CPU/SIMD leaves remain to be implemented.")
 endif ()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-add_compile_definitions(
-    WIN32
-    _WINDOWS
-    NOMINMAX
-    WIN32_LEAN_AND_MEAN
-    _CRT_SECURE_NO_WARNINGS
-)
+if (WIN32)
+    add_compile_definitions(
+        WIN32
+        _WINDOWS
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        _CRT_SECURE_NO_WARNINGS
+    )
+endif ()
 
 # Off by default: the client checks MPQ file MD5s (signaturefile) and GlueXML/FrameXML/AddOn .toc.sig files like the
 # original. ON accepts unsigned or modified game data and interface files.

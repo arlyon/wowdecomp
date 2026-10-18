@@ -171,6 +171,14 @@ int32_t OsGuiProcessMessage(void* message) {
                 case SDL_WINDOWEVENT_SIZE_CHANGED:
                     OsQueuePut(OS_INPUT_SIZE, event.window.data1, event.window.data2, 0, 0);
                     break;
+                case SDL_WINDOWEVENT_DISPLAY_CHANGED: {
+                    // data1 is a display index. Refresh sizing even when the
+                    // logical window size is unchanged across a DPI transition.
+                    int width = 0, height = 0;
+                    SDL_GetWindowSize(static_cast<SDL_Window*>(OsGuiGetWindow(0)), &width, &height);
+                    if (width > 0 && height > 0) OsQueuePut(OS_INPUT_SIZE, width, height, 0, 0);
+                    break;
+                }
                 case SDL_WINDOWEVENT_EXPOSED:
                     if (s_pollProc) s_pollProc();
                     break;

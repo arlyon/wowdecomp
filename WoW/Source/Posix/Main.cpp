@@ -15,6 +15,12 @@ int main() {
         return 1;
     }
 
+#if defined(__linux__)
+    const char* wayland = SDL_getenv("WAYLAND_DISPLAY");
+    if (wayland && *wayland && !SDL_getenv("SDL_VIDEODRIVER") && !SDL_getenv("SDL_VIDEO_DRIVER")) {
+        SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland");
+    }
+#endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
         std::fprintf(stderr, "Wow: SDL initialization failed: %s\n", SDL_GetError());
         return 1;

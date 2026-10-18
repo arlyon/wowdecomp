@@ -36,7 +36,7 @@ void WindowEvent(void* context, const SDL_WindowEvent& event) {
             int width, height;
             SDL_GetWindowSize(static_cast<SDL_Window*>(device.m_hwnd), &width, &height);
             if (width <= 0 || height <= 0) break;
-            const CRect& current = device.DeviceCurWindow();
+            const CRect& current = device.DeviceDefWindow();
             if (device.m_windowVisible && current.maxX == width && current.maxY == height) break;
             CRect rect;
             rect.minX = rect.minY = 0.0f;
@@ -74,7 +74,7 @@ void CGxDeviceD3d::IUnloadD3dLib(HINSTANCE& library, LPDIRECT3D9& d3d) {
 
 int32_t CGxDeviceD3d::ICreateWindow(CGxFormat& format) {
     if (format.m_size.x < 0 || format.m_size.y < 0) return 0;
-    uint32_t flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN;
+    uint32_t flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN | SDL_WINDOW_ALLOW_HIGHDPI;
     if (!format.m_window) flags |= SDL_WINDOW_FULLSCREEN;
     else if (format.m_maximize == 1) flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
     else if (format.m_maximize == 2) flags |= SDL_WINDOW_BORDERLESS;
