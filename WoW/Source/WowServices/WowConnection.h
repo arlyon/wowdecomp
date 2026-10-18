@@ -82,6 +82,9 @@ class WowConnection {
     /* 00CC */ int32_t m_responseRef;
     /* 00D0 */ uintptr_t m_responseRefThread;
     /* 00D4 */ WowConnectionResponse* m_pendingResponse;
+#if !defined(_WIN32)
+    bool m_pendingResponseSet;
+#endif
     /* 00D8 */ TSLink<WowConnection> m_netLink;
     /* 00E0 */ TSList<WowConnection::SENDNODE> m_sendList;
     /* 00EC */ int32_t m_sendDepth;

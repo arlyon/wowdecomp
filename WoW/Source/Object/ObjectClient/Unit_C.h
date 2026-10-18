@@ -3,7 +3,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(_WIN32)
 #include <windows.h>
+#endif
+#line 7
 #include "Engine/Source/Storm/H/stpl.h"
 #include "WoW/Source/Object/Movement.h"
 #include "WoW/Source/Object/ObjectClient/Object_C.h"

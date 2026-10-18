@@ -3,14 +3,25 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include <memory>
+#include <mutex>
+struct SNativeSyncState;
+struct SNativeRWState;
+#endif
 #include "Engine/Source/Storm/H/storm.h"
 
 class CInitCritSect;
 
 class SCritSect {
     public:
+#if defined(_WIN32)
     /* 0000 */ CRITICAL_SECTION m_critsect;
+#else
+    std::recursive_mutex m_critsect;
+#endif
     /* 0018 */ uint8_t unused_0018[16];
 
     SCritSect();
@@ -23,7 +34,12 @@ class SSyncObject {
     public:
     static uint32_t STORMAPI WaitMultiplePtr(uint32_t count, SSyncObject** objects, int32_t waitAll, uint32_t timeout);
 
+#if defined(_WIN32)
     /* 0000 */ HANDLE m_opaqueData;
+#else
+    // Methods may overlap Close, but the object itself must outlive all calls.
+    std::shared_ptr<SNativeSyncState> m_opaqueData;
+#endif
 
     SSyncObject();
     ~SSyncObject();
@@ -91,6 +107,7 @@ class CDebugSRWLock : public TDebugLock<CDebugSRWLock> {
 
 class SRWLock {
     public:
+#if defined(_WIN32)
     struct SUNNLOCK {
         /* 0000 */ LONG m_state;
         /* 0004 */ LONG m_event;
@@ -115,6 +132,14 @@ class SRWLock {
     static void SURWLockDelete(volatile SURWLOCK* surwlock);
     static void SURWLockEnter(volatile SURWLOCK* surwlock, int32_t forwriting);
     static void SURWLockLeave(volatile SURWLOCK* surwlock, int32_t fromwriting);
+#else
+    struct SURWLOCK { SNativeRWState* state; };
+    // Delete/destruction requires all owners and waiting callers to be quiescent.
+    static void SURWLockInitialize(volatile SURWLOCK* lock);
+    static void SURWLockDelete(volatile SURWLOCK* lock);
+    static void SURWLockEnter(volatile SURWLOCK* lock, int32_t forwriting);
+    static void SURWLockLeave(volatile SURWLOCK* lock, int32_t fromwriting);
+#endif
 };
 
 class CSRWLock {

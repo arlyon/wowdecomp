@@ -48,7 +48,11 @@ uint32_t CRandom::uint32_(CRndSeed& seed) {
     uint32_t t1 = *reinterpret_cast<const uint32_t*>(table + i1);
     uint32_t t0 = *reinterpret_cast<const uint32_t*>(table + i0);
 
+#if defined(_MSC_VER)
     acc += _rotl(t3, 1) ^ _rotl(t2, 2) ^ _rotl(t1, 3) ^ t0;
+#else
+    acc += ((t3 << 1) | (t3 >> 31)) ^ ((t2 << 2) | (t2 >> 30)) ^ ((t1 << 3) | (t1 >> 29)) ^ t0;
+#endif
 
     seed.rndvls = (i3 << 24) | (i2 << 16) | (i1 << 8) | i0;
     seed.rndacc = acc;
@@ -122,6 +126,6 @@ C3Vector CRandom::C3Vector_(CRndSeed& seed) {
 
 // VERIFY: 2db79c5a manual
 // OFFSET: 0x00982310
-float __stdcall CRandom::ufloat_(float range, CRndSeed& seed) {
+float STORMAPI CRandom::ufloat_(float range, CRndSeed& seed) {
     return CRandom::ufloat_(seed) * range;
 }

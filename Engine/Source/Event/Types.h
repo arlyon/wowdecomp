@@ -3,10 +3,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "Engine/Source/Storm/H/Compiler.h"
 #include "Engine/Source/Tempest/C2Vector.h"
 
 enum KEY : uint32_t {
-    KEY_NONE = 0xFFFFFFFFFFFFFFFF,
+    KEY_NONE = STORM_ENUM32_MAX,
     KEY_LSHIFT = 0,
     KEY_RSHIFT = 1,
     KEY_LCONTROL = 2,
@@ -136,7 +137,7 @@ enum MOUSEBUTTON : uint32_t {
     MOUSE_BUTTON_XBUTTON10 = 0x1000,
     MOUSE_BUTTON_XBUTTON11 = 0x2000,
     MOUSE_BUTTON_XBUTTON12 = 0x4000,
-    MOUSE_BUTTON_ALL = 0xFFFFFFFFFFFFFFFF,
+    MOUSE_BUTTON_ALL = STORM_ENUM32_MAX,
 };
 
 enum MOUSEMODE {
@@ -149,7 +150,7 @@ enum SCHEDSTATE : uint32_t {
     SCHEDSTATE_ACTIVE = 0,
     SCHEDSTATE_CLOSED = 1,
     SCHEDSTATE_DESTROYED = 2,
-    _UNIQUE_SYMBOL_SCHEDSTATE_96 = 0xFFFFFFFFFFFFFFFF,
+    _UNIQUE_SYMBOL_SCHEDSTATE_96 = STORM_ENUM32_MAX,
 };
 
 struct MouseEventData {

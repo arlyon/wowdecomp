@@ -2,7 +2,7 @@
 #define ENGINE_SOURCE_BLIZZARDCORE_SOURCE_SYSTEM_TIME_TIME_H
 
 #include <cstdint>
-#include <windows.h>
+#include "Engine/Source/BlizzardCore/Source/System/WindowsIncludes.h"
 #include "Engine/Source/BlizzardCore/Source/System/Lock/Lock.h"
 #include "Engine/Source/BlizzardCore/Source/System/Time/Types.h"
 
@@ -21,10 +21,14 @@ extern double timeScaleNanoseconds;
 extern double timeScaleSeconds;
 extern double timeScaleMicroseconds;
 
+#if defined(_WIN32)
 bool CalibrateFrequency(LARGE_INTEGER* frequency);
+#endif
 uint64_t GetTickCount64();
+#if defined(_WIN32)
 bool InitFrequency(LARGE_INTEGER* frequency);
 double MeasureDrift(int64_t frequency, LARGE_INTEGER* counter, DWORD* tickCount);
+#endif
 bool TimeInit();
 
 }
@@ -36,6 +40,9 @@ void BreakTime(Timestamp time, TimeRec& rec);
 Timestamp FromFileTime(uint64_t fileTime);
 void GetElapsedSinceStart(bool start);
 Timestamp GetTimestamp();
+// Native provider contract: invalid fields fail with INT64_MIN/errno=EINVAL; valid dates outside
+// the timestamp range fail with INT64_MIN/errno=ERANGE. Success clears errno,
+// including when the resulting timestamp is exactly INT64_MIN.
 Timestamp MakeTime(const TimeRec& rec);
 int64_t Milliseconds();
 

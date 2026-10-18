@@ -1,0 +1,28 @@
+get_filename_component(root "../.." ABSOLUTE BASE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+file(GLOB_RECURSE native_sources "${root}/Engine/Source/BlizzardCore/Source/*.cpp"
+    "${root}/Engine/Source/Gx/CGxDeviceD3d/Native/*.cpp"
+    "${root}/Engine/Source/Os/Native/*.cpp" "${root}/WoW/Source/Native/*.cpp")
+list(FILTER native_sources INCLUDE REGEX "/Native/")
+list(LENGTH native_sources count)
+if (count LESS 13)
+    message(FATAL_ERROR "Missing native-extension translation units")
+endif ()
+foreach (path IN LISTS native_sources)
+    file(READ "${path}" source)
+    if (source MATCHES "#[ \t]*(if|elif)[^\n]*(_WIN32|__linux__|__APPLE__)")
+        message(FATAL_ERROR "Put OS dispatch in source selection, not native algorithms: ${path}")
+    endif ()
+endforeach ()
+file(GLOB_RECURSE posix_sources "${root}/Engine/Source/Os/Posix/*"
+    "${root}/Engine/Source/BlizzardCore/Source/System/*/Posix/*"
+    "${root}/WoW/Source/WowServices/Posix/*")
+list(APPEND posix_sources "${root}/WoW/Source/WowServices/PosixSocket.h")
+foreach (path IN LISTS posix_sources)
+    if (EXISTS "${path}" AND NOT IS_DIRECTORY "${path}")
+        file(READ "${path}" source)
+        string(REGEX REPLACE "//[^\n]*" "" source "${source}")
+        if (source MATCHES "/proc/|/sys/|SYS_gettid|sys/sysinfo[.]h|MSG_NOSIGNAL|pthread_[a-z_]*affinity_np|pthread_setname_np|sem_init")
+            message(FATAL_ERROR "Linux-specific operation escaped into a POSIX provider: ${path}")
+        endif ()
+    endif ()
+endforeach ()

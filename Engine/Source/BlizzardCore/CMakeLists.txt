@@ -1,4 +1,11 @@
 file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
+wowdecomp_filter_platform_sources(PRIVATE_SOURCES ${PRIVATE_SOURCES})
+if (WOWDECOMP_POSIX)
+    list(REMOVE_ITEM PRIVATE_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/Log/Log.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Source/System/Thread/ThreadPools.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Source/Packages/iounit/IOFileUnit.cpp")
+endif ()
 
 add_library(BlizzardCore STATIC
     ${PRIVATE_SOURCES}

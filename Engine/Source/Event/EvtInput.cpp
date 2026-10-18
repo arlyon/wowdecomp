@@ -1,3 +1,7 @@
+#if !defined(_WIN32)
+#include "Engine/Source/Os/SDL/Window.h"
+#endif
+#line 1
 #include <cmath>
 #include <cstdint>
 #include "Engine/Source/Base/Coordinate.h"
@@ -377,7 +381,13 @@ void IEvtDispatchInput(EvtContext* context, OSINPUT id, int32_t* param, int32_t*
             data.m_action = param[0];
             data.unused_0004 = param[1];
             data.m_param = param[2];
+#if defined(_WIN32)
+#line 380
             data.m_codePage = GetACP();
+#else
+            data.m_codePage = 65001; // SDL text input uses UTF-8.
+#endif
+#line 381
 
             IEvtQueueDispatch(context, EVENT_ID_IME, &data);
             break;

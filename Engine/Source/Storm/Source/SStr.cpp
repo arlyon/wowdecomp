@@ -86,11 +86,13 @@ int32_t STORMAPI SStrCmp(const char* string1, const char* string2, size_t maxcha
     return strncmp(string1, string2, maxchars);
 }
 
+#if defined(_WIN32)
 // VERIFY: 0278ea41 auto
 // OFFSET: 0x0076E780
 int32_t STORMAPI SStrCmpI(const char* string1, const char* string2, size_t maxchars) {
     return _strnicmp(string1, string2, maxchars);
 }
+#endif
 
 // VERIFY: 806bfb4a manual
 // OFFSET: 0x0076E7A0
@@ -609,7 +611,7 @@ static size_t ISStrVPrintf(char* dest, size_t maxchars, const char* format, va_l
     if (g_opt.orderedprintfenabled) {
         result = vsnoprintf(dest, maxchars, format, arglist);
     } else {
-        result = _vsnprintf(dest, maxchars, format, arglist);
+        result = STORM_VSNPRINTF(dest, maxchars, format, arglist);
     }
 
     if (result >= maxchars) {
@@ -883,6 +885,7 @@ uint32_t STORMAPI SStrHashHT(const char* string) {
     return bjhash(buffer, length, 0);
 }
 
+#if defined(_WIN32)
 // VERIFY: 95c28b4a auto
 // OFFSET: 0x0076F6C0
 void STORMAPI SStrUpper(char* string) {
@@ -894,6 +897,7 @@ void STORMAPI SStrUpper(char* string) {
 void STORMAPI SStrLower(char* string) {
     _strlwr(string);
 }
+#endif
 
 // VERIFY: d9e4e017 auto
 // OFFSET: 0x0076F700

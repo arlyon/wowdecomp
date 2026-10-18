@@ -3,7 +3,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 #include <d3d9.h>
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Storm/H/stpl.h"
@@ -205,7 +207,11 @@ class CGxDeviceD3d : public CGxDevice {
     };
 
     /* 3968 */ HWND m_hwnd;
+#if defined(_WIN32)
     /* 396C */ ATOM m_hwndClass;
+#else
+    uint16_t m_hwndClass;
+#endif
     /* 396E */ uint16_t unused_396E;
     /* 3970 */ int32_t m_ownhwnd;
     /* 3974 */ HINSTANCE m_d3dLib;
@@ -323,7 +329,9 @@ class CGxDeviceD3d : public CGxDevice {
 
     static int32_t ILoadD3dLib(HINSTANCE& d3dLib, LPDIRECT3D9& d3d);
     static void IUnloadD3dLib(HINSTANCE& d3dLib, LPDIRECT3D9& d3d);
+#if defined(_WIN32)
     static LRESULT CALLBACK WindowProcD3d(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
+#endif
 
     CGxDeviceD3d();
     virtual ~CGxDeviceD3d();

@@ -2,11 +2,19 @@
 #define ENGINE_SOURCE_STORM_H_SCRITSECT_H
 
 #include <cstdint>
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include <mutex>
+#endif
 
 class CCritSect {
     public:
+#if defined(_WIN32)
     /* 0000 */ CRITICAL_SECTION m_critsect;
+#else
+    std::recursive_mutex m_critsect;
+#endif
 
     CCritSect();
     ~CCritSect();

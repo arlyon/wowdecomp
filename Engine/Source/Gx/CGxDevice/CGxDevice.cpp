@@ -5,7 +5,7 @@
 #include <cstring>
 #include <new>
 #include "Engine/Source/Storm/H/storm.h"
-#include "Engine/Source/BlizzardCore/SFile2-Core.h"
+#include "Engine/Source/BlizzardCore/SFile2-IO.h"
 #include "Engine/Source/Gx/Buffer.h"
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Gx/CGxDevice/CGxShader.h"
@@ -1492,7 +1492,7 @@ void CGxDevice::Log(const char* format, va_list args) {
     }
 
     char buffer[2048];
-    _vsnprintf(buffer, sizeof(buffer), format, args);
+    STORM_VSNPRINTF(buffer, sizeof(buffer), format, args);
 
     if (CGxDevice::m_logBytes < 0x200000) {
         SLogWrite(CGxDevice::m_log, buffer);

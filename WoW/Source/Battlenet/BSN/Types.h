@@ -46,8 +46,16 @@ typedef void (*AdapterSetCount)(void* data, uint32_t count);
 typedef bool (*AdapterGetExists)(const void* data);
 typedef void* (*AdapterSetExists)(void* data, bool exists);
 typedef int32_t (*AdapterGetTag)(const void* data);
+#if defined(_WIN32)
+#line 49
 typedef void* (*AdapterGetChoice)(const void* data);
 typedef void (*AdapterSetTag)(void* data, int32_t tag);
+#else
+// Match the generated Choice::GetElement/SetTag producers on native builds.
+typedef const void* (*AdapterGetChoice)(const void* data);
+typedef void* (*AdapterSetTag)(void* data, int32_t tag);
+#endif
+#line 51
 typedef uint32_t (*AdapterGetFourCC)(const void* data);
 typedef void (*AdapterSetFourCC)(void* data, uint32_t value);
 
