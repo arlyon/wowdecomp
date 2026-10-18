@@ -1,0 +1,73 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "vulkan-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "vulkan-client",
+      "inherits": "vulkan-base",
+      "displayName": "Native Vulkan client (Linux, no DXVK)",
+      "description": "clang + Ninja Release build of Wow with the native Vulkan backend",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "WOWDECOMP_VULKAN": "ON",
+        "WOWDECOMP_DXVK": "OFF",
+        "WOWDECOMP_MOJOSHADER_SOURCE": "${sourceDir}/out/deps/mojoshader",
+        "WOWDECOMP_SLANG_SOURCE": "${sourceDir}/out/deps/slang",
+        "WOWDECOMP_SLANGC": "${sourceDir}/out/deps/slang-build/Release/bin/slangc"
+      }
+    },
+    {
+      "name": "vulkan-client-conan",
+      "inherits": "vulkan-base",
+      "displayName": "Native Vulkan client (Conan-managed deps)",
+      "description": "Same client build, but the pinned MojoShader/Slang come from Conan. Run `make conan` first; it writes out/conan/deps.cmake, injected below via CMAKE_PROJECT_INCLUDE.",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "WOWDECOMP_VULKAN": "ON",
+        "WOWDECOMP_DXVK": "OFF",
+        "CMAKE_PROJECT_INCLUDE": "${sourceDir}/out/conan/deps.cmake"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "vulkan-client",
+      "configurePreset": "vulkan-client",
+      "targets": ["Wow"]
+    },
+    {
+      "name": "vulkan-client-conan",
+      "configurePreset": "vulkan-client-conan",
+      "targets": ["Wow"]
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "vulkan-client",
+      "displayName": "Configure + build the native Vulkan client",
+      "steps": [
+        { "type": "configure", "name": "vulkan-client" },
+        { "type": "build", "name": "vulkan-client" }
+      ]
+    },
+    {
+      "name": "vulkan-client-conan",
+      "displayName": "Configure + build the native Vulkan client with Conan deps",
+      "steps": [
+        { "type": "configure", "name": "vulkan-client-conan" },
+        { "type": "build", "name": "vulkan-client-conan" }
+      ]
+    }
+  ]
+}
