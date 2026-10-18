@@ -10,7 +10,7 @@ class WowDecompDeps(ConanFile):
     wowdecomp consumes its two pinned dependencies as *source directories* and a
     compiler binary, not as linked CMake packages, so instead of CMakeDeps we
     generate a small snippet that CMakePresets.json injects via
-    CMAKE_PROJECT_INCLUDE (see the `vulkan-client-conan` preset).
+    CMAKE_PROJECT_INCLUDE (see the `vulkan-client` preset).
     """
 
     name = "wowdecomp-deps"

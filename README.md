@@ -98,37 +98,34 @@ headers/loader and the shader dependencies below are required. A DXVK-native dev
 required only with `WOWDECOMP_DXVK=ON`; use `-DWOWDECOMP_DXVK=OFF` for a Vulkan-only build.
 Windows Vulkan and macOS/MoltenVK have not been built or run.
 
-Dependencies are built locally, not installed system-wide. The CMake integration checks these revisions:
+Dependencies are resolved locally through Conan, not installed system-wide, and are pinned by the
+recipes in `conan/`. The CMake integration checks these revisions:
 
 - [MojoShader](https://github.com/icculus/mojoshader), `ad5dff84830c2863c841f4b1f4e3df78c705b383` (zlib).
 - [Slang v2026.4.2](https://github.com/shader-slang/slang/tree/v2026.4.2),
   `5cde9ea5ff3b6c657978de54d2241a86cb3528b1` (MIT/Apache-2.0; see its third-party licences).
 
-Place the pinned checkouts in `out/deps/mojoshader` and `out/deps/slang`. Initialise Slang's pinned
-submodules `external/{lua,miniz,lz4,unordered_dense,spirv-tools,spirv-headers,glslang,vulkan}` using
-`git submodule update --init --recursive` with those explicit paths, then build its compiler locally:
+`make deps` clones the pinned revisions into the local Conan cache, builds `slangc` only when it is
+not cached, and writes `out/conan/deps.cmake`, which the client preset injects with
+`CMAKE_PROJECT_INCLUDE`:
 
 ```sh
-cmake -S out/deps/slang -B out/deps/slang-build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DSLANG_ENABLE_PREBUILT_BINARIES=OFF \
-  -DSLANG_SLANG_LLVM_FLAVOR=DISABLE -DSLANG_ENABLE_SLANG_GLSLANG=ON \
-  -DSLANG_ENABLE_GFX=OFF -DSLANG_ENABLE_SLANG_RHI=OFF \
-  -DSLANG_ENABLE_EXAMPLES=OFF -DSLANG_ENABLE_TESTS=OFF -DSLANG_ENABLE_DXIL=OFF \
-  -DSLANG_ENABLE_CUDA=OFF -DSLANG_ENABLE_OPTIX=OFF \
-  -DSLANG_ENABLE_AFTERMATH=OFF -DSLANG_ENABLE_NVAPI=OFF \
-  -DSLANG_ENABLE_SLANGD=OFF -DSLANG_ENABLE_SLANGRT=OFF
-cmake --build out/deps/slang-build --target slangc slang-glslang --parallel 4
-
-cmake -S . -B out/client-vulkan -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DWOWDECOMP_VULKAN=ON -DDXVK_NATIVE_ROOT=/path/to/dxvk-native/prefix \
-  -DWOWDECOMP_MOJOSHADER_SOURCE="$PWD/out/deps/mojoshader" \
-  -DWOWDECOMP_SLANG_SOURCE="$PWD/out/deps/slang" \
-  -DWOWDECOMP_SLANGC="$PWD/out/deps/slang-build/Release/bin/slangc"
-cmake --build out/client-vulkan --target Wow --parallel 4
+make deps     # conan create conan/recipes/{mojoshader,slang} --build=missing + conan install
+make client   # configure + build out/vulkan-client/bin/Wow
+make run      # launch against GAME_DATA
 ```
 
-Keep Slang's `libslang-compiler` and `libslang-glslang` beside its build outputs: both are needed.
+See [conan/README.md](conan/README.md) for the recipes and the cache-variable handoff. A hand
+configuration (for example a DXVK-enabled build) takes the same variables through that file:
+
+```sh
+cmake -S . -B out/client-dxvk -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DWOWDECOMP_VULKAN=ON -DWOWDECOMP_DXVK=ON -DDXVK_NATIVE_ROOT=/path/to/dxvk-native/prefix \
+  -DCMAKE_PROJECT_INCLUDE="$PWD/out/conan/deps.cmake"
+cmake --build out/client-dxvk --target Wow --parallel 4
+```
+
 The client finds game data beside its executable. For isolated comparisons, copy the executable into
 separate run directories, link each directory's `Data` to your existing client data, and give each its
 own `WTF` and `XDG_CONFIG_HOME`. Set `WOWDECOMP_GX_BACKEND=vulkan` (the enabled-build default) or
@@ -144,13 +141,11 @@ bytecode is recovered mechanically into Slang, then compiled to SPIR-V; this is 
 which accepts a GXSH `.bls` and an output directory. No proprietary shader data is checked in.
 
 ```sh
-cmake -S Tools/Vulkan -B out/vulkan-tests -G Ninja \
-  -DWOWDECOMP_MOJOSHADER_SOURCE="$PWD/out/deps/mojoshader" \
-  -DWOWDECOMP_SLANG_SOURCE="$PWD/out/deps/slang" \
-  -DWOWDECOMP_SLANGC="$PWD/out/deps/slang-build/Release/bin/slangc"
-cmake --build out/vulkan-tests --parallel 4
-ctest --test-dir out/vulkan-tests --output-on-failure
+make tests    # configure + build out/vulkan-tests against the Conan deps, then ctest
 ```
+
+The same dependencies are handed to hand-configured builds with
+`-DCMAKE_PROJECT_INCLUDE="$PWD/out/conan/deps.cmake"`.
 
 Known boundaries: shader-model 1.4 translation is unsupported, and some shader-model 1.1 pixel inputs
 are not recovered correctly. The audited model 2/3 variants compile and validate, but offline compilation
