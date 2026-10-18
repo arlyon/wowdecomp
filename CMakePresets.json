@@ -1,0 +1,45 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "vulkan-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "vulkan-client",
+      "inherits": "vulkan-base",
+      "displayName": "Native Vulkan client (Linux, no DXVK)",
+      "description": "clang + Ninja Release build of Wow with the native Vulkan backend. Run `make deps` first: it writes out/conan/deps.cmake, injected below via CMAKE_PROJECT_INCLUDE.",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "WOWDECOMP_VULKAN": "ON",
+        "WOWDECOMP_DXVK": "OFF",
+        "CMAKE_PROJECT_INCLUDE": "${sourceDir}/out/conan/deps.cmake"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "vulkan-client",
+      "configurePreset": "vulkan-client",
+      "targets": ["Wow"]
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "vulkan-client",
+      "displayName": "Configure + build the native Vulkan client",
+      "steps": [
+        { "type": "configure", "name": "vulkan-client" },
+        { "type": "build", "name": "vulkan-client" }
+      ]
+    }
+  ]
+}
