@@ -3,6 +3,12 @@
 #ifndef GX_TEMPORAL
 #define GX_TEMPORAL 0
 #endif
+#ifndef GX_HDR_OUTPUT
+#define GX_HDR_OUTPUT 0
+#endif
+#if GX_HDR_OUTPUT
+#include "HdrToneMapping.slang"
+#endif
 
 struct VertexConstants
 {
@@ -116,10 +122,18 @@ float4 combine(float4 texture, float4 current, float4 diffuse, int operation)
     }
 }
 
+#if GX_TEMPORAL || GX_HDR_OUTPUT
+struct FixedOutput {
+    [[vk::location(0)]] float4 colour : SV_Target0;
 #if GX_TEMPORAL
-struct TemporalOutput { float4 colour : SV_Target0; float4 motion : SV_Target1; };
+    [[vk::location(1)]] float4 motion : SV_Target1;
+#endif
+#if GX_HDR_OUTPUT
+    [[vk::location(2)]] float4 classic : SV_Target2;
+#endif
+};
 [shader("fragment")]
-TemporalOutput pixelMain(VertexOutput input)
+FixedOutput pixelMain(VertexOutput input)
 #else
 [shader("fragment")]
 float4 pixelMain(VertexOutput input) : SV_Target
@@ -136,9 +150,14 @@ float4 pixelMain(VertexOutput input) : SV_Target
         colour.a = combine(texel, previous, input.colour, int(stage.z)).a;
     }
     clip(colour.a - pixelConstants.options.x);
-#if GX_TEMPORAL
-    TemporalOutput output;
+#if GX_TEMPORAL || GX_HDR_OUTPUT
+    FixedOutput output;
     output.colour = colour;
+#if GX_HDR_OUTPUT
+    output.classic = colour;
+    output.colour.rgb = hdrDecodeLegacy(colour.rgb);
+#endif
+#if GX_TEMPORAL
     output.motion = float4(0, 0, -1, saturate(temporalOptions.y));
     if (temporalOptions.x > 0 && input.currentClip.w > 0.00001 && input.previousClip.w > 0.00001 &&
         all(isfinite(input.currentClip)) && all(isfinite(input.previousClip)))
@@ -148,6 +167,7 @@ float4 pixelMain(VertexOutput input) : SV_Target
         if (all(isfinite(delta)) && all(abs(delta) <= 4) && isfinite(depth) && depth >= 0 && depth <= 1)
             output.motion = float4(delta * float2(0.5, -0.5), depth, saturate(temporalOptions.y));
     }
+#endif
     return output;
 #else
     return colour;

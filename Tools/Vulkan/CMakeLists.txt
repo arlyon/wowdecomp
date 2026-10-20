@@ -29,16 +29,25 @@ endif ()
 enable_testing()
 add_test(NAME VulkanShader COMMAND VulkanShaderTest)
 set_tests_properties(VulkanShader PROPERTIES TIMEOUT 20)
-foreach (name TemporalHistory TemporalBackend)
+foreach (name TemporalHistory TemporalBackend HdrToneMapping HdrLut HdrLutJob)
     add_executable(${name}Test ${name}Test.cpp)
     target_include_directories(${name}Test PRIVATE "${WOWDECOMP_ROOT}")
     target_compile_options(${name}Test PRIVATE -UNDEBUG)
-    add_test(NAME ${name} COMMAND ${name}Test)
+    set(arguments)
+    if (name STREQUAL "HdrLutJob")
+        set(arguments "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures")
+    endif ()
+    add_test(NAME ${name} COMMAND ${name}Test ${arguments})
 endforeach ()
+find_package(Threads REQUIRED)
+target_link_libraries(HdrLutJobTest PRIVATE Threads::Threads)
 if (WOWDECOMP_SLANGC)
     include("${WOWDECOMP_ROOT}/cmake/SlangCompiler.cmake")
     target_sources(GxVulkanShaders PRIVATE "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Slang.cpp")
     target_link_libraries(GxVulkanShaders PUBLIC GxSlangCompiler)
+    add_executable(HdrOutputBoundaryTest HdrOutputBoundaryTest.cpp)
+    target_link_libraries(HdrOutputBoundaryTest PRIVATE GxVulkanShaders)
+    add_test(NAME HdrOutputBoundary COMMAND HdrOutputBoundaryTest)
     target_compile_definitions(VulkanShaderTest PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1)
     target_compile_definitions(VulkanShaderCorpus PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1)
     include("${WOWDECOMP_ROOT}/cmake/SlangShaders.cmake")
@@ -111,6 +120,18 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
         ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~;WOWDECOMP_VULKAN_WORLD_TARGET=1")
     set_tests_properties(FfxAlignmentGpu PROPERTIES TIMEOUT 90 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
 
+    add_executable(HdrLiveTest HdrLiveTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp")
+    target_include_directories(HdrLiveTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(HdrLiveTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1 WOWDECOMP_VULKAN_TESTING=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}"
+        WOWDECOMP_HDR_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Fixtures")
+    target_link_libraries(HdrLiveTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    add_dependencies(HdrLiveTest GxSlangShaders)
+    add_test(NAME HdrLiveGpu COMMAND HdrLiveTest)
+    set_tests_properties(HdrLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
     add_executable(WindowStartupTest WindowStartupTest.cpp WindowConsoleHost.cpp
         "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice.cpp"
         "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice_CVar.cpp"
@@ -165,6 +186,19 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
     target_link_libraries(NativeSceneSettingsTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
         Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
     add_test(NAME NativeSceneSettings COMMAND NativeSceneSettingsTest)
+
+    add_executable(NativeHdrSettingsTest NativeHdrSettingsTest.cpp
+        "${WOWDECOMP_ROOT}/WoW/Source/Ui/NativeVideoOptions.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/WorldParam_CVar.cpp")
+    target_include_directories(NativeHdrSettingsTest PRIVATE "${WOWDECOMP_ROOT}" "${WOWDECOMP_VULKAN_CLIENT_BUILD}/WoW/Source/Ui")
+    target_compile_definitions(NativeHdrSettingsTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1)
+    target_compile_options(NativeHdrSettingsTest PRIVATE -ffunction-sections -fdata-sections -UNDEBUG)
+    target_link_options(NativeHdrSettingsTest PRIVATE -Wl,--gc-sections)
+    target_link_libraries(NativeHdrSettingsTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives}
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/libConsoleBase.a"
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/liblua.a" -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    add_test(NAME NativeHdrSettings COMMAND NativeHdrSettingsTest)
 
     add_executable(NativeVideoOptionsTest NativeVideoOptionsTest.cpp)
     target_include_directories(NativeVideoOptionsTest PRIVATE "${WOWDECOMP_ROOT}")

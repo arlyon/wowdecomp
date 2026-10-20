@@ -1,7 +1,7 @@
 -- Exercise the production settings script in the client's bundled Lua runtime.
-local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1"}, 0, 0
+local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1",nativeHDR="0",nativeHDRExposure="0",nativeHDRLut=""}, 0, 0
 local methods = {}
-for _, key in ipairs({"SetAllPoints","SetWidth","SetJustifyH","SetMinMaxValues","SetValueStep"}) do methods[key] = function() end end
+for _, key in ipairs({"SetAllPoints","SetWidth","SetJustifyH","SetMinMaxValues","SetValueStep","SetHeight","SetAutoFocus","SetMaxLetters","ClearFocus"}) do methods[key] = function() end end
 function methods:Enable() self.enabled=true end
 function methods:Disable() self.enabled=false end
 function methods:SetChecked(value) self.checked=value end
@@ -15,7 +15,13 @@ end
 function methods:Hide() self.hidden=true end
 function methods:ClearAllPoints() self.point=nil end
 function methods:SetPoint(...) self.point={...} end
-function methods:SetText(text) self.text=text end
+function methods:GetName() return self.name end
+function methods:GetText() return self.text or "" end
+function methods:EnableMouse(enabled) self.mouseEnabled=enabled end
+function methods:SetText(text)
+    local changed=self.text~=text;self.text=text
+    if changed and self.scripts.OnTextChanged then self.scripts.OnTextChanged(self) end
+end
 function methods:SetScript(name, fn) self.scripts[name]=fn end
 function methods:CreateFontString()
     local text=setmetatable({scripts={}}, {__index=methods})
@@ -47,6 +53,9 @@ VideoOptionsFrameApply={Enable=function() end}
 local scaleSupported, aaSupported = true, true
 function IsNativeSceneScalingSupported() return scaleSupported end
 function IsNativeTemporalAASupported() return aaSupported end
+local hdrSupported, lutState, reloads=true,"None",0
+function GetNativeHdrStatus() return {supported=hdrSupported,active=false,lut=lutState} end
+function ReloadNativeHdrLut() reloads=reloads+1 end
 function GetCVar(name) assert(saved[name],"Unexpected feature CVar: "..name);return saved[name] end
 function SetCVar(name,value) assert(saved[name]);saved[name]=value;writes=writes+1 end
 function VideoOptionsPanel_OnLoad(panel,okay,cancel,defaults,refresh)
@@ -74,7 +83,7 @@ display.okay=apply;display.cancel=apply
 display.default=function() error("Legacy resolution defaults invoked") end
 function VideoOptionsPanel_Default(self) for _,v in ipairs(self.controls) do v:SetValue(v.defaultValue) end end
 loadProduction()()
-assert(categories==3 and writes==0 and modeWrites==0,"Installation changed settings or installed unavailable features")
+assert(categories==4 and writes==0 and modeWrites==0,"Installation changed settings or installed unavailable features")
 assert(resolution.hidden and refresh.hidden and resolution.newValue==nil and refresh.newValue==nil)
 assert(#display.controls==5 and display.controls[1]==samples and display.controls[2]==ui and display.controls[3]==vsync and display.controls[4]==window and display.controls[5]==gamma)
 assert(samples.point[2]==display and vsync.point[2]==samples and ui.point[2]==display)
@@ -102,8 +111,8 @@ snapshot.backendOverride="vulkan";snapshot.adapterOverride=identity;snapshot.loa
 renderer.refresh()
 local status=renderer.fontStrings[#renderer.fontStrings].text
 assert(status:find("WOWDECOMP_GX_BACKEND",1,true) and status:find("Loader-filtered",1,true) and status:find("Recovery",1,true))
-loadProduction()();assert(categories==3,"Duplicate installation")
-assert(not NativeHdrVideoPanel and not NativeRayTracedShadowsCheck,"Unimplemented graphics features exposed")
+loadProduction()();assert(categories==4,"Duplicate installation")
+assert(not NativeRayTracedShadowsCheck,"Unimplemented graphics features exposed")
 local lighting=frames.NativeNightLightingPanel
 local darkness=frames.NativeNightDarknessSlider
 local clock=frames.NativeLocalTimePreviewSlider
@@ -139,3 +148,27 @@ saved.nativeAA="1";saved.nativeSceneScale="0.5";scaleSupported=false;aaSupported
 scene.refresh();assert(not scale.enabled and not aa.enabled and not aa:GetChecked(),"Unavailable scene features enabled")
 scale:SetValue(75);aa:SetChecked(true);aa.scripts.OnClick(aa);scene.okay()
 assert(saved.nativeAA=="0" and saved.nativeSceneScale=="1","Unsupported scene features persisted")
+local hdr=frames.NativeHdrVideoPanel
+local enabled=frames.NativeHdrCheck
+local ev=frames.NativeHdrExposureSlider
+local path=frames.NativeHdrLutPath
+assert(not enabled:GetChecked() and ev:GetValue()==0 and path:GetText()=="")
+oldWrites=writes;local oldReloads=reloads
+enabled:SetChecked(true);enabled.scripts.OnClick(enabled);ev:SetValue(2);path:SetText("controlled.cube");hdr.scripts.OnShow()
+assert(writes==oldWrites and reloads==oldReloads and ev:GetValue()==2 and path:GetText()=="controlled.cube","HDR applied before commit or lost staging")
+hdr.cancel();assert(not enabled:GetChecked() and ev:GetValue()==0 and path:GetText()=="" and writes==oldWrites)
+enabled:SetChecked(true);enabled.scripts.OnClick(enabled);ev:SetValue(2);path:SetText("controlled.cube");hdr.okay()
+assert(saved.nativeHDR=="1" and saved.nativeHDRExposure=="2" and saved.nativeHDRLut=="controlled.cube" and reloads==oldReloads+1)
+oldWrites=writes;oldReloads=reloads
+hdr.default();assert(writes==oldWrites and saved.nativeHDR=="1","HDR defaults saved early")
+hdr.cancel();assert(enabled:GetChecked() and ev:GetValue()==2 and path:GetText()=="controlled.cube")
+path:SetText("invalid.txt");hdr.okay();assert(writes==oldWrites and reloads==oldReloads,"Invalid LUT committed")
+path:SetText("invalid.cube\n");hdr.okay();assert(writes==oldWrites,"Control characters accepted in LUT path")
+hdr.cancel();lutState="Invalid |cBAD\nretained";hdr.scripts.OnUpdate(hdr,0.5)
+local hdrStatus=hdr.fontStrings[#hdr.fontStrings-1].text
+assert(hdrStatus:find("||cBAD",1,true) and not hdrStatus:find("\nretained",1,true),"LUT status injected markup/control text")
+hdr.default();hdr.okay();assert(saved.nativeHDR=="0" and saved.nativeHDRExposure=="0" and saved.nativeHDRLut=="")
+ev:SetValue(100);assert(ev:GetValue()==8);ev:SetValue(-100);assert(ev:GetValue()==-8);hdr.cancel()
+hdrSupported=false;saved.nativeHDR="1";saved.nativeHDRExposure="2";saved.nativeHDRLut="controlled.cube";hdr.refresh()
+oldWrites=writes;oldReloads=reloads;hdr.default();hdr.okay()
+assert(not enabled.enabled and not ev.enabled and not path.mouseEnabled and writes==oldWrites and reloads==oldReloads,"Unsupported HDR preferences overwritten or falsely applied")

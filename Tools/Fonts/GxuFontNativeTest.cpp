@@ -111,6 +111,23 @@ int main(int argc, char** argv) {
                     device.ScenePresent();
                 }
             }
+            if (device.SceneHdrSupported()) {
+                Require(device.SceneSetHdr(true, 0), "enable float scene for font boundary regression");
+                for (bool temporal : {false, true}) {
+                    device.SceneClear(3, CImVector(32,48,64,255));
+                    Require(device.SceneBeginWorld(temporal, 31 + fontFlags), "begin float font scope");
+                    GxuFontRenderBatch(batch);
+                    device.SceneEndWorld();
+                    const unsigned sceneCoverage = ReadCoverage(device);
+                    Require(sceneCoverage > 30 && sceneCoverage < 8000, "float/temporal authored font variant lost bounded text");
+                    device.ScenePresent();
+                }
+                device.SceneClear(3, CImVector(32,48,64,255));
+                GxuFontRenderBatch(batch);
+                Require(ReadCoverage(device) == coverage, "requested float transport changed native UI text outside world scope");
+                device.ScenePresent();
+                Require(device.SceneSetHdr(false, 0), "restore Classic scene transport");
+            }
             if (fontFlags == 8) {
                 unsigned cached = 0;
                 FT_Face ft = FontFaceGetFace(face->m_fontFaceHandle);

@@ -1673,7 +1673,12 @@ void CGWorldFrame::OnWorldRender() {
     g_theGxDevicePtr->RsPush();
     GxRsSet(GxRs_Multisample, 1);
     CGWorldFrame::UpdateScreenEffectParams();
-    FFX::Start();
+    g_theGxDevicePtr->SceneRequestHdrLut(CWorldParam::cvar_nativeHDRLut ? CWorldParam::cvar_nativeHDRLut->m_stringValue.m_str : "");
+    const bool hdrRequested = CWorldParam::cvar_nativeHDR && CWorldParam::cvar_nativeHDR->m_intValue != 0;
+    const float hdrEV = CWorldParam::cvar_nativeHDRExposure ? CWorldParam::cvar_nativeHDRExposure->m_floatValue : 0.f;
+    const bool hdr = g_theGxDevicePtr->SceneSetHdr(hdrRequested, hdrEV) && hdrRequested;
+    // Legacy FFX/glow copies SDR screen textures, not float scene transport.
+    if (!hdr) FFX::Start();
 
     CRect fullViewport = { 0.0f, 0.0f, 1.0f, 1.0f };
 
@@ -1799,8 +1804,10 @@ void CGWorldFrame::OnWorldRender() {
         // FFX resets the viewport. Preserve the world overlay's pre-effect coordinates.
         float left, right, bottom, top, nearDepth, farDepth;
         GxXformViewport(left, right, bottom, top, nearDepth, farDepth);
-        g_theGxDevicePtr->ScenePauseWorldMotion();
-        FFX::Finish();
+        if (!hdr) {
+            g_theGxDevicePtr->ScenePauseWorldMotion();
+            FFX::Finish();
+        }
         g_theGxDevicePtr->SceneEndWorld();
         GxXformSetViewport(left, right, bottom, top, nearDepth, farDepth);
     }
@@ -1814,7 +1821,7 @@ void CGWorldFrame::OnWorldRender() {
     SmartScreenRectClearGrid(1);
     CGChatBubbleFrame::OnWorldRender(this);
     GxXformSetViewport(minX, maxX, minY, maxY, minZ, maxZ);
-    if (!separateWorld) FFX::Finish();
+    if (!separateWorld && !hdr) FFX::Finish();
     CVehiclePassenger_C::PostRenderUpdateAll();
 }
 

@@ -3,9 +3,27 @@
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Gx/Gx.h"
 #include "Engine/Source/FrameScript/FrameScript.h"
+#include "Engine/Source/ConsoleBase/ConsoleVar.h"
+#include "WoW/Source/WorldClient/WorldParam.h"
 #include "NativeVideoOptionsSource.h"
 
 namespace {
+int NativeReloadHdrLut(lua_State*) {
+    if (g_theGxDevicePtr && CWorldParam::cvar_nativeHDRLut)
+        g_theGxDevicePtr->SceneRequestHdrLut(CWorldParam::cvar_nativeHDRLut->m_stringValue.m_str, true);
+    return 0;
+}
+int NativeHdrStatus(lua_State* state) {
+    // Owner-thread polling only; file opening/parsing stays in the owned job.
+    if (g_theGxDevicePtr && CWorldParam::cvar_nativeHDRLut)
+        g_theGxDevicePtr->SceneRequestHdrLut(CWorldParam::cvar_nativeHDRLut->m_stringValue.m_str);
+    lua_createtable(state, 0, 3);
+    lua_pushboolean(state, g_theGxDevicePtr && g_theGxDevicePtr->SceneHdrSupported()); lua_setfield(state, -2, "supported");
+    // Instantaneous scope state, not a last-completed-frame claim.
+    lua_pushboolean(state, g_theGxDevicePtr && g_theGxDevicePtr->SceneHdrActive()); lua_setfield(state, -2, "active");
+    lua_pushstring(state, g_theGxDevicePtr ? g_theGxDevicePtr->SceneHdrLutStatus() : "No graphics device"); lua_setfield(state, -2, "lut");
+    return 1;
+}
 int NativeTemporalSupported(lua_State* state) {
     lua_pushboolean(state, g_theGxDevicePtr && g_theGxDevicePtr->SceneTemporalSupported());
     return 1;
@@ -52,6 +70,8 @@ int NativeGraphicsDevices(lua_State* state) {
 
 void InstallNativeVideoOptions() {
     // Run only after the original FrameXML has passed its normal signature check.
+    FrameScript_RegisterFunction("ReloadNativeHdrLut", NativeReloadHdrLut);
+    FrameScript_RegisterFunction("GetNativeHdrStatus", NativeHdrStatus);
     FrameScript_RegisterFunction("GetNativeGraphicsDevices", NativeGraphicsDevices);
     FrameScript_RegisterFunction("IsNativeTemporalAASupported", NativeTemporalSupported);
     FrameScript_RegisterFunction("IsNativeSceneScalingSupported", NativeSceneScaleSupported);

@@ -7,6 +7,7 @@
 #include "WorldTarget.h"
 #include "TemporalHistory.h"
 #include "TemporalBackend.h"
+#include "HdrLutJob.h"
 #include "Engine/Source/Gx/Blit.h"
 #include "Engine/Source/Gx/Buffer.h"
 #include "Engine/Source/Gx/CGxPool.h"
@@ -18,6 +19,7 @@
 #include <vulkan/vulkan.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -74,6 +76,7 @@ struct NativeImage {
     uint32_t width = 0, height = 0, levels = 1, layers = 1;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkDeviceSize allocationBytes = 0;
 };
 struct NativeShader {
     uint64_t id;
@@ -106,6 +109,18 @@ struct CGxDeviceVulkan::State {
     SDL_Window* window = nullptr;
     bool ownWindow = false, resize = false, recording = false, inPass = false, acquirePending = false;
     VkInstance instance = VK_NULL_HANDLE;
+#ifdef WOWDECOMP_VULKAN_TESTING
+    VkDebugUtilsMessengerEXT testMessenger = VK_NULL_HANDLE;
+    std::atomic<uint32_t> testDiagnostics{0};
+    static VKAPI_ATTR VkBool32 VKAPI_CALL TestMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+        VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
+        if (severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)) {
+            static_cast<State*>(user)->testDiagnostics.fetch_add(1, std::memory_order_relaxed);
+            std::fprintf(stderr, "Vulkan validation: %s\n", data && data->pMessage ? data->pMessage : "missing diagnostic");
+        }
+        return VK_FALSE;
+    }
+#endif
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties{};
     VkPhysicalDeviceMemoryProperties memoryProperties{};
@@ -133,6 +148,59 @@ struct CGxDeviceVulkan::State {
     VkDeviceSize uploadOffset = 0;
     NativeImage depth, white, worldColour, worldDepth;
     bool worldTargetEnabled = false, worldActive = false;
+    bool hdrRequested = false, hdrCapable = false, hdrActive = false, linearOutput = false;
+    float hdrEV = 0.f;
+    NativeImage hdrBackdrop, hdrClassic;
+    bool hdrAborted = false;
+    uint32_t hdrAttachmentLimit = UINT32_MAX, hdrBoundaryFailDraw = 0, hdrDraws = 0;
+    VkDeviceSize hdrImageBudget = 512ull * 1024 * 1024;
+    void AbortHdr(const char* reason) {
+        EndPass(); hdrAborted = true; temporalActive = false; ResetTemporal();
+        GxLog("HDR frame rolled back to Classic companion: %s", reason);
+    }
+    void PublishClassic() {
+        if (sceneScale == 1.f) GxVulkan::CopyWorldImage(command, hdrClassic.image, swapImages[imageIndex], VK_IMAGE_ASPECT_COLOR_BIT, worldRect);
+        else GxVulkan::BlitWorldImage(command, hdrClassic.image, swapImages[imageIndex], VK_IMAGE_ASPECT_COLOR_BIT, renderRect, worldRect, VK_FILTER_LINEAR);
+    }
+    NativeBuffer hdrLutBuffer;
+    std::vector<NativeBuffer> retiredHdrLuts;
+    std::vector<std::array<float, 3>> hdrLutData;
+    uint32_t hdrLutSize = 0;
+    std::unique_ptr<GxVulkan::HdrLutJob> hdrLutJob;
+    std::string hdrLutRequested, hdrLutJobPath, hdrLutStatus = "None";
+    bool hdrLutNeedsLoad = false;
+    uint64_t hdrLutGeneration = 0, hdrLutJobGeneration = 0;
+    uint64_t HdrLutBytes() const;
+    bool SetHdrLut(const float* rgb, uint32_t size);
+    bool InstallHdrLut(GxVulkan::HdrLut&& lut);
+    void UploadHdrLut(const std::vector<std::array<float, 3>>& data);
+#ifdef WOWDECOMP_VULKAN_TESTING
+    uint64_t hdrLutPeakBytes = 0, hdrLutUploadBytes = 0;
+    bool hdrLutOwnerMoved = false;
+#endif
+    VkDescriptorSetLayout hdrDescriptors{};
+    VkPipelineLayout hdrLayout{};
+    VkSampler hdrSampler{};
+    std::map<VkFormat, std::pair<VkRenderPass, VkPipeline>> hdrTransfers;
+    std::map<std::vector<uint32_t>, std::string> pixelSources;
+    std::map<std::vector<uint32_t>, std::vector<uint32_t>> hdrPixels, hdrLinearPixels;
+    VkRenderPass hdrResolvePass{};
+    VkPipeline hdrResolvePipeline{}, hdrUpscalePipeline{};
+    VkFormat WorldFormat() const { return hdrActive ? VK_FORMAT_R32G32B32A32_SFLOAT : surfaceFormat; }
+    bool HdrDraw() const {
+        return hdrActive && worldActive && !hdrAborted &&
+            !gx.m_textureTarget[GxBuffers_Color].m_texture && !gx.m_textureTarget[GxBuffers_Depth].m_texture;
+    }
+    std::vector<uint32_t> Compile(const std::string& source, bool vertex) {
+        auto code = shaderCompiler.Compile(source, vertex);
+        if (!vertex) pixelSources[code] = source;
+        return code;
+    }
+    const std::vector<uint32_t>& BoundaryPixel(const std::vector<uint32_t>& code, bool decode);
+    bool PrepareHdrImages(bool temporal);
+    void HdrTransfer(NativeImage& source, VkImageView target, VkFormat format, VkExtent2D output, uint32_t operation, bool sceneRect);
+    void ToneWorld(NativeImage& source) { HdrTransfer(source, swapViews[imageIndex], surfaceFormat, extent, 1, true); }
+    void DestroyHdr();
     VkRect2D worldRect{}, renderRect{};
     VkExtent2D renderExtent{};
     float sceneScale = 1.f;
@@ -154,7 +222,7 @@ struct CGxDeviceVulkan::State {
     VkRenderPass resolvePass = VK_NULL_HANDLE;
     VkPipeline resolvePipeline = VK_NULL_HANDLE, upscalePipeline = VK_NULL_HANDLE;
     bool MotionPass() const {
-        return temporalActive && worldActive && !motionPaused &&
+        return temporalActive && worldActive && !hdrAborted && !motionPaused &&
             !gx.m_textureTarget[GxBuffers_Color].m_texture && !gx.m_textureTarget[GxBuffers_Depth].m_texture;
     }
     void ResetTemporal() {
@@ -168,6 +236,8 @@ struct CGxDeviceVulkan::State {
         GxVulkan::CopyWorldImage(command, depthScratch.image, destination, VK_IMAGE_ASPECT_DEPTH_BIT, worldRect);
     }
     void SnapshotWorldColour() {
+        if (hdrAborted) { PublishClassic(); return; }
+        if (hdrActive) { ToneWorld(worldColour); return; }
         GxVulkan::BlitWorldImage(command, worldColour.image, history[historyIndex ^ 1].image,
             VK_IMAGE_ASPECT_COLOR_BIT, {{0,0},renderExtent}, {{0,0},extent}, VK_FILTER_LINEAR);
         GxVulkan::CopyWorldImage(command, history[historyIndex ^ 1].image, swapImages[imageIndex],
@@ -197,7 +267,8 @@ struct CGxDeviceVulkan::State {
     NativeBuffer MakeBuffer(VkDeviceSize size, VkBufferUsageFlags usage);
     void DestroyBuffer(NativeBuffer& buffer);
     NativeImage MakeImage(uint32_t width, uint32_t height, uint32_t levels, uint32_t layers,
-        VkFormat format, VkImageAspectFlags aspect, VkImageUsageFlags usage);
+        VkFormat format, VkImageAspectFlags aspect, VkImageUsageFlags usage,
+        VkDeviceSize maximumBytes = std::numeric_limits<VkDeviceSize>::max());
     void DestroyImage(NativeImage& image);
     void Barrier(VkImage image, VkImageAspectFlags aspect, uint32_t levels, uint32_t layers,
         VkImageLayout oldLayout, VkImageLayout newLayout);
@@ -229,7 +300,7 @@ void CGxDeviceVulkan::State::DestroyBuffer(NativeBuffer& buffer) {
     GxVulkan::DestroyBuffer(device, buffer);
 }
 NativeImage CGxDeviceVulkan::State::MakeImage(uint32_t width, uint32_t height, uint32_t levels,
-    uint32_t layers, VkFormat format, VkImageAspectFlags aspect, VkImageUsageFlags usage) {
+    uint32_t layers, VkFormat format, VkImageAspectFlags aspect, VkImageUsageFlags usage, VkDeviceSize maximumBytes) {
     NativeImage image;
     image.width = width; image.height = height; image.levels = levels; image.layers = layers;
     image.format = format; image.aspect = aspect;
@@ -242,6 +313,8 @@ NativeImage CGxDeviceVulkan::State::MakeImage(uint32_t width, uint32_t height, u
     try {
         VkMemoryRequirements requirements;
         vkGetImageMemoryRequirements(device, image.image, &requirements);
+        if (requirements.size > maximumBytes) throw std::runtime_error("Scene image allocation budget exceeded");
+        image.allocationBytes = requirements.size;
         VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         allocation.allocationSize = requirements.size;
         allocation.memoryTypeIndex = MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -305,6 +378,18 @@ void CGxDeviceVulkan::State::Initialize() {
         return std::strcmp(e.extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0;
     });
     if (portability) extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#ifdef WOWDECOMP_VULKAN_TESTING
+    if (std::none_of(available.begin(), available.end(), [](const auto& extension) {
+        return std::strcmp(extension.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0;
+    })) throw std::runtime_error("Vulkan test diagnostic callback unavailable");
+    extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    VkDebugUtilsMessengerCreateInfoEXT debug{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    debug.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    // Count API validation/performance diagnostics, not loader configuration notices.
+    // The external runner separately audits the complete loader/stderr log.
+    debug.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    debug.pfnUserCallback = TestMessage; debug.pUserData = this;
+#endif
     std::vector<const char*> layers;
     if (const char* validation = std::getenv("WOWDECOMP_VULKAN_VALIDATION"); validation && std::strcmp(validation, "1") == 0) {
         GX_VK(vkEnumerateInstanceLayerProperties(&count, nullptr));
@@ -326,7 +411,15 @@ void CGxDeviceVulkan::State::Initialize() {
     info.ppEnabledExtensionNames = extensions.data(); info.enabledLayerCount = static_cast<uint32_t>(layers.size());
     info.ppEnabledLayerNames = layers.data();
     if (portability) info.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#ifdef WOWDECOMP_VULKAN_TESTING
+    info.pNext = &debug;
+#endif
     GX_VK(vkCreateInstance(&info, nullptr, &instance));
+#ifdef WOWDECOMP_VULKAN_TESTING
+    const auto createMessenger = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
+    if (!createMessenger) throw std::runtime_error("Vulkan test diagnostic callback entry unavailable");
+    GX_VK(createMessenger(instance, &debug, nullptr, &testMessenger));
+#endif
     if (!SDL_Vulkan_CreateSurface(window, instance, &surface)) throw std::runtime_error(SDL_GetError());
     if (GxGetDeviceSelection().backends.empty()) GxConfigureDeviceSelection("auto", "auto");
     auto candidates = GxVulkan::EnumerateAdapters(instance, surface);
@@ -392,9 +485,10 @@ void CGxDeviceVulkan::State::Initialize() {
     VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layout.setLayoutCount = static_cast<uint32_t>(descriptorLayouts.size()); layout.pSetLayouts = descriptorLayouts.data();
     GX_VK(vkCreatePipelineLayout(device, &layout, nullptr, &pipelineLayout));
-    const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 98304}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 327680}, {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16}};
+    const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 98304}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 327680},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16}, {VK_DESCRIPTOR_TYPE_SAMPLER, 16}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16}};
     VkDescriptorPoolCreateInfo descriptors{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    descriptors.maxSets = 65536; descriptors.poolSizeCount = 3; descriptors.pPoolSizes = sizes;
+    descriptors.maxSets = 65536; descriptors.poolSizeCount = 5; descriptors.pPoolSizes = sizes;
     GX_VK(vkCreateDescriptorPool(device, &descriptors, nullptr, &descriptorPool));
     upload = MakeBuffer(64 * 1024 * 1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
@@ -418,6 +512,7 @@ void CGxDeviceVulkan::State::RecreateSwapchain() {
     swapViews.clear(); swapImages.clear();
     for (auto semaphore : complete) if (semaphore) vkDestroySemaphore(device, semaphore, nullptr);
     complete.clear();
+    DestroyHdr();
     ResetTemporal();
     if (upscalePipeline) vkDestroyPipeline(device, upscalePipeline, nullptr);
     upscalePipeline = VK_NULL_HANDLE;
@@ -471,6 +566,9 @@ void CGxDeviceVulkan::State::RecreateSwapchain() {
                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) &&
         (depthSupport.optimalTilingFeatures & depthRequired) == depthRequired;
     if (!scaleCapable) sceneScale = 1.f;
+    const auto hdrRequired = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    hdrCapable = scaleCapable && temporalFormatsSupported && properties.limits.maxFragmentOutputAttachments >= 3 &&
+        (motionSupport.optimalTilingFeatures & hdrRequired) == hdrRequired;
     if (worldTargetEnabled && !(capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
         GxLog("Vulkan world target disabled: surface does not support transfer destinations");
         worldTargetEnabled = false;
@@ -534,6 +632,8 @@ bool CGxDeviceVulkan::State::BeginFrame() {
     framebuffers.clear();
     for (auto& image : retiredImages) DestroyImage(image);
     retiredImages.clear();
+    for (auto& buffer : retiredHdrLuts) DestroyBuffer(buffer);
+    retiredHdrLuts.clear();
     for (auto& buffer : retiredBuffers) DestroyBuffer(buffer);
     retiredBuffers.clear();
     if (resize) RecreateSwapchain();
@@ -573,7 +673,8 @@ void CGxDeviceVulkan::State::BeginPass() {
     if (inPass) return;
     auto& colourTarget = gx.m_textureTarget[GxBuffers_Color];
     auto& depthTarget = gx.m_textureTarget[GxBuffers_Depth];
-    NativeImage* colourImage = colourTarget.m_texture ? &Texture(colourTarget.m_texture) : (worldActive ? &worldColour : nullptr);
+    NativeImage* colourImage = colourTarget.m_texture ? &Texture(colourTarget.m_texture) :
+        (worldActive ? (hdrAborted ? &hdrClassic : &worldColour) : nullptr);
     NativeImage* depthImage = depthTarget.m_texture ? &Texture(depthTarget.m_texture) :
         (worldActive && !colourTarget.m_texture ? &worldDepth : &depth);
     if (colourTarget.m_plane || depthTarget.m_plane)
@@ -582,40 +683,48 @@ void CGxDeviceVulkan::State::BeginPass() {
     if (depthImage->width < targetExtent.width || depthImage->height < targetExtent.height)
         throw std::runtime_error("Vulkan depth target is smaller than the colour target");
     const VkFormat colourFormat = colourImage ? colourImage->format : surfaceFormat;
-    const bool motionPass = MotionPass();
-    const std::array<uint32_t,3> key{uint32_t(colourFormat), uint32_t(depthImage->format), motionPass ? 1u : 0u};
+    const bool motionPass = MotionPass(), hdrPass = HdrDraw();
+    const unsigned attachmentCount = 2 + unsigned(motionPass) + unsigned(hdrPass);
+    const std::array<uint32_t,3> key{uint32_t(colourFormat), uint32_t(depthImage->format),
+        (motionPass ? 1u : 0u) | (hdrPass ? 2u : 0u)};
     auto found = renderPasses.find(key);
     if (found == renderPasses.end()) {
-        VkAttachmentDescription attachments[3]{};
-        for (unsigned i = 0; i < (motionPass ? 3u : 2u); ++i) {
-            attachments[i].format = i == 2 ? motion.format : i ? depthImage->format : colourFormat;
+        VkAttachmentDescription attachments[4]{};
+        for (unsigned i = 0; i < attachmentCount; ++i) {
+            attachments[i].format = i == 0 ? colourFormat : i == 1 ? depthImage->format :
+                (hdrPass && i == attachmentCount - 1 ? surfaceFormat : motion.format);
             attachments[i].samples = VK_SAMPLE_COUNT_1_BIT;
             attachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; attachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             attachments[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
             attachments[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
             attachments[i].initialLayout = attachments[i].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
         }
-        VkAttachmentReference colours[] = {{0, VK_IMAGE_LAYOUT_GENERAL}, {2, VK_IMAGE_LAYOUT_GENERAL}};
+        VkAttachmentReference colours[] = {{0, VK_IMAGE_LAYOUT_GENERAL},
+            {motionPass ? 2u : VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_GENERAL},
+            {hdrPass ? attachmentCount - 1 : VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_GENERAL}};
         VkAttachmentReference depthReference{1, VK_IMAGE_LAYOUT_GENERAL};
         VkSubpassDescription subpass{};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = motionPass ? 2 : 1; subpass.pColorAttachments = colours; subpass.pDepthStencilAttachment = &depthReference;
+        subpass.colorAttachmentCount = hdrPass ? 3 : motionPass ? 2 : 1;
+        subpass.pColorAttachments = colours; subpass.pDepthStencilAttachment = &depthReference;
         VkSubpassDependency dependency{};
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL; dependency.dstSubpass = 0;
         dependency.srcStageMask = dependency.dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
         dependency.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
         dependency.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
         VkRenderPassCreateInfo create{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-        create.attachmentCount = motionPass ? 3 : 2; create.pAttachments = attachments;
+        create.attachmentCount = attachmentCount; create.pAttachments = attachments;
         create.subpassCount = 1; create.pSubpasses = &subpass; create.dependencyCount = 1; create.pDependencies = &dependency;
         VkRenderPass pass;
         GX_VK(vkCreateRenderPass(device, &create, nullptr, &pass));
         found = renderPasses.emplace(key, pass).first;
     }
     currentPass = found->second;
-    const VkImageView views[] = {colourImage ? colourImage->view : swapViews[imageIndex], depthImage->view, motion.view};
+    std::vector<VkImageView> views{colourImage ? colourImage->view : swapViews[imageIndex], depthImage->view};
+    if (motionPass) views.push_back(motion.view);
+    if (hdrPass) views.push_back(hdrClassic.view);
     VkFramebufferCreateInfo create{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-    create.renderPass = currentPass; create.attachmentCount = motionPass ? 3 : 2; create.pAttachments = views;
+    create.renderPass = currentPass; create.attachmentCount = attachmentCount; create.pAttachments = views.data();
     create.width = targetExtent.width; create.height = targetExtent.height; create.layers = 1;
     VkFramebuffer framebuffer;
     GX_VK(vkCreateFramebuffer(device, &create, nullptr, &framebuffer));
@@ -627,6 +736,7 @@ void CGxDeviceVulkan::State::BeginPass() {
 }
 
 void CGxDeviceVulkan::State::Destroy() {
+    hdrLutJob.reset();
     if (device) {
         vkDeviceWaitIdle(device);
         if (commandPool) vkResetCommandPool(device, commandPool, 0);
@@ -645,6 +755,7 @@ void CGxDeviceVulkan::State::Destroy() {
         textures.clear();
         for (auto& image : retiredImages) DestroyImage(image);
         retiredImages.clear();
+        DestroyHdr();
         for (auto& entry : geometry) entry.second.resident.Destroy(device);
         geometry.clear(); temporalBuffers.clear();
         for (auto& buffer : retiredBuffers) DestroyBuffer(buffer);
@@ -674,8 +785,23 @@ void CGxDeviceVulkan::State::Destroy() {
         if (commandPool) vkDestroyCommandPool(device, commandPool, nullptr);
         vkDestroyDevice(device, nullptr);
         device = VK_NULL_HANDLE;
+        // Reuse of this State (including failed reinitialization) must not pass
+        // destroyed handles to a new device or an idempotent teardown.
+        swapchain = VK_NULL_HANDLE;
+        descriptorPool = VK_NULL_HANDLE; pipelineLayout = VK_NULL_HANDLE;
+        descriptorLayouts.fill(VK_NULL_HANDLE);
+        fence = VK_NULL_HANDLE; acquired = VK_NULL_HANDLE;
+        commandPool = VK_NULL_HANDLE; command = VK_NULL_HANDLE; queue = VK_NULL_HANDLE;
+        acquirePending = false; resize = false;
     }
     if (surface) { vkDestroySurfaceKHR(instance, surface, nullptr); surface = VK_NULL_HANDLE; }
+#ifdef WOWDECOMP_VULKAN_TESTING
+    if (testMessenger) {
+        const auto destroyMessenger = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
+        if (destroyMessenger) destroyMessenger(instance, testMessenger, nullptr);
+        testMessenger = VK_NULL_HANDLE;
+    }
+#endif
     if (instance) { vkDestroyInstance(instance, nullptr); instance = VK_NULL_HANDLE; }
     if (OsGuiGetWindow(0) == window) OsGuiSetGxWindow(nullptr);
     if (window && ownWindow) SDL_DestroyWindow(window);
@@ -860,13 +986,13 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         if (vertexShader) v = load(vertexShader);
         if (pixelShader) p = load(pixelShader);
     }
-    const bool temporal = MotionPass();
+    const bool temporal = MotionPass(), hdrDraw = HdrDraw();
     const auto temporalCode = [&](NativeShader* shader, CGxShader* source) -> const std::vector<uint32_t>& {
         if (shader->temporalCode.empty()) {
             auto recovered = GxVulkan::RecoverTemporalSlangShader(source->m_code.Ptr(), source->m_code.Count());
             if (source->m_target == GxSh_Vertex)
                 recovered.source = GxVulkan::TemporalViewportSource(std::move(recovered.source));
-            shader->temporalCode = shaderCompiler.Compile(recovered.source, source->m_target == GxSh_Vertex);
+            shader->temporalCode = Compile(recovered.source, source->m_target == GxSh_Vertex);
         }
         return shader->temporalCode;
     };
@@ -878,8 +1004,19 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         temporalMsdfFontPixel = ReadModule("font-msdf-temporal.frag.spv");
     const auto& vertexCode = msdfFont ? msdfFontVertex : fixedVertexStage ?
         (temporal ? temporalFixedVertex : fixedVertex) : (temporal ? temporalCode(v, vertexShader) : v->code);
-    const auto& pixelCode = msdfFont ? (temporal ? temporalMsdfFontPixel : msdfFontPixel) : fixedPixelStage ?
+    const auto& originalPixelCode = msdfFont ? (temporal ? temporalMsdfFontPixel : msdfFontPixel) : fixedPixelStage ?
         (temporal ? temporalFixedPixel : fixedPixel) : (temporal ? temporalCode(p, pixelShader) : p->code);
+    const std::vector<uint32_t>* selectedPixelCode = &originalPixelCode;
+    if (hdrDraw) {
+        try {
+            if (hdrBoundaryFailDraw && ++hdrDraws == hdrBoundaryFailDraw)
+                throw std::runtime_error("injected late output-boundary failure");
+            selectedPixelCode = &BoundaryPixel(originalPixelCode, !linearOutput);
+        } catch (const std::exception& error) {
+            AbortHdr(error.what()); Draw(batch, indexed); return;
+        }
+    }
+    const auto& pixelCode = *selectedPixelCode;
     std::vector<int> required;
     if (msdfFont) required = {GxVA_Position, GxVA_Color0, GxVA_TexCoord0};
     else if (fixedVertexStage) {
@@ -1149,6 +1286,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     std::vector<uint64_t> key{fixedVertexStage ? 0 : v->id, fixedPixelStage ? 0 : p->id, reinterpret_cast<uint64_t>(currentPass),
         blend, depthTest, depthWrite, cull, colourMask, depthFunction, static_cast<uint64_t>(primitive)};
     key.push_back(msdfFont ? 1 : 0); // Authored fonts cannot alias fixed/legacy pipelines.
+    key.push_back(hdrDraw && !linearOutput ? 1 : 0); // Encoded and explicit-linear providers have distinct output boundaries.
     for (const auto& binding : bindings) { key.push_back(binding.binding); key.push_back(binding.stride); }
     key.push_back(UINT64_MAX);
     for (const auto& attribute : attributes) {
@@ -1205,10 +1343,10 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
             attachment.colorBlendOp = attachment.alphaBlendOp = VK_BLEND_OP_ADD;
             attachment.colorWriteMask = colourMask & 15;
             VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-            VkPipelineColorBlendAttachmentState colourAttachments[] = {attachment, {}};
-            colourAttachments[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VkPipelineColorBlendAttachmentState colourAttachments[] = {attachment, {}, attachment};
+            if (temporal) colourAttachments[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-            blending.attachmentCount = temporal ? 2 : 1; blending.pAttachments = colourAttachments;
+            blending.attachmentCount = hdrDraw ? 3 : temporal ? 2 : 1; blending.pAttachments = colourAttachments;
             const VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS};
             VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
             dynamic.dynamicStateCount = 3; dynamic.pDynamicStates = dynamicStates;
@@ -1222,6 +1360,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
             found = pipelines.emplace(std::move(key), pipeline).first;
         } catch (...) {
             for (auto module : modules) if (module) vkDestroyShaderModule(device, module, nullptr);
+            if (hdrDraw) {
+                AbortHdr("HDR-only graphics pipeline creation failed"); Draw(batch, indexed); return;
+            }
             throw;
         }
         for (auto module : modules) vkDestroyShaderModule(device, module, nullptr);
@@ -1506,6 +1647,156 @@ void CGxDeviceVulkan::XformSetProjection(const C44Matrix& matrix) {
     m_projNative.d2 = (matrix.d2 + matrix.d3) * 0.5f;
 }
 #include "TemporalResolve.inl"
+#include "HdrScene.inl"
+
+#ifdef WOWDECOMP_VULKAN_TESTING
+std::array<uint64_t,4> CGxDeviceVulkan::SceneHdrTestLutState() const {
+    return {m_native->HdrLutBytes(),m_native->hdrLutSize,m_native->hdrLutJob?1u:0u,m_native->retiredHdrLuts.size()};
+}
+std::array<uint64_t,8> CGxDeviceVulkan::SceneHdrTestLutMemory() const {
+    const auto& s=*m_native;
+    const auto allocation=[&](const NativeBuffer& b) { VkMemoryRequirements r{};if(b.buffer) vkGetBufferMemoryRequirements(s.device,b.buffer,&r);return r.size; };
+    uint64_t retired=0;for(const auto& buffer:s.retiredHdrLuts) retired+=allocation(buffer);
+    return {s.hdrLutData.size()*sizeof(s.hdrLutData[0]),s.hdrLutData.capacity()*sizeof(s.hdrLutData[0]),
+        allocation(s.hdrLutBuffer),retired,s.hdrLutJob?GxVulkan::HdrLutJob::Reservation:0,s.hdrLutPeakBytes,s.hdrLutOwnerMoved?1u:0u,s.hdrLutUploadBytes};
+}
+bool CGxDeviceVulkan::SceneHdrTestValidationClean() const { return m_native->testDiagnostics.load()==0; }
+void CGxDeviceVulkan::SceneHdrTestLimits(uint32_t slots, uint64_t budget, uint32_t draw) {
+    SceneEndWorld();m_native->ResetTemporal();m_native->hdrAttachmentLimit=slots;m_native->hdrImageBudget=budget;m_native->hdrBoundaryFailDraw=draw;
+}
+#endif
+
+void CGxDeviceVulkan::SceneRequestHdrLut(const char* path, bool reload) {
+    auto& s=*m_native;
+    if(!GxHdrLutPathValid(path)) { s.hdrLutStatus="Invalid .cube path; current LUT retained";return; }
+    const std::string requested=path;
+    if(reload || requested!=s.hdrLutRequested) {
+        ++s.hdrLutGeneration;
+        s.hdrLutRequested=requested;
+        s.hdrLutNeedsLoad=true;
+        s.hdrLutStatus="Pending (current LUT retained)";
+    }
+    if(s.hdrLutJob && s.hdrLutJob->Ready()) {
+        const bool current=s.hdrLutJobGeneration==s.hdrLutGeneration && s.hdrLutNeedsLoad;
+        GxVulkan::HdrLut prepared;
+        std::string error;
+        if(current) {
+            error=std::move(s.hdrLutJob->error);
+            prepared=std::move(s.hdrLutJob->lut);
+        }
+        // Ready's acquire publication follows stream/parser destruction. Move
+        // only the RGB owner, then drain the finished thread and its scratch
+        // before admitting GPU replacement. Install charges prepared once.
+#ifdef WOWDECOMP_VULKAN_TESTING
+        const auto* preparedOwner=prepared.rgb.data();
+#endif
+        s.hdrLutJob.reset();
+        if(current) {
+            if(!error.empty()) s.hdrLutStatus=error+"; current LUT retained";
+            else s.hdrLutStatus=s.InstallHdrLut(std::move(prepared))?"Loaded (scene only)":"LUT budget/upload refused; current LUT retained";
+#ifdef WOWDECOMP_VULKAN_TESTING
+            s.hdrLutOwnerMoved=error.empty() && s.hdrLutData.data()==preparedOwner;
+#endif
+            s.hdrLutNeedsLoad=false;
+        }
+    }
+    if(!s.hdrLutNeedsLoad || s.hdrLutJob) return;
+    if(s.hdrLutRequested.empty()) {
+        s.hdrLutStatus=SceneSetHdrLut(nullptr,0)?"None":"Cannot retire LUT; current LUT retained";s.hdrLutNeedsLoad=false;return;
+    }
+    if(!SceneHdrSupported()) {
+        s.hdrLutStatus="LUT unsupported; waiting for a supported device";return;
+    }
+    if(!GxVulkan::HdrLutJob::ValidPath(s.hdrLutRequested)) {
+        s.hdrLutStatus="Invalid .cube path; current LUT retained";s.hdrLutNeedsLoad=false;return;
+    }
+    constexpr uint64_t budget=GxVulkan::HdrLutBudget;
+    const auto used=s.HdrLutBytes();
+    if(used>budget || GxVulkan::HdrLutJob::Reservation>budget-used) {
+        s.hdrLutStatus="LUT job budget refused; current LUT retained";s.hdrLutNeedsLoad=false;return;
+    }
+    try {
+        s.hdrLutJobPath=s.hdrLutRequested;
+        s.hdrLutJobGeneration=s.hdrLutGeneration;
+        s.hdrLutJob=std::make_unique<GxVulkan::HdrLutJob>(s.hdrLutJobPath);
+        s.hdrLutStatus="Pending (current LUT retained)";
+    } catch(const std::exception&) {
+        s.hdrLutStatus="LUT worker unavailable; current LUT retained";s.hdrLutNeedsLoad=false;
+    }
+}
+const char* CGxDeviceVulkan::SceneHdrLutStatus() const { return m_native->hdrLutStatus.c_str(); }
+bool CGxDeviceVulkan::SceneSetHdrLut(const float* rgb, uint32_t size) { return m_native->SetHdrLut(rgb,size); }
+bool CGxDeviceVulkan::State::SetHdrLut(const float* rgb, uint32_t size) {
+    auto& s=*this;
+    if(!size) {
+        // Descriptors from in-flight frames may still refer to this buffer.
+        try {
+            if(s.hdrLutBuffer.buffer) {
+                if(s.retiredHdrLuts.size()==s.retiredHdrLuts.capacity()) {
+                    const auto used=s.HdrLutBytes();
+                    const auto metadata=(s.retiredHdrLuts.size()+1)*sizeof(NativeBuffer);
+                    if(used>GxVulkan::HdrLutBudget || metadata>GxVulkan::HdrLutBudget-used) return false;
+                    s.retiredHdrLuts.reserve(s.retiredHdrLuts.size()+1);
+                }
+                s.retiredHdrLuts.push_back(s.hdrLutBuffer);
+            }
+        }
+        catch(const std::exception&) { return false; }
+        s.hdrLutBuffer={};
+        std::vector<std::array<float,3>>().swap(s.hdrLutData);
+        s.hdrLutSize=0;s.ResetTemporal();return true;
+    }
+    if(!rgb || size<2 || size>33) return false;
+    const size_t count=size_t(size)*size*size;
+    for(size_t i=0;i<count*3;++i) if(!std::isfinite(rgb[i]) || rgb[i]<0 || rgb[i]>1) return false;
+    constexpr uint64_t budget=GxVulkan::HdrLutBudget;
+    const uint64_t cpu=count*sizeof(std::array<float,3>), gpu=count*16u, used=s.HdrLutBytes();
+    if(used>budget || cpu>budget-used || gpu>budget-used-cpu) return false;
+    try {
+        GxVulkan::HdrLut lut;lut.size=size;lut.rgb.resize(count);
+        for(size_t i=0;i<count;++i) for(unsigned c=0;c<3;++c) lut.rgb[i][c]=rgb[i*3+c];
+        return s.InstallHdrLut(std::move(lut));
+    } catch(const std::exception& e) { GxLog("HDR LUT replacement refused: %s",e.what());return false; }
+}
+bool CGxDeviceVulkan::State::InstallHdrLut(GxVulkan::HdrLut&& lut) {
+    if(lut.size<2 || lut.size>33 || lut.rgb.size()!=size_t(lut.size)*lut.size*lut.size) return false;
+    for(const auto& row:lut.rgb) for(float value:row)
+        if(!std::isfinite(value) || value<0 || value>1) return false;
+    const uint64_t used=HdrLutBytes(), cpu=lut.rgb.capacity()*sizeof(lut.rgb[0]);
+    if(used>GxVulkan::HdrLutBudget || cpu>GxVulkan::HdrLutBudget-used) return false;
+    try {
+        if(device) UploadHdrLut(lut.rgb);
+        hdrLutData=std::move(lut.rgb);hdrLutSize=lut.size;
+    } catch(const std::exception& e) { GxLog("HDR LUT replacement refused: %s",e.what());return false; }
+    ResetTemporal();return true;
+}
+bool CGxDeviceVulkan::SceneReadHdrPixel(uint32_t x, uint32_t y, std::array<float,4>& value) {
+    auto& s=*m_native;
+    if (!s.HdrDraw() || x>=s.renderExtent.width || y>=s.renderExtent.height) return false;
+    s.EndPass(); auto buffer=s.MakeBuffer(16,VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    try {
+        s.Barrier(s.worldColour.image,VK_IMAGE_ASPECT_COLOR_BIT,1,1,s.worldColour.layout,VK_IMAGE_LAYOUT_GENERAL);
+        VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageOffset={int32_t(x),int32_t(y),0};copy.imageExtent={1,1,1};
+        vkCmdCopyImageToBuffer(s.command,s.worldColour.image,VK_IMAGE_LAYOUT_GENERAL,buffer.buffer,1,&copy);
+        VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};host.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;host.srcQueueFamilyIndex=host.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;host.buffer=buffer.buffer;host.size=16;
+        vkCmdPipelineBarrier(s.command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host,0,nullptr);
+        s.Submit(false,true); std::memcpy(value.data(),buffer.mapped,16);
+    } catch(...) {s.DestroyBuffer(buffer);throw;}
+    s.DestroyBuffer(buffer); return true;
+}
+bool CGxDeviceVulkan::SceneHdrSupported() const { return m_native && m_native->device && m_native->hdrCapable && m_native->properties.limits.maxColorAttachments>=3 && m_native->hdrAttachmentLimit>=3; }
+bool CGxDeviceVulkan::SceneHdrActive() const { return m_native && m_native->hdrActive && !m_native->hdrAborted && m_native->worldActive; }
+bool CGxDeviceVulkan::SceneSetHdr(bool enabled, float ev) {
+    if (!std::isfinite(ev) || ev < -8 || ev > 8 || (enabled && !SceneHdrSupported())) return false;
+    auto& s=*m_native;
+    if (s.hdrRequested == enabled && s.hdrEV == ev) return true;
+    SceneEndWorld(); s.ResetTemporal(); s.hdrRequested=enabled; s.hdrEV=ev;
+    return true;
+}
+bool CGxDeviceVulkan::SceneSetLinearOutput(bool linear) {
+    const bool previous=m_native->linearOutput; m_native->linearOutput=linear; return previous;
+}
+
 
 bool CGxDeviceVulkan::SceneTemporalSupported() const { return m_native->device && m_native->temporalCapable; }
 bool CGxDeviceVulkan::SceneRenderScaleSupported() const { return m_native->device && m_native->scaleCapable; }
@@ -1522,7 +1813,7 @@ bool CGxDeviceVulkan::SceneSetRenderScale(float scale) {
 void CGxDeviceVulkan::ScenePauseWorldMotion() {
     // FFX copies in native screen coordinates and then writes the default
     // output target. Reconstruct before it, not after its explicit-target phase.
-    if (m_native->worldActive && m_native->sceneScale != 1.f) SceneEndWorld();
+    if (m_native->worldActive && (m_native->sceneScale != 1.f || m_native->hdrActive)) SceneEndWorld();
     m_native->EndPass(); m_native->motionPaused = true;
     m_native->motionOwner = nullptr; m_native->stableVertices = false;
 }
@@ -1539,7 +1830,7 @@ void CGxDeviceVulkan::SceneForgetMotionOwner(const void* owner) {
 bool CGxDeviceVulkan::SceneBeginWorld(bool temporal, uint64_t scene) {
     auto& state = *m_native;
     if (temporal && !SceneTemporalSupported()) return false;
-    if ((!temporal && !state.worldTargetEnabled && state.sceneScale == 1.f) || !m_context || !state.BeginFrame()) return false;
+    if ((!temporal && !state.worldTargetEnabled && !state.hdrRequested && state.sceneScale == 1.f) || !m_context || !state.BeginFrame()) return false;
     // One world history producer per acquired frame. Readback splits do not
     // advance bufferFrame and must not create a second temporal generation.
     if (state.historyPending || (temporal && state.temporalWorldFrame == state.bufferFrame)) return false;
@@ -1555,8 +1846,14 @@ bool CGxDeviceVulkan::SceneBeginWorld(bool temporal, uint64_t scene) {
             std::min(state.properties.limits.maxFramebufferWidth, state.properties.limits.maxFramebufferHeight)));
     state.renderRect = GxVulkan::WorldViewportRect(state.renderExtent,
         m_viewport.m_x.m_l, m_viewport.m_x.m_h, m_viewport.m_y.m_l, m_viewport.m_y.m_h);
-    if (state.worldColour.width != state.renderExtent.width || state.worldColour.height != state.renderExtent.height ||
-        state.worldColour.format != state.surfaceFormat) {
+    state.hdrAborted = false; state.hdrDraws = 0;
+    state.hdrActive = state.hdrRequested && SceneHdrSupported();
+    if (state.hdrActive && !state.PrepareHdrImages(temporal)) {
+        GxLog("HDR attachment set refused; using Classic rendering for this frame");
+        state.hdrActive = false; state.ResetTemporal();
+    }
+    if (!state.hdrActive && (state.worldColour.width != state.renderExtent.width || state.worldColour.height != state.renderExtent.height ||
+        state.worldColour.format != state.surfaceFormat)) {
         state.ResetTemporal();
         // Retire after framebuffers, at the next completed fence, just like Gx textures.
         if (state.worldColour.image) state.retiredImages.push_back(state.worldColour);
@@ -1577,7 +1874,7 @@ bool CGxDeviceVulkan::SceneBeginWorld(bool temporal, uint64_t scene) {
         state.temporalWorldFrame = state.bufferFrame;
         if (state.motion.width != state.renderExtent.width || state.motion.height != state.renderExtent.height ||
             state.history[0].width != state.extent.width || state.history[0].height != state.extent.height ||
-            state.history[0].format != state.surfaceFormat || (state.sceneScale != 1.f && !state.depthScratch.image)) {
+            state.history[0].format != state.WorldFormat() || (state.sceneScale != 1.f && !state.depthScratch.image)) {
             state.ResetTemporal();
             for (auto* image : {&state.motion, &state.history[0], &state.history[1], &state.previousDepth, &state.depthScratch}) {
                 if (image->image) state.retiredImages.push_back(*image);
@@ -1589,7 +1886,7 @@ bool CGxDeviceVulkan::SceneBeginWorld(bool temporal, uint64_t scene) {
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | transfers);
             for (auto& history : state.history)
                 history = state.MakeImage(state.extent.width, state.extent.height, 1, 1,
-                    state.surfaceFormat, VK_IMAGE_ASPECT_COLOR_BIT,
+                    state.WorldFormat(), VK_IMAGE_ASPECT_COLOR_BIT,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | transfers);
             state.previousDepth = state.MakeImage(state.extent.width, state.extent.height, 1, 1,
                 VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_USAGE_SAMPLED_BIT | transfers);
@@ -1627,7 +1924,23 @@ bool CGxDeviceVulkan::SceneBeginWorld(bool temporal, uint64_t scene) {
         image->layout = VK_IMAGE_LAYOUT_GENERAL;
     }
     const VkRect2D full{{0, 0}, state.extent};
-    if (state.sceneScale == 1.f) {
+    if (state.hdrActive) {
+        for (auto* image : {&state.hdrBackdrop, &state.hdrClassic}) {
+            state.Barrier(image->image, image->aspect, 1, 1, image->layout, VK_IMAGE_LAYOUT_GENERAL);
+            image->layout = VK_IMAGE_LAYOUT_GENERAL;
+        }
+        GxVulkan::CopyWorldImage(state.command, state.swapImages[state.imageIndex], state.hdrBackdrop.image, VK_IMAGE_ASPECT_COLOR_BIT, full);
+        if (state.sceneScale == 1.f) {
+            GxVulkan::CopyWorldImage(state.command, state.swapImages[state.imageIndex], state.hdrClassic.image, VK_IMAGE_ASPECT_COLOR_BIT, full);
+            GxVulkan::CopyWorldImage(state.command, state.depth.image, state.worldDepth.image, VK_IMAGE_ASPECT_DEPTH_BIT, full);
+        } else {
+            const VkRect2D internal{{0,0}, state.renderExtent};
+            GxVulkan::BlitWorldImage(state.command, state.swapImages[state.imageIndex], state.hdrClassic.image, VK_IMAGE_ASPECT_COLOR_BIT, full, internal);
+            GxVulkan::BlitWorldImage(state.command, state.depth.image, state.worldDepth.image, VK_IMAGE_ASPECT_DEPTH_BIT, full, internal);
+        }
+        try { state.HdrTransfer(state.hdrBackdrop, state.worldColour.view, state.WorldFormat(), state.renderExtent, 0, false); }
+        catch (const std::exception& error) { state.AbortHdr(error.what()); }
+    } else if (state.sceneScale == 1.f) {
         GxVulkan::CopyWorldImage(state.command, state.swapImages[state.imageIndex], state.worldColour.image,
             VK_IMAGE_ASPECT_COLOR_BIT, full);
         GxVulkan::CopyWorldImage(state.command, state.depth.image, state.worldDepth.image,
@@ -1646,15 +1959,22 @@ void CGxDeviceVulkan::SceneEndWorld() {
     auto& state = *m_native;
     if (!state.worldActive) return;
     state.EndPass();
-    if (state.temporalActive || state.sceneScale != 1.f) state.ResolveWorld();
-    else GxVulkan::CopyWorldImage(state.command, state.worldColour.image, state.swapImages[state.imageIndex],
-        VK_IMAGE_ASPECT_COLOR_BIT, state.worldRect);
+    try {
+        if (state.hdrAborted) state.PublishClassic();
+        else if (state.temporalActive || state.sceneScale != 1.f) state.ResolveWorld();
+        else if (state.hdrActive) state.ToneWorld(state.worldColour);
+        else GxVulkan::CopyWorldImage(state.command, state.worldColour.image, state.swapImages[state.imageIndex],
+            VK_IMAGE_ASPECT_COLOR_BIT, state.worldRect);
+    } catch (const std::exception& error) {
+        if (!state.hdrActive) throw;
+        state.AbortHdr(error.what()); state.PublishClassic();
+    }
     // Keep output-sized depth consumers (picking/readback) on the existing contract.
     if (state.sceneScale == 1.f)
         GxVulkan::CopyWorldImage(state.command, state.worldDepth.image, state.depth.image,
             VK_IMAGE_ASPECT_DEPTH_BIT, state.worldRect);
     else state.PublishWorldDepth(state.depth.image);
-    state.worldActive = state.temporalActive = false;
+    state.worldActive = state.temporalActive = state.hdrActive = false;
     state.motionOwner = nullptr; state.stableVertices = false;
 }
 void CGxDeviceVulkan::SceneClear(uint32_t mask, CImVector colour) {
@@ -1666,6 +1986,15 @@ void CGxDeviceVulkan::SceneClear(uint32_t mask, CImVector colour) {
         VkClearAttachment clear{};
         clear.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         clear.clearValue.color = {{colour.r / 255.0f, colour.g / 255.0f, colour.b / 255.0f, colour.a / 255.0f}};
+        if (state.HdrDraw()) {
+            auto classic = clear;
+            classic.colorAttachment = 2;
+            attachments.push_back(classic);
+            for (unsigned i = 0; i < 3; ++i) {
+                const float encoded = clear.clearValue.color.float32[i];
+                clear.clearValue.color.float32[i] = encoded <= .04045f ? encoded / 12.92f : std::pow((encoded + .055f) / 1.055f, 2.4f);
+            }
+        }
         attachments.push_back(clear);
     }
     if ((mask & 3) && state.MotionPass()) {
@@ -1806,7 +2135,7 @@ void CGxDeviceVulkan::IShaderCreate(CGxShader* shader) {
     shader->m_loaded = 1; shader->m_valid = 0;
     try {
         auto recovered = GxVulkan::RecoverSlangShader(shader->m_code.Ptr(), shader->m_code.Count());
-        auto code = m_native->shaderCompiler.Compile(recovered.source, shader->m_target == GxSh_Vertex);
+        auto code = m_native->Compile(recovered.source, shader->m_target == GxSh_Vertex);
         m_native->shaders.insert_or_assign(shader, NativeShader{m_native->nextShader++, std::move(recovered.reflection), std::move(code)});
         shader->m_apiSpecific = &m_native->shaders.at(shader); shader->m_valid = 1;
     } catch (const std::exception& error) {
@@ -1848,7 +2177,10 @@ int32_t CGxDeviceVulkan::TexStretch(CGxTex* dest, const CiRect* destRect,
     state.EndPass();
     auto& destination = state.Texture(dest);
     auto* sourceTarget = m_textureTarget[GxBuffers_Color].m_texture;
-    const bool reduced = state.worldActive && state.sceneScale != 1.f && !sourceTarget;
+    // Legacy UNORM screen/refraction copies cannot preserve float scene transport.
+    // Publish the complete original-colour companion before copying or resuming draws.
+    if (state.HdrDraw() && !sourceTarget) state.AbortHdr("legacy screen copy/refraction transport");
+    const bool reduced = state.worldActive && (state.sceneScale != 1.f || state.hdrActive) && !sourceTarget;
     if (reduced) state.SnapshotWorldColour();
     auto* sourceImage = sourceTarget ? &state.Texture(sourceTarget) : (state.worldActive && !reduced ? &state.worldColour : nullptr);
     const VkImage source = sourceImage ? sourceImage->image : state.swapImages[state.imageIndex];

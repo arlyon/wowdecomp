@@ -215,6 +215,48 @@ ShaderPair LinkShaders(const MOJOSHADER_parseData& vertex,
     return result;
 }
 
+std::string ShaderOutputBoundary(std::string source, bool decode) {
+    // Wrap only the generated entry's final colour. Do not inspect or alter its
+    // lighting arithmetic, original clips, alpha or resource bindings.
+    const std::regex entry(R"(main_Output main\((main_Input input)?\))");
+    std::smatch match;
+    size_t offset = std::string::npos;
+    std::string args;
+    for (std::sregex_iterator i(source.begin(), source.end(), entry), end; i != end; ++i) {
+        offset = size_t(i->position());
+        args = (*i)[1].str();
+    }
+    if (offset == std::string::npos) throw std::runtime_error("Unsupported HDR pixel entry ABI");
+    const auto structure = source.rfind("struct main_Output", offset);
+    const auto end = source.find("};", structure);
+    if (structure == std::string::npos || end > offset) throw std::runtime_error("Unsupported HDR output structure");
+    const auto fields = source.substr(structure, end - structure);
+    const std::regex colour(R"(\bfloat4\s+(\w+)\s*:\s*SV_Target0\s*;)");
+    if (!std::regex_search(fields, match, colour)) throw std::runtime_error("HDR requires float4 colour at target0");
+    const auto field = match[1].str();
+    if (std::regex_search(fields, std::regex(R"(SV_Target(?:[2-9]|[0-9]{2,})\b)")))
+        throw std::runtime_error("HDR companion target2 collision or unsupported output");
+    std::string explicitFields;
+    const std::regex target(R"((\[\[vk::location\([01]\)\]\]\s*)?(float4\s+\w+\s*:\s*SV_Target([01])\s*;))");
+    size_t cursor = 0;
+    for (std::sregex_iterator i(fields.begin(), fields.end(), target), finish; i != finish; ++i) {
+        explicitFields += fields.substr(cursor, size_t(i->position()) - cursor);
+        if (!(*i)[1].matched) explicitFields += "[[vk::location(" + (*i)[3].str() + ")]] ";
+        explicitFields += i->str();
+        cursor = size_t(i->position() + i->length());
+    }
+    explicitFields += fields.substr(cursor);
+    explicitFields += "[[vk::location(2)]] float4 gx_classicColour : SV_Target2;\n";
+    source.replace(structure, end - structure, explicitFields);
+    offset += explicitFields.size() - fields.size();
+    source.replace(offset, std::string("main_Output main").size(), "main_Output gx_hdrLegacyOutput");
+    source += "\nfloat gx_hdrDecode(float c) { if (!isfinite(c)) return 0; c=max(c,0); return c<=.04045 ? c/12.92 : pow((c+.055)/1.055,2.4); }\n"
+        "main_Output main(" + args + ") { main_Output output=gx_hdrLegacyOutput(" + (args.empty() ? "" : "input") + ");\n"
+        "output.gx_classicColour=output." + field + ";\n" +
+        (decode ? "output." + field + ".rgb=float3(gx_hdrDecode(output." + field + ".r),gx_hdrDecode(output." + field + ".g),gx_hdrDecode(output." + field + ".b));\n" : "") + "return output; }\n";
+    return source;
+}
+
 std::vector<float> ShaderUniforms(const MOJOSHADER_parseData& shader,
     const float* registers, size_t registerCount) {
     std::vector<float> result;

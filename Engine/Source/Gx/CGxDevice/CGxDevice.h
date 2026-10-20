@@ -202,6 +202,14 @@ class CGxDevice {
     // Optional world-only target scope; unsupported backends keep their existing path.
     virtual bool SceneBeginWorld(bool = false, uint64_t = 0) { return false; }
     virtual void SceneEndWorld() {}
+    virtual void SceneRequestHdrLut(const char*, bool = false) {}
+    virtual const char* SceneHdrLutStatus() const { return "LUT unavailable on this renderer"; }
+    virtual bool SceneSetHdrLut(const float*, uint32_t size) { return size == 0; }
+    virtual bool SceneHdrSupported() const { return false; }
+    virtual bool SceneHdrActive() const { return false; }
+    virtual bool SceneSetHdr(bool enabled, float) { return !enabled; }
+    // Scoped explicit linear/emissive producer; never infer from registers.
+    virtual bool SceneSetLinearOutput(bool) { return false; }
     virtual bool SceneTemporalSupported() const { return false; }
     virtual bool SceneRenderScaleSupported() const { return false; }
     virtual bool SceneSetRenderScale(float scale) { return scale == 1.0f; }

@@ -1,3 +1,9 @@
+#ifndef GX_HDR_OUTPUT
+#define GX_HDR_OUTPUT 0
+#endif
+#if GX_HDR_OUTPUT
+#include "HdrToneMapping.slang"
+#endif
 // Native Gxu MSDF ABI: the first fixed-function matrix, RGBA distance atlas,
 // and (alpha threshold, outline texels, distance range, atlas size).
 struct VertexConstants { row_major float4x4 worldViewProjection; };
@@ -24,8 +30,16 @@ VertexOutput vertexMain(VertexInput input) {
     return output;
 }
 float median(float3 v) { return max(min(v.r, v.g), min(max(v.r, v.g), v.b)); }
+#if GX_FONT_TEMPORAL || GX_HDR_OUTPUT
+struct FontOutput {
+    [[vk::location(0)]] float4 colour : SV_Target0;
 #if GX_FONT_TEMPORAL
-struct FontOutput { float4 colour : SV_Target0; float4 motion : SV_Target1; };
+    [[vk::location(1)]] float4 motion : SV_Target1;
+#endif
+#if GX_HDR_OUTPUT
+    [[vk::location(2)]] float4 classic : SV_Target2;
+#endif
+};
 [shader("fragment")]
 FontOutput pixelMain(VertexOutput input) {
 #else
@@ -46,10 +60,16 @@ float4 pixelMain(VertexOutput input) : SV_Target {
     float3 colour = input.colour.rgb * (coverage > 0 ? fill / coverage : 0);
     float alpha = input.colour.a * coverage;
     clip(alpha - max(options.x, 1.0 / 255.0));
-    #if GX_FONT_TEMPORAL
+    #if GX_FONT_TEMPORAL || GX_HDR_OUTPUT
     FontOutput output;
     output.colour = float4(colour, alpha);
+    #if GX_HDR_OUTPUT
+    output.classic = output.colour;
+    output.colour.rgb = hdrDecodeLegacy(colour);
+    #endif
+    #if GX_FONT_TEMPORAL
     output.motion = float4(0, 0, -1, 1); // text/shadows are deliberately reactive, not motion-tracked
+    #endif
     return output;
     #else
     return float4(colour, alpha);

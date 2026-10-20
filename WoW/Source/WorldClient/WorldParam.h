@@ -25,6 +25,9 @@ class CWorldParam {
     static CVar* cvar_nightDarkness;
     static CVar* cvar_nativeAA;
     static CVar* cvar_nativeSceneScale;
+    static CVar* cvar_nativeHDR;
+    static CVar* cvar_nativeHDRExposure;
+    static CVar* cvar_nativeHDRLut;
     static CVar* cvar_horizonNearClip;
     static CVar* cvar_showFootprints;
     static CVar* cvar_bspCache;
@@ -61,6 +64,10 @@ class CWorldParam {
     static bool NightDarknessCallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static bool NativeAACallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static bool NativeSceneScaleCallback(CVar* var, const char* oldValue, const char* value, void* arg);
+    static void InitializeNativeHDRCVars();
+    static bool NativeHDRCallback(CVar*, const char*, const char*, void*);
+    static bool NativeHDRLutCallback(CVar*, const char*, const char*, void*);
+    static bool NativeHDRExposureCallback(CVar*, const char*, const char*, void*);
     static bool HorizonNearClipScaleCallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static bool HWPCFCallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static void Initialize();

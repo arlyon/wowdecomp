@@ -1,6 +1,7 @@
 #include "WorldParam.h"
 #include "TimePreview.h"
 #include "NightDarkness.h"
+#include "Engine/Source/Gx/HdrSettings.h"
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
@@ -66,6 +67,9 @@ CVar* CWorldParam::cvar_localTimePreview;
 CVar* CWorldParam::cvar_nightDarkness;
 CVar* CWorldParam::cvar_nativeAA;
 CVar* CWorldParam::cvar_nativeSceneScale;
+CVar* CWorldParam::cvar_nativeHDR;
+CVar* CWorldParam::cvar_nativeHDRExposure;
+CVar* CWorldParam::cvar_nativeHDRLut;
 
 // STATIC: 0x00CD85A4
 CVar* CWorldParam::cvar_horizonNearClip;
@@ -262,6 +266,28 @@ bool CWorldParam::NativeSceneScaleCallback(CVar*, const char*, const char* value
         return false;
     }
     if (g_theGxDevicePtr) g_theGxDevicePtr->SceneInvalidateHistory();
+    return true;
+}
+
+bool CWorldParam::NativeHDRCallback(CVar*, const char*, const char* value, void*) {
+    if (value && (!SStrCmp(value, "0", STORM_MAX_STR) || !SStrCmp(value, "1", STORM_MAX_STR))) return true;
+    ConsoleWrite("nativeHDR must be 0 (Off) or 1 (float scene transport with SDR output).", DEFAULT_COLOR);
+    return false;
+}
+
+bool CWorldParam::NativeHDRLutCallback(CVar*, const char*, const char* value, void*) {
+    if (GxHdrLutPathValid(value)) return true;
+    ConsoleWrite("nativeHDRLut must be empty or a local .cube path (at most 1024 bytes, no control characters).", DEFAULT_COLOR);
+    return false;
+}
+
+bool CWorldParam::NativeHDRExposureCallback(CVar*, const char*, const char* value, void*) {
+    char* end = nullptr; errno = 0;
+    const float ev = value ? std::strtof(value, &end) : 0.f;
+    if (!value || end == value || *end || errno == ERANGE || !std::isfinite(ev) || ev < -8.f || ev > 8.f) {
+        ConsoleWrite("nativeHDRExposure must be finite EV from -8 to +8.", DEFAULT_COLOR);
+        return false;
+    }
     return true;
 }
 
@@ -669,6 +695,12 @@ bool CWorldParam::GxTextureCacheSizeCallback(CVar* var, const char* oldValue, co
 
 // VERIFY: 9acf82a1 auto
 // OFFSET: 0x0078E400
+void CWorldParam::InitializeNativeHDRCVars() {
+    cvar_nativeHDR = CVar::Register("nativeHDR", "Opt-in float scene transport of legacy output; SDR tone map before UI; legacy FFX disabled", 1, "0", NativeHDRCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+    cvar_nativeHDRExposure = CVar::Register("nativeHDRExposure", "Manual exposure in EV [-8,8]; no automatic exposure", 1, "0", NativeHDRExposureCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+    cvar_nativeHDRLut = CVar::Register("nativeHDRLut", "Optional local normalized .cube LUT; empty is None; owned background loading", 1, "", NativeHDRLutCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+}
+
 void CWorldParam::Initialize() {
     CWorldParam::cvar_farClipOverride = CVar::Register("farClipOverride", "Override old world graphic settings", 1, "0", CWorldParam::FarClipOverrideCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_lod = CVar::Register("lod", "Video option: Toggle Lod", 1, "0", CWorldParam::LodCallback, CATEGORY_GRAPHICS, false, nullptr, false);
@@ -688,6 +720,7 @@ void CWorldParam::Initialize() {
     CWorldParam::cvar_nightDarkness = CVar::Register("nightDarkness", "Outdoor night ambient reduction in percent; 0 preserves Classic lighting", 1, "0", CWorldParam::NightDarknessCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_nativeAA = CVar::Register("nativeAA", "Experimental native temporal anti-aliasing; 0 Off, 1 TAA on supported Vulkan devices", 1, "0", CWorldParam::NativeAACallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_nativeSceneScale = CVar::Register("nativeSceneScale", "3D scene resolution scale; native UI unchanged; range 0.5 to 1", 1, "1", CWorldParam::NativeSceneScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+    CWorldParam::InitializeNativeHDRCVars();
     CWorldParam::cvar_horizonNearClip = CVar::Register("horizonNearclipScale", "Near clip plane scale for horizon", 1, "0.7", CWorldParam::HorizonNearClipScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_showFootprints = CVar::Register("showfootprints", "toggles rendering of footprints", 1, "1", CWorldParam::ShowFootprintsCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_bspCache = CVar::Register("bspcache", "BSP node caching", 1, "1", CWorldParam::BspCacheCallback, CATEGORY_GRAPHICS, false, nullptr, false);

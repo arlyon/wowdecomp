@@ -1,5 +1,8 @@
 // Private live-backend pass. Included after State's definition.
 void CGxDeviceVulkan::State::ResolveWorld() {
+    auto& resolvePass = hdrActive ? hdrResolvePass : this->resolvePass;
+    auto& resolvePipeline = hdrActive ? hdrResolvePipeline : this->resolvePipeline;
+    auto& upscalePipeline = hdrActive ? hdrUpscalePipeline : this->upscalePipeline;
     const bool upscale = sceneScale != 1.f;
     auto& pipelineHandle = upscale ? upscalePipeline : resolvePipeline;
     if (!resolveDescriptors) {
@@ -16,7 +19,7 @@ void CGxDeviceVulkan::State::ResolveWorld() {
     }
     if (!resolvePass) {
         VkAttachmentDescription attachment{};
-        attachment.format = surfaceFormat; attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        attachment.format = WorldFormat(); attachment.samples = VK_SAMPLE_COUNT_1_BIT;
         attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         attachment.initialLayout = attachment.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -141,7 +144,8 @@ void CGxDeviceVulkan::State::ResolveWorld() {
         Barrier(image->image, image->aspect, 1, 1, image->layout, VK_IMAGE_LAYOUT_GENERAL);
         image->layout = VK_IMAGE_LAYOUT_GENERAL;
     }
-    GxVulkan::CopyWorldImage(command, output.image, swapImages[imageIndex], VK_IMAGE_ASPECT_COLOR_BIT, worldRect);
+    if (hdrActive) ToneWorld(output);
+    else GxVulkan::CopyWorldImage(command, output.image, swapImages[imageIndex], VK_IMAGE_ASPECT_COLOR_BIT, worldRect);
     if (temporalActive) {
         if (upscale) PublishWorldDepth(previousDepth.image);
         else GxVulkan::CopyWorldImage(command, worldDepth.image, previousDepth.image, VK_IMAGE_ASPECT_DEPTH_BIT, worldRect);

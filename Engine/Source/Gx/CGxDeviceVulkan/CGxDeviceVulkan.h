@@ -3,6 +3,7 @@
 
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include <memory>
+#include <array>
 
 class CGxDeviceVulkan final : public CGxDevice {
 public:
@@ -22,6 +23,20 @@ public:
     void ScenePresent() override;
     bool SceneBeginWorld(bool temporal = false, uint64_t scene = 0) override;
     void SceneEndWorld() override;
+    void SceneRequestHdrLut(const char* path, bool reload = false) override;
+    const char* SceneHdrLutStatus() const override;
+    bool SceneSetHdrLut(const float* rgb, uint32_t size) override;
+    bool SceneReadHdrPixel(uint32_t x, uint32_t y, std::array<float,4>& value);
+#ifdef WOWDECOMP_VULKAN_TESTING
+    std::array<uint64_t,4> SceneHdrTestLutState() const;
+    std::array<uint64_t,8> SceneHdrTestLutMemory() const;
+    bool SceneHdrTestValidationClean() const;
+    void SceneHdrTestLimits(uint32_t slots, uint64_t budget, uint32_t draw);
+#endif
+    bool SceneHdrSupported() const override;
+    bool SceneHdrActive() const override;
+    bool SceneSetHdr(bool enabled, float exposureEV) override;
+    bool SceneSetLinearOutput(bool linear) override;
     bool SceneTemporalSupported() const override;
     bool SceneRenderScaleSupported() const override;
     bool SceneSetRenderScale(float scale) override;

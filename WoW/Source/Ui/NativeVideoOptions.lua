@@ -320,3 +320,139 @@ do
     VideoOptionsPanel_OnLoad(lighting, okay, cancel, defaults, refresh)
     refresh()
 end
+
+-- One HDR transaction in the stock Video Settings category list. Only the 3D
+-- scene is tone mapped/graded; native UI and the HDR-Off glow path are untouched.
+do
+    local hdr = CreateFrame("Frame", "NativeHdrVideoPanel", VideoOptionsFramePanelContainer)
+    hdr.name = "Scene Colour"
+    hdr.controls = {}
+    hdr:Hide()
+    hdr:SetAllPoints(VideoOptionsFramePanelContainer)
+    local function label(y, text, font)
+        local item = hdr:CreateFontString(nil, "ARTWORK", font or "GameFontHighlightSmall")
+        item:SetPoint("TOPLEFT", 16, y)
+        item:SetWidth(330)
+        item:SetJustifyH("LEFT")
+        item:SetText(text)
+        return item
+    end
+    label(-16, "Floating-Point Scene Colour", "GameFontNormalLarge")
+    label(-48, "Float scene transport, manual EV and SDR tone mapping. Not HDR monitor output. UI/text stay native and ungraded; legacy glow is disabled.")
+    local enabled = CreateFrame("CheckButton", "NativeHdrCheck", hdr, "UICheckButtonTemplate")
+    enabled:SetPoint("TOPLEFT", 16, -96)
+    label(-104, "       Enable float scene transport", "GameFontHighlight")
+    local ev = CreateFrame("Slider", "NativeHdrExposureSlider", hdr, "OptionsSliderTemplate")
+    ev:SetPoint("TOPLEFT", 24, -158)
+    ev:SetWidth(290)
+    ev:SetMinMaxValues(-8, 8)
+    ev:SetValueStep(0.25)
+    _G[ev:GetName().."Text"]:SetText("Manual Exposure (EV)")
+    _G[ev:GetName().."Low"]:SetText("-8")
+    _G[ev:GetName().."High"]:SetText("+8")
+    local evText = label(-192, "")
+    label(-224, "Optional normalized .cube LUT path (empty = None)")
+    local path = CreateFrame("EditBox", "NativeHdrLutPath", hdr, "InputBoxTemplate")
+    path:SetPoint("TOPLEFT", 24, -248)
+    path:SetWidth(300)
+    path:SetHeight(24)
+    path:SetAutoFocus(false)
+    path:SetMaxLetters(1024)
+    path:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    path:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    local status = label(-286, "")
+    label(-356, "Apply or Okay saves changes. LUTs load in the background; failures retain the current LUT. Defaults are Off, EV 0 and None.")
+    local originalOn, originalEV, originalPath = 0, 0, ""
+    local pendingOn, pendingEV, pendingPath = 0, 0, ""
+    local updating = false
+    local function finiteEV(value)
+        value = tonumber(value) or 0
+        if value ~= value or value == math.huge or value == -math.huge then return 0 end
+        return math.max(-8, math.min(8, value))
+    end
+    local function validPath(value)
+        return value == "" or (#value <= 1024 and string.sub(value, -5) == ".cube" and not string.find(value, "[%c]"))
+    end
+    local function showStatus()
+        if not validPath(pendingPath) then
+            status:SetText("Invalid local .cube path (maximum 1024 bytes; no control characters). Current settings are unchanged.")
+            return
+        end
+        local current = GetNativeHdrStatus()
+        local text
+        if not current.supported then text = "HDR unavailable on this renderer. Saved preferences are retained."
+        elseif GetCVar("nativeHDR") ~= "1" then text = "HDR Off (Classic glow). LUT bypassed."
+        else text = "HDR requested; per-frame support may retain Classic rendering." end
+        local detail = tostring(current.lut or "Unknown LUT state")
+        detail = string.gsub(string.gsub(string.sub(detail, 1, 180), "[%c]", " "), "|", "||")
+        status:SetText(text.."\nLUT: "..detail)
+    end
+    local function show()
+        updating = true
+        local available = GetNativeHdrStatus().supported
+        enabled:SetChecked(pendingOn == 1)
+        ev:SetValue(pendingEV)
+        evText:SetText(string.format("%+.2f EV (manual)", pendingEV))
+        path:SetText(pendingPath)
+        if available then enabled:Enable(); ev:Enable(); path:EnableMouse(true)
+        else enabled:Disable(); ev:Disable(); path:EnableMouse(false) end
+        updating = false
+        showStatus()
+    end
+    local function refresh()
+        originalOn = tonumber(GetCVar("nativeHDR")) or 0
+        originalEV = finiteEV(GetCVar("nativeHDRExposure"))
+        originalPath = GetCVar("nativeHDRLut") or ""
+        pendingOn, pendingEV, pendingPath = originalOn, originalEV, originalPath
+        show()
+    end
+    local function okay()
+        -- Do not turn unsupported preferences into an apparent successful apply.
+        if not GetNativeHdrStatus().supported then show(); return end
+        if not validPath(pendingPath) then showStatus(); return end
+        SetCVar("nativeHDR", tostring(pendingOn))
+        SetCVar("nativeHDRExposure", tostring(finiteEV(pendingEV)))
+        SetCVar("nativeHDRLut", pendingPath)
+        ReloadNativeHdrLut()
+        refresh()
+    end
+    local function cancel()
+        pendingOn, pendingEV, pendingPath = originalOn, originalEV, originalPath
+        show()
+    end
+    local function defaults()
+        pendingOn, pendingEV, pendingPath = 0, 0, ""
+        show()
+        VideoOptionsFrameApply:Enable()
+    end
+    enabled:SetScript("OnClick", function(self)
+        if not GetNativeHdrStatus().supported then show(); return end
+        pendingOn = self:GetChecked() and 1 or 0
+        show()
+        VideoOptionsFrameApply:Enable()
+    end)
+    ev:SetScript("OnValueChanged", function(self, value)
+        if updating then return end
+        if not GetNativeHdrStatus().supported then show(); return end
+        pendingEV = finiteEV(value)
+        show()
+        VideoOptionsFrameApply:Enable()
+    end)
+    path:SetScript("OnTextChanged", function(self)
+        if updating then return end
+        if not GetNativeHdrStatus().supported then return end
+        pendingPath = self:GetText()
+        showStatus()
+        VideoOptionsFrameApply:Enable()
+    end)
+    hdr:SetScript("OnShow", show)
+    local elapsedStatus = 0
+    hdr:SetScript("OnUpdate", function(self, elapsed)
+        elapsedStatus = elapsedStatus + elapsed
+        if elapsedStatus < 0.5 then return end
+        elapsedStatus = 0
+        showStatus()
+    end)
+    VideoOptionsPanel_OnLoad(hdr, okay, cancel, defaults, refresh)
+    refresh()
+end
