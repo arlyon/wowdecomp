@@ -88,6 +88,44 @@ Identical base SPIR-V from different source generations cannot alias an HDR
 source entry. Editing a source file and explicitly reloading cannot reuse the
 old derived pipelines.
 
+## Offline inventory groundwork (not the RT coverage gate)
+
+Build `RendererAssetInventory` in `out/portability-tests`. Its arguments are a
+**new report directory**, followed by the exact declared read-only archives in
+lowest-to-highest priority order. The report must be outside the asset directories;
+existing nonempty reports are never overwritten. For example:
+
+```sh
+out/portability-tests/RendererAssetInventory out/corpus-run /external/Data/common.MPQ ...
+```
+
+The example's ellipsis must be replaced by the full declared archive list, not a
+sample or an arbitrary filesystem glob. Archive order and sizes appear in
+`archives.tsv`. The tool parses complete listfile lines (including a final line
+without a newline), rejects unsafe/overlong names, and reconciles the union of
+names against **every active MPQ hash row**, including locale/platform entries.
+Unknown rows fail rather than disappearing from the denominator. Compression of
+archive tables is supported; only their optional in-memory compaction is disabled
+so the original hash rows remain available for inspection. Archive write mode and
+direct disk asset fallback remain disabled.
+
+`assets.tsv` records final resident names, authored tombstones and stale list
+names. `shader-records.tsv` preserves each container/permutation identity even
+when bytecode is identical. Text/non-native shader records remain in the census;
+the metadata parser does not pretend to validate their shader semantics. Empty
+records are explicit. Container failures appear in `shader-errors.tsv`; the tool
+continues discovery but returns failure and reports incomplete shader enumeration.
+
+This is **inventory only**: `coverage=UNVERIFIED` is unconditional. It does not yet
+parse material uses, select native shader fallback profiles, resolve original
+case-sensitive Gx keys, compile required maintained interfaces, or attest a
+revision with full archive fingerprints. A reconciled filename table is not
+material coverage or RT readiness. The eventual acceptance gate must perform
+those additional checks and cannot substitute this inventory's exit status.
+Generated shaders/assets remain local; no proprietary payload is exported by this
+tool. Synthetic archive tests exercise unknown names, truncation, duplicate
+programs, read-only bytes and report confinement without external assets.
+
 ## Verification
 
 `ShaderOverride` checks identity, confinement, real compiler includes, immutable
