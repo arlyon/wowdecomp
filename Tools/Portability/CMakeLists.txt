@@ -13,6 +13,21 @@ wowdecomp_configure_platform()
 find_package(Threads REQUIRED)
 enable_testing()
 
+add_executable(M2LightingSourceTest M2LightingSourceTest.cpp
+    "${WOWDECOMP_ROOT}/Engine/Source/Model2/M2Light.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Model2/M2Model.cpp")
+target_include_directories(M2LightingSourceTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_options(M2LightingSourceTest PRIVATE -ffunction-sections -fdata-sections)
+target_compile_definitions(M2LightingSourceTest PRIVATE __stdcall= __fastcall=)
+if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+    target_compile_definitions(M2LightingSourceTest PRIVATE WOWDECOMP_ARCH_64=1)
+else ()
+    target_compile_definitions(M2LightingSourceTest PRIVATE WOWDECOMP_ARCH_32=1)
+endif ()
+target_link_options(M2LightingSourceTest PRIVATE -Wl,--gc-sections)
+target_link_libraries(M2LightingSourceTest PRIVATE Tempest BlizzardCore Storm BlizzardCore Threads::Threads)
+add_test(NAME M2LightingSource COMMAND M2LightingSourceTest)
+
 add_executable(AssetInventoryTest AssetInventoryTest.cpp)
 target_include_directories(AssetInventoryTest PRIVATE "${WOWDECOMP_ROOT}")
 add_test(NAME AssetInventory COMMAND AssetInventoryTest)

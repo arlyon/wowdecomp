@@ -44,7 +44,7 @@ CMapObjDefGroup::CMapObjDefGroup() {
 // VERIFY: 7ed1c1b6 manual
 // OFFSET: 0x007B3F30
 void CMapObjDefGroup::SelectLights(CM2Lighting* lighting) {
-    lighting->AddLight(&CMap::s_mapLight->m_light);
+    lighting->AddWorldDirectionalLight(&CMap::s_mapLight->m_light);
 
     if (CWorld::farFog > this->m_distanceToCamera) {
         if (this->m_flags & MAPOBJ_FLAG_UNPLACED) {

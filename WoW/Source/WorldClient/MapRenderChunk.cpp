@@ -339,7 +339,7 @@ void CMapRenderChunk::AddBatch(CMapChunk* chunk1, CMapChunk* chunk2, C3Vector* p
 // VERIFY: c9761f91 auto
 // OFFSET: 0x007B7BD0
 void CMapRenderChunk::SelectLights(CM2Lighting* lighting) {
-    lighting->AddLight(&CMap::s_mapLight->m_light);
+    lighting->AddWorldDirectionalLight(&CMap::s_mapLight->m_light);
 
     DayNight::DNInfo* info = DayNight::GetInfo();
     C3Vector fogColor;
@@ -2014,7 +2014,7 @@ void CMapRenderChunk::InitializeVertexShaderConstants(const C44Matrix& world, co
 
     C3Vector sunDir(0.0f, 0.0f, 0.0f);
     CM2Lighting lighting(sunDir);
-    lighting.AddLight(&CMap::s_mapLight->m_light);
+    lighting.AddWorldDirectionalLight(&CMap::s_mapLight->m_light);
 
     if (lighting.GetSunLight(sunDir, consts.m_sunAmbient, consts.m_sunDiffuse, consts.m_sunSpecular)) {
         C33Matrix rotation(consts.m_worldView);

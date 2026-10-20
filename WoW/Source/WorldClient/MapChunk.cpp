@@ -152,7 +152,7 @@ void CMapChunk::Purge() {
 // VERIFY: 3a512c10 auto
 // OFFSET: 0x007C3DB0
 void CMapChunk::SelectLights(CM2Lighting* lighting) {
-    lighting->AddLight(&CMap::s_mapLight->m_light);
+    lighting->AddWorldDirectionalLight(&CMap::s_mapLight->m_light);
 
     if (CWorld::farFog > this->m_distToCamera && (this->m_flags & MAPOBJ_FLAG_UNPLACED)) {
         this->m_flags = static_cast<MapObjFlag>(this->m_flags & ~MAPOBJ_FLAG_UNPLACED);

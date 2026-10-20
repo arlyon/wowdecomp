@@ -7792,6 +7792,7 @@ void CM2Model::SetWorldTransform(const C44Matrix& matrix) {
 // VERIFY: 3fa6010f auto
 // OFFSET: 0x004E2730
 void CM2Lighting::Reset() {
+    this->m_shadowLighting = {};
     this->m_sunAmbient = C3Vector(0.0f, 0.0f, 0.0f);
     this->m_sunDiffuse = C3Vector(0.0f, 0.0f, 0.0f);
     this->m_sunSpecular = C3Vector(0.0f, 0.0f, 0.0f);

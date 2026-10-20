@@ -71,7 +71,7 @@ void Liquid::CClientEnvironment::SelectLights(CM2Lighting* lighting) {
 
         lighting->AddLight(&s_light);
     } else {
-        lighting->AddLight(&CMap::s_mapLight->m_light);
+        lighting->AddWorldDirectionalLight(&CMap::s_mapLight->m_light);
     }
 
     World::s_m2Scene->SelectLights(lighting);

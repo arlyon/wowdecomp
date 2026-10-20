@@ -13,6 +13,51 @@
 // STATIC: 0x00AF59D4
 static float s_lightGridScale = 0.05f;
 
+namespace {
+void AccumulateDirectional(const C3Vector& color, const C3Vector& dir, C3Vector& red,
+    C3Vector& green, C3Vector& blue, C3Vector& luminanceDirection, C3Vector& totalColor) {
+    red.x = dir.x * color.x + red.x;
+    red.y = dir.y * color.x + red.y;
+    red.z = color.x * dir.z + red.z;
+    green.x = dir.x * color.y + green.x;
+    green.y = dir.y * color.y + green.y;
+    green.z = color.y * dir.z + green.z;
+    blue.x = color.z * dir.x + blue.x;
+    blue.y = dir.y * color.z + blue.y;
+    blue.z = color.z * dir.z + blue.z;
+    const float luminance = color.y * 0.71516f + color.x * 0.212671f + color.z * 0.072169f;
+    luminanceDirection.x = dir.x * luminance + luminanceDirection.x;
+    luminanceDirection.y = dir.y * luminance + luminanceDirection.y;
+    luminanceDirection.z = dir.z * luminance + luminanceDirection.z;
+    totalColor += color;
+}
+void AddDirectional(CM2Lighting& lighting, const C3Vector& color, const C3Vector& dir, bool world) {
+    C3Vector viewDir = dir;
+    if (lighting.m_scene) {
+        const C44Matrix& view = lighting.m_scene->m_view;
+        viewDir.x = view.b0 * dir.y + view.c0 * dir.z + dir.x * view.a0;
+        viewDir.y = view.b1 * dir.y + view.a1 * dir.x + view.c1 * dir.z;
+        viewDir.z = view.b2 * dir.y + view.a2 * dir.x + view.c2 * dir.z;
+    }
+    AccumulateDirectional(color, viewDir, lighting.m_vector18, lighting.m_vector24,
+        lighting.m_vector30, lighting.m_vector3C, lighting.m_vector48);
+    lighting.m_sunDir = dir;
+    lighting.m_sunDiffuse = color;
+    auto& inputs = lighting.m_shadowLighting;
+    if (world) {
+        if (!inputs.worldSourceCount) inputs.worldDirection = dir;
+        else if (inputs.worldDirection != dir) inputs.conflictingWorldDirections = true;
+        if (inputs.worldSourceCount == UINT32_MAX) inputs.conflictingWorldDirections = true;
+        else ++inputs.worldSourceCount;
+        inputs.worldDiffuse += color;
+    } else {
+        auto& unshadowed = inputs.unshadowedDirectional;
+        AccumulateDirectional(color, viewDir, unshadowed.red, unshadowed.green,
+            unshadowed.blue, unshadowed.luminanceDirection, unshadowed.totalColor);
+    }
+}
+}
+
 // VERIFY: 45311b80 auto
 // OFFSET: 0x008348D0
 void CM2Light::Initialize(CM2Scene* scene) {
@@ -175,40 +220,25 @@ void CM2Light::Link() {
 // OFFSET: 0x00834D90
 void CM2Lighting::AddAmbient(const C3Vector& color) {
     this->m_sunAmbient += color;
+    this->m_shadowLighting.ambient += color;
 }
 
 // VERIFY: b0a37a1c manual
 // OFFSET: 0x00834DC0
 void CM2Lighting::AddDiffuse(const C3Vector& color, const C3Vector& dir) {
-    C3Vector viewDir = dir;
+    AddDirectional(*this, color, dir, false);
+}
 
-    if (this->m_scene) {
-        const C44Matrix& view = this->m_scene->m_view;
-        viewDir.x = view.b0 * dir.y + view.c0 * dir.z + dir.x * view.a0;
-        viewDir.y = view.b1 * dir.y + view.a1 * dir.x + view.c1 * dir.z;
-        viewDir.z = view.b2 * dir.y + view.a2 * dir.x + view.c2 * dir.z;
+void CM2Lighting::AddWorldDirectionalLight(CM2Light* light) {
+    if (!light || !light->m_visible) return;
+    if (light->m_type == M2LIGHT_POINT) {
+        this->AddLight(light);
+        return;
     }
-
-    this->m_vector18.x = viewDir.x * color.x + this->m_vector18.x;
-    this->m_vector18.y = viewDir.y * color.x + this->m_vector18.y;
-    this->m_vector18.z = color.x * viewDir.z + this->m_vector18.z;
-
-    this->m_vector24.x = viewDir.x * color.y + this->m_vector24.x;
-    this->m_vector24.y = viewDir.y * color.y + this->m_vector24.y;
-    this->m_vector24.z = color.y * viewDir.z + this->m_vector24.z;
-
-    this->m_vector30.x = color.z * viewDir.x + this->m_vector30.x;
-    this->m_vector30.y = viewDir.y * color.z + this->m_vector30.y;
-    this->m_vector30.z = color.z * viewDir.z + this->m_vector30.z;
-
-    float luminance = color.y * 0.71516f + color.x * 0.212671f + color.z * 0.072169f;
-    this->m_vector3C.x = viewDir.x * luminance + this->m_vector3C.x;
-    this->m_vector3C.y = viewDir.y * luminance + this->m_vector3C.y;
-    this->m_vector3C.z = viewDir.z * luminance + this->m_vector3C.z;
-
-    this->m_vector48 += color;
-    this->m_sunDir = dir;
-    this->m_sunDiffuse = color;
+    this->AddAmbient(light->m_ambColor);
+    AddDirectional(*this, light->m_dirColor, light->m_dir, true);
+    this->m_sunSpecular += light->m_specColor;
+    this->m_shadowLighting.worldSpecular += light->m_specColor;
 }
 
 // VERIFY: 7d1db3b8 manual
@@ -222,6 +252,7 @@ void CM2Lighting::AddLight(CM2Light* light) {
         this->AddAmbient(light->m_ambColor);
         this->AddDiffuse(light->m_dirColor, light->m_dir);
         this->m_sunSpecular += light->m_specColor;
+        this->m_shadowLighting.unshadowedSpecular += light->m_specColor;
         return;
     }
 
