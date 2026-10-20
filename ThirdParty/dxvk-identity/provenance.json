@@ -1,0 +1,53 @@
+{
+  "upstream": "https://github.com/doitsujin/dxvk.git",
+  "tag": "v3.1.1",
+  "tagObject": "1e0f92318d6ec7b7286e050d9e24fd01a2d09c92",
+  "commit": "b1a1c99ab52b687cf950d62c88bc2fa316b41663",
+  "sourceGitArchiveTarSha256": "a186af690b633ca3b14037e56649d1b7135e07d0b53657976330f3ab462b2a6c",
+  "downloadedTagArchiveSha256": "ef4944134f6c39d0937f265391db2d08bca33cd3a2f0ee9133e1eb55f1cc657c",
+  "recursiveSubmodules": [
+    " 9df86f2341616ef1888ae59919feaa6d4fad693d include/native/directx (heads/main)",
+    " 04f10f650d514df88b76d25e83db360142c7b174 include/spirv (vulkan-sdk-1.4.341.0)",
+    " 8864cdc896bbc2a9b6eb36b3218fc9ef57908d77 include/vulkan (v1.4.350)",
+    " bf14419e5fa7eacb817b7b632f03cb61d61bbad7 subprojects/dxbc-spirv (bf14419)",
+    " c8ad050fcb29e42a2f57d9f59e97488f465c436d subprojects/dxbc-spirv/submodules/spirv_headers (c8ad050)",
+    " 275e6459c7ab1ddd4b125f28d0440716e4888078 subprojects/libdisplay-info (heads/windows)"
+  ],
+  "patchSha256": "1e4afe56c9cca2d52963292ac721974f9bd12ca4e5db4cfa0dd372f0c79839b9",
+  "headerSha256": "19dafddaa741764626cb14a211cf624247f71f509aad99c4704667afccef91a7",
+  "originalInstalledLibrarySha256": "2496ac21c894c0ce80ad29ad72cce7190d0cbfa6fe5bae3927edc7f7884cc272",
+  "installedAndPinnedPublicD3d9HeaderIdentical": true,
+  "buildType": "release",
+  "compiler": "gcc (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
+  "flags": [
+    "enable_dxgi=false",
+    "enable_d3d8=false",
+    "enable_d3d10=false",
+    "enable_d3d11=false",
+    "native_sdl2=enabled",
+    "native_sdl3=disabled",
+    "native_glfw=disabled"
+  ],
+  "maxParallel": 2,
+  "sourceFilesChanged": " src/d3d9/d3d9_interface.cpp |  6 ++++++\n src/d3d9/d3d9_interface.h   |  1 +\n src/d3d9/d3d9_interop.cpp   | 35 +++++++++++++++++++++++++++++++++++\n src/d3d9/d3d9_interop.h     | 12 ++++++++++++\n 4 files changed, 54 insertions(+)\n",
+  "localLibrary": {
+    "path": "out/deps/dxvk-build-direct/src/d3d9/libdxvk_d3d9.so.0.30101",
+    "sha256": "475332926b8069c2a4022d80d6c995613d38f39e9fa65dfa0e2e907a7bcd7431",
+    "installPerformed": false
+  },
+  "buildCommands": [
+    "git clone --depth 1 --branch v3.1.1 --filter=blob:none https://github.com/doitsujin/dxvk.git out/deps/dxvk-source",
+    "git -C out/deps/dxvk-source submodule update --init --recursive --depth 1 --jobs 2",
+    "apply ThirdParty/dxvk-identity/dxvk-v3.1.1-cpu-identity.patch (clean archive application and source-byte equivalence verified in out/deps/patch-proof.log)",
+    "PATH=/usr/bin:/bin CC=gcc CXX=g++ meson setup out/deps/dxvk-build-direct out/deps/dxvk-source --buildtype=release --prefix=$PWD/out/deps/dxvk-local -Denable_dxgi=false -Denable_d3d8=false -Denable_d3d10=false -Denable_d3d11=false -Dnative_sdl2=enabled -Dnative_sdl3=disabled -Dnative_glfw=disabled",
+    "PATH=/usr/bin:/bin ninja -C out/deps/dxvk-build-direct -j2"
+  ],
+  "provenanceLimitation": "New local build chosen from observed installed version, NOT exact reconstruction of installed binary provenance. Prefix flag was configured but no install command was run.",
+  "verification": {
+    "patchCleanApply": "passed",
+    "newLibraryRuntime": "core and sync passed, one RADV physical adapter; no multi-GPU claim",
+    "publicHeaderSha256": "fd58bd1dee959735c2790da0e2bd963a7b1b8b1283717713d4c7375da1da237e",
+    "oldLibraryMissingQI": "passed with controlled implicit-layer environment",
+    "fullClientLinkMatrix": "not run; parent integration gate"
+  }
+}

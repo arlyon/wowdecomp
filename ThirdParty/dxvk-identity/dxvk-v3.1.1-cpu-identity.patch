@@ -1,0 +1,145 @@
+diff --git a/src/d3d9/d3d9_interface.cpp b/src/d3d9/d3d9_interface.cpp
+index 119dfa4..4e881f8 100644
+--- a/src/d3d9/d3d9_interface.cpp
++++ b/src/d3d9/d3d9_interface.cpp
+@@ -19,6 +19,7 @@ namespace dxvk {
+     , m_legacyD3DBridge    ( this )
+     , m_d3d9Options        ( nullptr, m_instance->config() )
+     , m_d3d9Interop        ( this )
++    , m_d3d9CpuIdentity    ( this )
+     , m_d3d9VkExtInterface ( this ) {
+     // D3D9 doesn't enumerate adapters like physical adapters...
+     // only as connected displays.
+@@ -113,6 +114,11 @@ namespace dxvk {
+       return S_OK;
+     }
+ 
++    if (riid == __uuidof(ID3D9CpuIdentity1)) {
++      *ppvObject = ref(&m_d3d9CpuIdentity);
++      return S_OK;
++    }
++
+     if (riid == __uuidof(ID3D9VkExtInterface)) {
+       *ppvObject = ref(&m_d3d9VkExtInterface);
+       return S_OK;
+diff --git a/src/d3d9/d3d9_interface.h b/src/d3d9/d3d9_interface.h
+index abccbbc..f1411bc 100644
+--- a/src/d3d9/d3d9_interface.h
++++ b/src/d3d9/d3d9_interface.h
+@@ -186,6 +186,7 @@ namespace dxvk {
+     std::vector<Rc<D3D9Adapter>>  m_adapters;
+ 
+     D3D9VkInteropInterface        m_d3d9Interop;
++    D3D9CpuIdentity               m_d3d9CpuIdentity;
+ 
+     bool m_unlockAdditionalFormats = false;
+ 
+diff --git a/src/d3d9/d3d9_interop.cpp b/src/d3d9/d3d9_interop.cpp
+index 7594eb1..ce8be0f 100644
+--- a/src/d3d9/d3d9_interop.cpp
++++ b/src/d3d9/d3d9_interop.cpp
+@@ -36,6 +36,41 @@ namespace dxvk {
+     return m_interface->QueryInterface(riid, ppvObject);
+   }
+ 
++  ULONG STDMETHODCALLTYPE D3D9CpuIdentity::AddRef() { return m_interface->AddRef(); }
++  ULONG STDMETHODCALLTYPE D3D9CpuIdentity::Release() { return m_interface->Release(); }
++  HRESULT STDMETHODCALLTYPE D3D9CpuIdentity::QueryInterface(REFIID riid, void** object) {
++    return m_interface->QueryInterface(riid, object);
++  }
++
++  HRESULT STDMETHODCALLTYPE D3D9CpuIdentity::GetAdapterIdentity(
++          UINT ordinal, D3D9CpuAdapterIdentity1* identity) {
++    if (!identity || identity->size != sizeof(*identity) || identity->version != 1)
++      return D3DERR_INVALIDCALL;
++    auto* adapter = m_interface->GetAdapter(ordinal);
++    if (!adapter)
++      return D3DERR_INVALIDCALL;
++    auto physical = adapter->GetDXVKAdapter();
++    VkPhysicalDeviceIDProperties id = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
++    VkPhysicalDeviceDriverProperties driver = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
++    VkPhysicalDeviceProperties2 props = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
++    props.pNext = &id;
++    id.pNext = &driver;
++    // DXVK v3.1.1 requires Vulkan 1.3, including driver and ID properties.
++    physical->vki()->vkGetPhysicalDeviceProperties2(physical->handle(), &props);
++    D3D9CpuAdapterIdentity1 result = { };
++    result.size = sizeof(result);
++    result.version = 1;
++    std::memcpy(result.deviceUUID, id.deviceUUID, sizeof(result.deviceUUID));
++    std::memcpy(result.driverUUID, id.driverUUID, sizeof(result.driverUUID));
++    result.driverId = uint32_t(driver.driverID);
++    result.vendorId = props.properties.vendorID;
++    result.deviceId = props.properties.deviceID;
++    std::memcpy(result.name, props.properties.deviceName, sizeof(result.name));
++    result.name[sizeof(result.name) - 1] = 0;
++    *identity = result;
++    return D3D_OK;
++  }
++
+   void STDMETHODCALLTYPE D3D9VkInteropInterface::GetInstanceHandle(
+           VkInstance*           pInstance) {
+     if (pInstance != nullptr)
+diff --git a/src/d3d9/d3d9_interop.h b/src/d3d9/d3d9_interop.h
+index 9909893..f8c8237 100644
+--- a/src/d3d9/d3d9_interop.h
++++ b/src/d3d9/d3d9_interop.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "d3d9_interfaces.h"
++#include <d3d9_cpu_identity.h>
+ 
+ #include "../dxvk/dxvk_extension_provider.h"
+ 
+@@ -16,6 +17,17 @@ namespace dxvk {
+   using D3D9Multithread = sync::ScopedDeviceLock;
+   using D3D9DeviceLock = sync::ScopedDeviceGuard;
+ 
++  class D3D9CpuIdentity final : public ID3D9CpuIdentity1 {
++  public:
++    explicit D3D9CpuIdentity(D3D9InterfaceEx* owner) : m_interface(owner) { }
++    ULONG STDMETHODCALLTYPE AddRef();
++    ULONG STDMETHODCALLTYPE Release();
++    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object);
++    HRESULT STDMETHODCALLTYPE GetAdapterIdentity(UINT ordinal, D3D9CpuAdapterIdentity1* identity);
++  private:
++    D3D9InterfaceEx* m_interface;
++  };
++
+   class D3D9VkInteropInterface final : public ID3D9VkInteropInterface1 {
+ 
+   public:
+diff --git a/include/native/directx/d3d9_cpu_identity.h b/include/native/directx/d3d9_cpu_identity.h
+new file mode 100644
+--- /dev/null
++++ b/include/native/directx/d3d9_cpu_identity.h
+@@ -0,0 +1,28 @@
++#pragma once
++#include <d3d9.h>
++#include <cstdint>
++
++// Local DXVK extension v1. New ABI revisions require a new IID, never a vtable
++// append. No Vulkan declarations or borrowed handles cross this boundary.
++struct D3D9CpuAdapterIdentity1 {
++    uint32_t size;
++    uint32_t version;
++    uint8_t deviceUUID[16];
++    uint8_t driverUUID[16];
++    uint32_t driverId;
++    uint32_t vendorId;
++    uint32_t deviceId;
++    char name[256];
++};
++static_assert(sizeof(D3D9CpuAdapterIdentity1) == 308, "CPU identity ABI");
++
++MIDL_INTERFACE("7847f6a1-0aca-4fe7-9fd3-e31d927f8b20")
++ID3D9CpuIdentity1 : public IUnknown {
++    // Exact ordinal of the same IDirect3D9 object, not an independent enumeration.
++    // Invalid size/version/ordinal returns D3DERR_INVALIDCALL; no partial result.
++    virtual HRESULT STDMETHODCALLTYPE GetAdapterIdentity(
++        UINT ordinal, D3D9CpuAdapterIdentity1* identity) = 0;
++};
++#ifndef _MSC_VER
++__CRT_UUID_DECL(ID3D9CpuIdentity1, 0x7847f6a1,0x0aca,0x4fe7,0x9f,0xd3,0xe3,0x1d,0x92,0x7f,0x8b,0x20);
++#endif

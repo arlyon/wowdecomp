@@ -1,0 +1,4 @@
+#ifndef WOW_SOURCE_UI_NATIVEVIDEOOPTIONS_H
+#define WOW_SOURCE_UI_NATIVEVIDEOOPTIONS_H
+void InstallNativeVideoOptions();
+#endif

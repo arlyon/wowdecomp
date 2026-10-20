@@ -17,7 +17,9 @@
 static CVar* s_cvGxStereoEnabled;
 
 // STATIC: 0x00CABA9C
+#if defined(_WIN32)
 static CVar* s_cvGxRefresh;
+#endif
 
 // STATIC: 0x00CABAA0
 CVar* s_cvGxMaximize;
@@ -35,7 +37,9 @@ static CVar* s_cvGxStereoSeparation;
 static CVar* s_cvGxMultisampleQuality;
 
 // STATIC: 0x00CABAB4
+#if defined(_WIN32)
 static CVar* s_cvGxResolution;
+#endif
 
 // STATIC: 0x00CABAB8
 CVar* s_cvHwDetect;
@@ -317,8 +321,10 @@ bool UpdateGxCVars() {
     s_cvGxColorBits->Update();
     s_cvGxDepthBits->Update();
     s_cvGxWindow->Update();
+#if defined(_WIN32)
     s_cvGxResolution->Update();
     s_cvGxRefresh->Update();
+#endif
     s_cvGxTripleBuffer->Update();
     s_cvGxApi->Update();
     s_cvGxVSync->Update();
@@ -341,11 +347,13 @@ bool SetGxCVars(const CGxFormat& format) {
     SStrPrintf(value, sizeof(value), "%d", format.m_window);
     s_cvGxWindow->Set(value, true, false, false, true);
 
+#if defined(_WIN32)
     SStrPrintf(value, sizeof(value), "%dx%d", format.m_size.x, format.m_size.y);
     s_cvGxResolution->Set(value, true, false, false, true);
 
     SStrPrintf(value, sizeof(value), "%d", format.m_refreshRate);
     s_cvGxRefresh->Set(value, true, false, false, true);
+#endif
 
     s_cvGxTripleBuffer->Set(format.m_backBufferCount > 1 ? "1" : "0", true, false, false, true);
 
@@ -397,6 +405,7 @@ static bool CVGxStereoSeparationCallback(CVar* var, const char* oldValue, const 
 
 // VERIFY: dc6233ea auto
 // OFFSET: 0x0076A220
+#if defined(_WIN32)
 static bool CVGxResolutionCallback(CVar* var, const char* oldValue, const char* value, void* arg) {
     int32_t width = -1;
     int32_t height = -1;
@@ -518,6 +527,8 @@ static bool CVGxRefreshCallback(CVar* var, const char* oldValue, const char* val
     return true;
 }
 
+#endif
+
 // VERIFY: 05a0817f auto
 // OFFSET: 0x008A1420
 static bool CVVideoOptionsVersionCallback(CVar* var, const char* oldValue, const char* value, void* arg) {
@@ -549,11 +560,18 @@ void RegisterGxCVars() {
     SStrPrintf(value, sizeof(value), "%s", s_formatToInt[format.m_depthFormat]);
     s_cvGxDepthBits = CVar::Register("gxDepthBits", "depth bits", 3, value, CVGxDepthBitsCallback, CATEGORY_GRAPHICS, false, nullptr, false);
 
+#if defined(_WIN32)
     SStrPrintf(value, sizeof(value), "%dx%d", format.m_size.x, format.m_size.y);
     s_cvGxResolution = CVar::Register("gxResolution", "resolution", 3, value, CVGxResolutionCallback, CATEGORY_GRAPHICS, false, nullptr, false);
 
     s_cvGxRefresh = CVar::Register("gxRefresh", "refresh rate", 3, "75", CVGxRefreshCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+#endif
     s_cvGxTripleBuffer = CVar::Register("gxTripleBuffer", "triple buffer", 3, "0", CVGxTripleBufferCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+#if defined(_WIN32)
+    // POSIX registers these before hardware detection, not with format defaults.
+    CVar::Register("gxBackend", "Renderer backend (client restart required)", 3, "auto", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
+    CVar::Register("gxAdapter", "GPU UUID and driver ID (client restart required)", 3, "auto", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
+#endif
     s_cvGxApi = CVar::Register("gxApi", "graphics api", 3, g_gxApiNames[GxDefaultApi()], CVGxApiCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     s_cvGxVSync = CVar::Register("gxVSync", "vsync on or off", 3, "1", CVGxVSyncCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     s_cvGxAspect = CVar::Register("gxAspect", "constrain window aspect", 3, "1", CVGxAspectCallback, CATEGORY_GRAPHICS, false, nullptr, false);

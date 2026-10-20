@@ -229,7 +229,8 @@ endif ()
 # Linux section GC isolates these functions, like the socket contract tests above.
 foreach (backend dxvk vulkan both)
     add_executable(GxBackend-${backend} GxBackendTest.cpp
-        "${WOWDECOMP_ROOT}/Engine/Source/Gx/Gx.cpp")
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/Gx.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/DeviceSelection.cpp")
     target_include_directories(GxBackend-${backend} PRIVATE "${WOWDECOMP_ROOT}")
     target_link_libraries(GxBackend-${backend} PRIVATE Storm)
     target_compile_options(GxBackend-${backend} PRIVATE -ffunction-sections -fdata-sections)

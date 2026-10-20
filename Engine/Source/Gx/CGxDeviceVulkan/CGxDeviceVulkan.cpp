@@ -1,4 +1,6 @@
 #include "CGxDeviceVulkan.h"
+#include "DeviceEnumeration.h"
+#include "PresentMode.h"
 #include "Shader.h"
 #include "Slang.h"
 #include "ResidentBuffer.h"
@@ -260,7 +262,11 @@ void CGxDeviceVulkan::State::Initialize() {
         layers.push_back("VK_LAYER_KHRONOS_validation");
     }
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app.pApplicationName = "wowdecomp"; app.apiVersion = VK_API_VERSION_1_1;
+    app.pApplicationName = "wowdecomp";
+    uint32_t loaderVersion = VK_API_VERSION_1_0;
+    auto enumerateVersion = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
+    if (enumerateVersion) GX_VK(enumerateVersion(&loaderVersion));
+    app.apiVersion = loaderVersion >= VK_API_VERSION_1_2 ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
     VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     info.pApplicationInfo = &app; info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     info.ppEnabledExtensionNames = extensions.data(); info.enabledLayerCount = static_cast<uint32_t>(layers.size());
@@ -268,27 +274,14 @@ void CGxDeviceVulkan::State::Initialize() {
     if (portability) info.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
     GX_VK(vkCreateInstance(&info, nullptr, &instance));
     if (!SDL_Vulkan_CreateSurface(window, instance, &surface)) throw std::runtime_error(SDL_GetError());
-    GX_VK(vkEnumeratePhysicalDevices(instance, &count, nullptr));
-    std::vector<VkPhysicalDevice> devices(count);
-    GX_VK(vkEnumeratePhysicalDevices(instance, &count, devices.data()));
-    for (auto candidate : devices) {
-        VkPhysicalDeviceProperties candidateProperties;
-        vkGetPhysicalDeviceProperties(candidate, &candidateProperties);
-        if (candidateProperties.apiVersion < VK_API_VERSION_1_1) continue;
-        uint32_t queueCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &queueCount, nullptr);
-        std::vector<VkQueueFamilyProperties> queues(queueCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &queueCount, queues.data());
-        for (uint32_t family = 0; family < queueCount; ++family) {
-            VkBool32 present = false;
-            GX_VK(vkGetPhysicalDeviceSurfaceSupportKHR(candidate, family, surface, &present));
-            if (present && queues[family].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-                physical = candidate; queueFamily = family; break;
-            }
-        }
-        if (physical) break;
-    }
-    if (!physical) throw std::runtime_error("No Vulkan 1.1 graphics/present device");
+    if (GxGetDeviceSelection().backends.empty()) GxConfigureDeviceSelection("auto", "auto");
+    auto candidates = GxVulkan::EnumerateAdapters(instance, surface);
+    std::vector<GxAdapterDescriptor> adapterDescriptors;
+    for (const auto& candidate : candidates) adapterDescriptors.push_back(candidate.descriptor);
+    const size_t selected = GxChooseAdapter(adapterDescriptors, GxGetDeviceSelection().effectiveAdapter);
+    if (selected == candidates.size()) throw std::runtime_error("No compatible Vulkan graphics/present device; try removing loader filters");
+    physical = candidates[selected].physical;
+    queueFamily = candidates[selected].queueFamily;
     vkGetPhysicalDeviceProperties(physical, &properties);
     vkGetPhysicalDeviceMemoryProperties(physical, &memoryProperties);
     GX_VK(vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, nullptr));
@@ -342,6 +335,7 @@ void CGxDeviceVulkan::State::Initialize() {
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     fixedVertex = ReadModule("fixed.vert.spv"); fixedPixel = ReadModule("fixed.frag.spv");
     RecreateSwapchain();
+    GxReportDeviceSelection("vulkan", std::move(adapterDescriptors), selected);
     CGxDevice::Log("Native Vulkan: %s, API %u.%u; direct Vulkan submission (no DXVK)", properties.deviceName,
         VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion));
 }
@@ -389,7 +383,12 @@ void CGxDeviceVulkan::State::RecreateSwapchain() {
     if (!(capabilities.supportedCompositeAlpha & create.compositeAlpha))
         for (auto flag : {VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR, VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR, VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR})
             if (capabilities.supportedCompositeAlpha & flag) { create.compositeAlpha = flag; break; }
-    create.presentMode = VK_PRESENT_MODE_FIFO_KHR; create.clipped = true; create.oldSwapchain = swapchain;
+    uint32_t presentCount = 0;
+    GX_VK(vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &presentCount, nullptr));
+    std::vector<VkPresentModeKHR> presentModes(presentCount);
+    GX_VK(vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &presentCount, presentModes.data()));
+    create.presentMode = GxVulkan::SelectPresentMode(gx.m_format.m_vsync != 0, presentModes.data(), presentCount);
+    create.clipped = true; create.oldSwapchain = swapchain;
     VkSwapchainKHR next;
     GX_VK(vkCreateSwapchainKHR(device, &create, nullptr, &next));
     if (swapchain) vkDestroySwapchainKHR(device, swapchain, nullptr);
@@ -1117,26 +1116,61 @@ int32_t CGxDeviceVulkan::DeviceCreate(void* window, const CGxFormat& format) {
     m_native->ownWindow = false;
     return DeviceSetFormat(format);
 }
+bool CGxDeviceVulkan::DeviceGetWindowLogicalSize(C2iVector& size) const {
+    if (!m_native || !m_native->window) return false;
+    int width = 0, height = 0;
+    SDL_GetWindowSize(m_native->window, &width, &height);
+    if (width <= 0 || height <= 0) return false;
+    size = {width, height};
+    return true;
+}
 int32_t CGxDeviceVulkan::DeviceSetFormat(const CGxFormat& format) {
     auto& state = *m_native;
     if (format.m_size.x < 0 || format.m_size.y < 0) return 0;
+    if (!format.m_window && !OsGuiSupportsExclusiveFullscreen()) {
+        CGxDevice::Log("Exclusive fullscreen unsupported by the current SDL video driver");
+        return 0;
+    }
     try {
         CGxDevice::DeviceSetFormat(format);
         if (state.device) {
-            SDL_SetWindowSize(state.window, m_format.m_size.x, m_format.m_size.y);
+            OsWindowPlacement placement;
+            OsGuiGetWindowPlacement(state.window, placement);
+            const auto flags = SDL_GetWindowFlags(state.window);
             const uint32_t fullscreen = m_format.m_window ? (m_format.m_maximize == 1 ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) : SDL_WINDOW_FULLSCREEN;
-            if (SDL_SetWindowFullscreen(state.window, fullscreen)) throw std::runtime_error(SDL_GetError());
+            const auto previous = flags & SDL_WINDOW_FULLSCREEN_DESKTOP;
+            if (!m_format.m_window && !OsGuiSetWindowMode(state.window, false, 0,
+                m_format.m_size, m_format.m_refreshRate)) throw std::runtime_error(SDL_GetError());
+            if (previous != fullscreen) {
+                if (!OsGuiSetWindowMode(state.window, m_format.m_window, m_format.m_maximize,
+                    m_format.m_size, m_format.m_refreshRate)) throw std::runtime_error(SDL_GetError());
+                if (!fullscreen) OsGuiRestoreWindowPlacement(state.window, placement, true);
+            } else if (!fullscreen && !(flags & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED))) {
+                int width, height;
+                SDL_GetWindowSize(state.window, &width, &height);
+                if (width != m_format.m_size.x || height != m_format.m_size.y)
+                    SDL_SetWindowSize(state.window, m_format.m_size.x, m_format.m_size.y);
+            }
             state.resize = true;
             return 1;
         }
         if (!state.window) {
             if (!(SDL_WasInit(SDL_INIT_VIDEO) & SDL_INIT_VIDEO)) throw std::runtime_error("SDL video is not initialized");
             uint32_t flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
-            if (!m_format.m_window) flags |= SDL_WINDOW_FULLSCREEN;
-            else if (m_format.m_maximize == 1) flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
-            state.window = SDL_CreateWindow("World of Warcraft (Vulkan)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            state.window = SDL_CreateWindow("World of Warcraft (Vulkan)", m_format.m_pos.x, m_format.m_pos.y,
                 m_format.m_size.x ? m_format.m_size.x : 1024, m_format.m_size.y ? m_format.m_size.y : 768, flags);
             if (!state.window) throw std::runtime_error(SDL_GetError());
+            auto placement = OsGuiGetSavedWindowPlacement();
+            if (m_format.m_window && !m_format.m_maximize) {
+                placement.x = m_format.m_pos.x; placement.y = m_format.m_pos.y;
+                placement.width = m_format.m_size.x ? m_format.m_size.x : 1024;
+                placement.height = m_format.m_size.y ? m_format.m_size.y : 768;
+            }
+            OsGuiRestoreWindowPlacement(state.window, placement, m_format.m_window && !m_format.m_maximize);
+            const auto fullscreen = !m_format.m_window ? SDL_WINDOW_FULLSCREEN :
+                m_format.m_maximize == 1 ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
+            if (fullscreen && !OsGuiSetWindowMode(state.window, m_format.m_window, m_format.m_maximize,
+                m_format.m_size, m_format.m_refreshRate)) throw std::runtime_error(SDL_GetError());
         }
         OsGuiSetGxWindow(state.window);
         state.Initialize();
@@ -1178,6 +1212,7 @@ int32_t CGxDeviceVulkan::DeviceSetFormat(const CGxFormat& format) {
 }
 void CGxDeviceVulkan::DeviceDestroy() {
     if (!m_native) return;
+    if (GxGetDeviceSelection().activeBackend == "vulkan") GxReportDeviceSelection("", {}, 0);
     if (OsGuiGetWindow(0) == m_native->window) OsGuiSetNativeWindowEventProc(nullptr, nullptr);
     ICursorDestroy();
     m_context = m_windowVisible = m_windowFocus = 0;

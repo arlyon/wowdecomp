@@ -6,13 +6,16 @@
 namespace {
 void SetClientRect(CGxDeviceD3d& device, CGxFormat* format = nullptr) {
     int width, height;
-    SDL_GetWindowSize(static_cast<SDL_Window*>(device.m_hwnd), &width, &height);
+    SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(device.m_hwnd), &width, &height);
     CRect rect;
     rect.minX = rect.minY = 0.0f;
     rect.maxX = static_cast<float>(width);
     rect.maxY = static_cast<float>(height);
     device.DeviceSetDefWindow(rect);
-    if (format) format->m_size = {width, height};
+    if (format && format->m_window) {
+        SDL_GetWindowSize(static_cast<SDL_Window*>(device.m_hwnd), &width, &height);
+        format->m_size = {width, height};
+    }
 }
 
 void WindowEvent(void* context, const SDL_WindowEvent& event) {
@@ -34,7 +37,7 @@ void WindowEvent(void* context, const SDL_WindowEvent& event) {
         case SDL_WINDOWEVENT_RESTORED:
         case SDL_WINDOWEVENT_DISPLAY_CHANGED: {
             int width, height;
-            SDL_GetWindowSize(static_cast<SDL_Window*>(device.m_hwnd), &width, &height);
+            SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(device.m_hwnd), &width, &height);
             if (width <= 0 || height <= 0) break;
             const CRect& current = device.DeviceDefWindow();
             if (device.m_windowVisible && current.maxX == width && current.maxY == height) break;
@@ -75,14 +78,26 @@ void CGxDeviceD3d::IUnloadD3dLib(HINSTANCE& library, LPDIRECT3D9& d3d) {
 int32_t CGxDeviceD3d::ICreateWindow(CGxFormat& format) {
     if (format.m_size.x < 0 || format.m_size.y < 0) return 0;
     uint32_t flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN | SDL_WINDOW_ALLOW_HIGHDPI;
-    if (!format.m_window) flags |= SDL_WINDOW_FULLSCREEN;
-    else if (format.m_maximize == 1) flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
-    else if (format.m_maximize == 2) flags |= SDL_WINDOW_BORDERLESS;
+    if (format.m_window && format.m_maximize == 2) flags |= SDL_WINDOW_BORDERLESS;
     else flags |= SDL_WINDOW_RESIZABLE;
     SDL_Window* window = SDL_CreateWindow("World of Warcraft", format.m_pos.x, format.m_pos.y,
         format.m_size.x ? format.m_size.x : 1024, format.m_size.y ? format.m_size.y : 768, flags);
     if (!window) {
         CGxDevice::Log("SDL_CreateWindow: %s", SDL_GetError());
+        return 0;
+    }
+    auto placement = OsGuiGetSavedWindowPlacement();
+    if (format.m_window && !format.m_maximize) {
+        placement.x = format.m_pos.x; placement.y = format.m_pos.y;
+        placement.width = format.m_size.x ? format.m_size.x : 1024;
+        placement.height = format.m_size.y ? format.m_size.y : 768;
+    }
+    OsGuiRestoreWindowPlacement(window, placement, format.m_window && !format.m_maximize);
+    const auto fullscreen = !format.m_window ? SDL_WINDOW_FULLSCREEN :
+        format.m_maximize == 1 ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
+    if (fullscreen && !OsGuiSetWindowMode(window, format.m_window, format.m_maximize, format.m_size, format.m_refreshRate)) {
+        CGxDevice::Log("SDL display mode request failed: %s", SDL_GetError());
+        SDL_DestroyWindow(window);
         return 0;
     }
     this->m_hwnd = window;
@@ -132,13 +147,32 @@ void CGxDeviceD3d::CapsWindowSizeInScreenCoords(CRect& rect) {
 int32_t CGxDeviceD3d::DeviceSetFormat(const CGxFormat& format) {
     CGxDevice::Log("CGxDeviceD3d::DeviceSetFormat():");
     this->Log(format);
+    if (!format.m_window && !OsGuiSupportsExclusiveFullscreen()) {
+        CGxDevice::Log("Exclusive fullscreen unsupported by the current SDL video driver");
+        return 0;
+    }
     if (OsGuiGetWindow(0) == this->m_hwnd) OsGuiSetNativeWindowEventProc(nullptr, nullptr);
+    OsWindowPlacement placement;
+    const bool restorePlacement = OsGuiGetWindowPlacement(this->m_hwnd, placement);
+    const auto previousFlags = this->m_hwnd ? SDL_GetWindowFlags(static_cast<SDL_Window*>(this->m_hwnd)) : 0;
+    if (restorePlacement && format.m_window && !format.m_maximize &&
+        !(previousFlags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED))) {
+        if (format.m_size.x > 0 && format.m_size.y > 0) {
+            placement.width = format.m_size.x; placement.height = format.m_size.y;
+        }
+    }
+    if (restorePlacement && !OsGuiSetSavedWindowPlacement(placement)) return 0;
     this->IDestroyD3d();
     this->m_context = 0;
     this->m_windowVisible = 0;
     if (this->m_ownhwnd) DetachWindow(*this);
     this->m_format = format;
     CGxFormat actual = format;
+    if (restorePlacement) {
+        placement = OsGuiGetSavedWindowPlacement();
+        actual.m_pos = {placement.x, placement.y};
+        if (actual.m_window) actual.m_size = {placement.width, placement.height};
+    }
     bool windowReady = false;
     if (this->m_ownhwnd) {
         windowReady = this->ICreateWindow(actual) != 0;
@@ -151,6 +185,16 @@ int32_t CGxDeviceD3d::DeviceSetFormat(const CGxFormat& format) {
         OsGuiSetNativeWindowEventProc(WindowEvent, this);
         if (actual.m_maximize != 2) SDL_ShowWindow(static_cast<SDL_Window*>(this->m_hwnd));
         this->m_windowVisible = actual.m_maximize != 2;
+        int width, height, drawableWidth, drawableHeight;
+        auto* window = static_cast<SDL_Window*>(this->m_hwnd);
+        SDL_GetWindowSize(window, &width, &height);
+        SDL_GetWindowSizeInPixels(window, &drawableWidth, &drawableHeight);
+        SDL_DisplayMode mode{};
+        const int display = SDL_GetWindowDisplayIndex(window);
+        const bool modeKnown = display >= 0 && SDL_GetCurrentDisplayMode(display, &mode) == 0;
+        CGxDevice::Log("SDL D3D window=%dx%d drawable=%dx%d display=%d modeKnown=%d mode=%dx%d@%d flags=%u (SDL-reported, not hardware exclusivity proof)",
+            width, height, drawableWidth, drawableHeight, display, modeKnown, mode.w, mode.h,
+            mode.refresh_rate, SDL_GetWindowFlags(window));
         this->ISetWindowFocus((SDL_GetWindowFlags(static_cast<SDL_Window*>(this->m_hwnd)) & SDL_WINDOW_INPUT_FOCUS) != 0);
         return 1;
     }
@@ -202,4 +246,13 @@ int32_t CGxDeviceD3d::DeviceCreate(void* window, const CGxFormat& format) {
     }
     this->DeviceDestroy();
     return 0;
+}
+
+bool CGxDeviceD3d::DeviceGetWindowLogicalSize(C2iVector& size) const {
+    if (!m_hwnd) return false;
+    int width, height;
+    SDL_GetWindowSize(static_cast<SDL_Window*>(m_hwnd), &width, &height);
+    if (width <= 0 || height <= 0) return false;
+    size = {width, height};
+    return true;
 }

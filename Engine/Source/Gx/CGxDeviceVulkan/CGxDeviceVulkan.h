@@ -12,6 +12,7 @@ public:
     int32_t DeviceCreate(void* window, const CGxFormat& format) override;
     void DeviceDestroy() override;
     int32_t DeviceSetFormat(const CGxFormat& format) override;
+    bool DeviceGetWindowLogicalSize(C2iVector& size) const override;
     void* DeviceWindow() override;
     int32_t DeviceWM(EGxWM wm, uintptr_t param1, uintptr_t param2) override;
     void CapsWindowSize(CRect& rect) override;

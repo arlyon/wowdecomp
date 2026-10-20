@@ -172,6 +172,7 @@ class CGxDevice {
     virtual void DeviceDestroy();
     virtual void DeviceEvictResources();
     virtual int32_t DeviceSetFormat(const CGxFormat& format);
+    virtual bool DeviceGetWindowLogicalSize(C2iVector& size) const { return false; }
     virtual void DeviceSetBaseMipLevel(uint32_t level);
     virtual void DeviceSetGamma(float gamma);
     virtual void DeviceSetGamma(const CGxGammaRamp& ramp);

@@ -1,6 +1,9 @@
 #include <cstdint>
 #include <cstring>
 #include <malloc.h>
+#if !defined(_WIN32)
+#include "Engine/Source/ConsoleBase/Posix/DisplaySettings.h"
+#endif
 #include "Engine/Source/ConsoleBase/ConsoleVar.h"
 #include "Engine/Source/BlizzardCore/SFile2-Core.h"
 #include "Engine/Source/ConsoleBase/ConsoleCommand.h"
@@ -782,6 +785,14 @@ CVar* CVar::LookupRegistered(const char* name) {
 // VERIFY: 3b3ad454 manual
 // OFFSET: 0x00767FC0
 CVar* CVar::Register(const char* name, const char* help, uint32_t flags, const char* value, bool (*callback)(CVar*, const char*, const char*, void*), uint32_t category, bool setCommand, void* arg, bool unk) {
+#if !defined(_WIN32)
+    // Consume old config SET commands and rewrite without these retired keys.
+    // No compatibility CVar is registered, latched or archived.
+    if (ConsoleIsRetiredDisplayCVar(name)) {
+        CVar::m_needsSave = true;
+        return nullptr;
+    }
+#endif
     if (!name || !*name || !value) {
         return nullptr;
     }

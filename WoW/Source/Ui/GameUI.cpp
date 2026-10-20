@@ -136,6 +136,7 @@
 #include "WoW/Source/Ui/UILCD/LCD.h"
 #include "WoW/Source/Ui/UIMacros.h"
 #include "WoW/Source/Ui/VideoOptions.h"
+#include "WoW/Source/Ui/NativeVideoOptions.h"
 #include "WoW/Source/Ui/WorldFrame.h"
 #include "WoW/Source/Ui/WorldMap.h"
 #include "WoW/Source/UIUtil/Camera.h"
@@ -1795,6 +1796,9 @@ void CGGameUI::InitializeFrameXML() {
         SErrDisplayAppFatalMessage("", "", 0);
     }
 
+#if !defined(_WIN32)
+    InstallNativeVideoOptions();
+#endif
     BugReportRegister();
     LoadAddOns(&status);
     FrameXML_RegisterLoadProgressCallback(nullptr, nullptr, 0);
@@ -7916,6 +7920,15 @@ static int32_t FindMovieFileDataID(int32_t movieId) {
 
     int32_t best = -1;
     int32_t bestResolution = 0;
+#if !defined(_WIN32)
+    C2iVector size{1024, 768};
+    if (g_theGxDevicePtr && g_theGxDevicePtr->m_context) {
+        const auto& output = g_theGxDevicePtr->DeviceDefWindow();
+        size = {static_cast<int>(output.maxX - output.minX), static_cast<int>(output.maxY - output.minY)};
+    }
+    int32_t width = size.x;
+    int32_t height = size.y;
+#else
     CVar* var = CVar::Lookup("gxResolution");
     const char* resolution;
 
@@ -7926,6 +7939,7 @@ static int32_t FindMovieFileDataID(int32_t movieId) {
     int32_t width;
     int32_t height;
     sscanf(resolution, "%dx%d", &width, &height);
+#endif
 
     for (int32_t i = 0; i < g_movieVariationDB.m_numRecords; i++) {
         MovieVariationRec* variation = g_movieVariationDB.GetRecordByIndex(i);

@@ -74,4 +74,75 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
     add_dependencies(FfxAlignmentTest GxSlangShaders)
     add_test(NAME FfxAlignmentGpu COMMAND FfxAlignmentTest)
     set_tests_properties(FfxAlignmentGpu PROPERTIES TIMEOUT 90 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    add_executable(WindowStartupTest WindowStartupTest.cpp WindowConsoleHost.cpp
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice_CVar.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice_Console.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/Posix/Window.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/ConsoleBase/ConsoleVar.cpp")
+    target_include_directories(WindowStartupTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(WindowStartupTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1)
+    target_compile_options(WindowStartupTest PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(WindowStartupTest PRIVATE -Wl,--gc-sections
+        -Wl,--wrap=_Z14CreateGxDevice6EGxApiPFlPvjmlERK9CGxFormat)
+    target_link_libraries(WindowStartupTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives}
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/libDB.a"
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/libConsoleBase.a"
+        -Wl,--end-group Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
+    add_test(NAME WindowStartup COMMAND WindowStartupTest)
+    set_tests_properties(WindowStartup PROPERTIES TIMEOUT 30 ENVIRONMENT "SDL_VIDEODRIVER=dummy" RUN_SERIAL TRUE)
+
+    add_executable(WindowPlacementTest WindowPlacementTest.cpp WindowConsoleHost.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/ConsoleBase/ConsoleVar.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/ConsoleBase/ConsoleCommand.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/Os/SDL/Gui.cpp")
+    target_include_directories(WindowPlacementTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(WindowPlacementTest PRIVATE WOWDECOMP_ARCH_64=1)
+    target_compile_options(WindowPlacementTest PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(WindowPlacementTest PRIVATE -Wl,--gc-sections)
+    target_link_libraries(WindowPlacementTest PRIVATE -Wl,--start-group ${ffxArchives} -Wl,--end-group PkgConfig::SDL2 curl dl m)
+    add_test(NAME WindowPlacement COMMAND WindowPlacementTest)
+    set_tests_properties(WindowPlacement PROPERTIES TIMEOUT 30 ENVIRONMENT "SDL_VIDEODRIVER=dummy")
+
+    add_executable(WindowSettingsTest WindowSettingsTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice_Console.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/Posix/Window.cpp")
+    target_include_directories(WindowSettingsTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(WindowSettingsTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_link_libraries(WindowSettingsTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
+    add_dependencies(WindowSettingsTest GxSlangShaders)
+    add_test(NAME WindowSettingsGpu COMMAND WindowSettingsTest)
+    set_tests_properties(WindowSettingsGpu PROPERTIES TIMEOUT 60 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    add_executable(NativeVideoOptionsTest NativeVideoOptionsTest.cpp)
+    target_include_directories(NativeVideoOptionsTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_link_libraries(NativeVideoOptionsTest PRIVATE -Wl,--start-group
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/liblua.a" ${ffxArchives} -Wl,--end-group PkgConfig::SDL2 curl dl m)
+    add_test(NAME NativeVideoOptions COMMAND NativeVideoOptionsTest
+        "${CMAKE_CURRENT_SOURCE_DIR}/test_native_video_options.lua"
+        "${WOWDECOMP_ROOT}/WoW/Source/Ui/NativeVideoOptions.lua")
+endif ()
+
+add_executable(DeviceSelectionTest DeviceSelectionTest.cpp "${WOWDECOMP_ROOT}/Engine/Source/Gx/DeviceSelection.cpp")
+target_include_directories(DeviceSelectionTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_definitions(DeviceSelectionTest PRIVATE WOWDECOMP_VULKAN=1)
+target_compile_options(DeviceSelectionTest PRIVATE -UNDEBUG)
+add_test(NAME DeviceSelection COMMAND DeviceSelectionTest)
+if (TARGET Vulkan::Vulkan)
+    add_executable(PresentModeTest PresentModeTest.cpp "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxFormat.cpp")
+    target_include_directories(PresentModeTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_link_libraries(PresentModeTest PRIVATE Vulkan::Vulkan)
+    add_test(NAME PresentMode COMMAND PresentModeTest)
+    add_executable(DeviceEnumerationTest DeviceEnumerationTest.cpp "${WOWDECOMP_ROOT}/Engine/Source/Gx/DeviceSelection.cpp")
+    target_include_directories(DeviceEnumerationTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(DeviceEnumerationTest PRIVATE WOWDECOMP_VULKAN=1)
+    target_compile_options(DeviceEnumerationTest PRIVATE -UNDEBUG)
+    target_link_libraries(DeviceEnumerationTest PRIVATE Vulkan::Vulkan)
+    add_test(NAME DeviceEnumeration COMMAND DeviceEnumerationTest)
+    set_tests_properties(DeviceEnumeration PROPERTIES TIMEOUT 30 LABELS "GPU"
+        ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
 endif ()

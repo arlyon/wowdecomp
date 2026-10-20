@@ -216,6 +216,9 @@ class CGxDeviceD3d : public CGxDevice {
     /* 3970 */ int32_t m_ownhwnd;
     /* 3974 */ HINSTANCE m_d3dLib;
     /* 3978 */ LPDIRECT3D9 m_d3d;
+#if !defined(_WIN32)
+    uint32_t m_adapterOrdinal = 0;
+#endif
     /* 397C */ LPDIRECT3DDEVICE9 m_d3dDevice;
     /* 3980 */ D3DCAPS9 m_d3dCaps;
     /* 3AB0 */ int32_t m_d3dIsHwDevice;
@@ -260,6 +263,9 @@ class CGxDeviceD3d : public CGxDevice {
     virtual void DeviceDestroy();
     virtual void DeviceEvictResources();
     virtual int32_t DeviceSetFormat(const CGxFormat& format);
+#if !defined(_WIN32)
+    bool DeviceGetWindowLogicalSize(C2iVector& size) const override;
+#endif
     virtual void DeviceSetBaseMipLevel(uint32_t level);
     virtual void DeviceSetGamma(float gamma);
     virtual void DeviceSetGamma(const CGxGammaRamp& ramp);

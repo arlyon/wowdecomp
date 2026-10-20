@@ -1,5 +1,7 @@
 #include <cerrno>
 #include <cstdio>
+#include <cstring>
+#include <vector>
 #include <SDL.h>
 #include "Engine/Source/Os/Window.h"
 #include "Engine/Source/Os/Input.h"
@@ -7,9 +9,22 @@
 
 namespace {
 SDL_Window* s_window;
+OsWindowPlacement s_normal;
 bool s_resizeLock;
 OsNativeWindowEventProc s_windowProc;
 void* s_windowContext;
+bool PlacementDisplay(const OsWindowPlacement& placement, int& display) {
+    const int count = SDL_GetNumVideoDisplays();
+    if (count <= 0) return false;
+    std::vector<OsMonitorBounds> monitors;
+    for (int index = 0; index < count; ++index) {
+        SDL_Rect bounds;
+        if (SDL_GetDisplayBounds(index, &bounds) != 0) return false;
+        monitors.push_back({bounds.x, bounds.y, bounds.w, bounds.h});
+    }
+    display = static_cast<int>(OsSelectWindowMonitor(placement, monitors.data(), monitors.size()));
+    return true;
+}
 }
 
 void* OsGuiGetWindow(int32_t type) {
@@ -36,6 +51,10 @@ void OsGuiSetNativeWindowEventProc(OsNativeWindowEventProc proc, void* context) 
 }
 
 void OsGuiDispatchNativeWindowEvent(const SDL_WindowEvent& event) {
+    if (s_window && event.windowID == SDL_GetWindowID(s_window)) {
+        OsWindowPlacement placement;
+        OsGuiGetWindowPlacement(s_window, placement);
+    }
     if (s_windowProc) s_windowProc(s_windowContext, event);
 }
 
@@ -107,4 +126,95 @@ int32_t OsGuiMessageBox(void* parentWindow, int32_t style, const char* message, 
 
 void OsGuiBeep() {
     std::fputc('\a', stderr);
+}
+
+bool OsGuiSetSavedWindowPlacement(const OsWindowPlacement& placement) {
+    int display;
+    if (!PlacementDisplay(placement, display)) return false;
+    SDL_Rect bounds{};
+    if (SDL_GetDisplayUsableBounds(display, &bounds) != 0 || bounds.w <= 0 || bounds.h <= 0) return false;
+    s_normal = OsBoundWindowPlacement(placement, bounds.x, bounds.y, bounds.w, bounds.h);
+    return true;
+}
+
+OsWindowPlacement OsGuiGetSavedWindowPlacement() { return s_normal; }
+
+bool OsGuiGetWindowPlacement(void* handle, OsWindowPlacement& placement) {
+    auto* window = static_cast<SDL_Window*>(handle);
+    if (!window) return false;
+    const auto flags = SDL_GetWindowFlags(window);
+    if (!(flags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MINIMIZED))) {
+        s_normal.maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+        if (!s_normal.maximized) {
+            SDL_GetWindowPosition(window, &s_normal.x, &s_normal.y);
+            SDL_GetWindowSize(window, &s_normal.width, &s_normal.height);
+        }
+    }
+    placement = s_normal;
+    return placement.width > 0 && placement.height > 0;
+}
+
+void OsGuiRestoreWindowPlacement(void* handle, const OsWindowPlacement& placement, bool normalMode) {
+    auto* window = static_cast<SDL_Window*>(handle);
+    if (!window) return;
+    s_normal = placement;
+    SDL_SetWindowPosition(window, placement.x, placement.y);
+    int width, height;
+    SDL_GetWindowSize(window, &width, &height);
+    if (width != placement.width || height != placement.height)
+        SDL_SetWindowSize(window, placement.width, placement.height);
+    if (normalMode && placement.maximized) SDL_MaximizeWindow(window);
+}
+
+bool OsGuiGetWindowDesktopMode(void* handle, const OsWindowPlacement& placement, C2iVector& size, uint32_t& refresh) {
+    int display = handle ? SDL_GetWindowDisplayIndex(static_cast<SDL_Window*>(handle)) : -1;
+    if (display < 0 && !PlacementDisplay(placement, display)) return false;
+    SDL_DisplayMode mode{};
+    if (SDL_GetDesktopDisplayMode(display, &mode) != 0 || mode.w <= 0 || mode.h <= 0) return false;
+    size = {mode.w, mode.h};
+    refresh = mode.refresh_rate;
+    return true;
+}
+
+bool OsGuiSupportsExclusiveFullscreen() {
+    const auto* driver = SDL_GetCurrentVideoDriver();
+    return driver && std::strcmp(driver, "wayland") && std::strcmp(driver, "dummy");
+}
+
+bool OsGuiSetWindowMode(void* handle, bool windowed, int maximize, const C2iVector& size, uint32_t refresh) {
+    auto* window = static_cast<SDL_Window*>(handle);
+    // Wayland exposes compositor fullscreen, not exclusive monitor mode ownership.
+    if (!windowed && !OsGuiSupportsExclusiveFullscreen()) {
+        SDL_SetError("Exclusive fullscreen is unsupported by this SDL adapter; select windowed fullscreen explicitly");
+        return false;
+    }
+    const uint32_t requested = !windowed ? SDL_WINDOW_FULLSCREEN : maximize == 1 ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
+    const auto previous = SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP;
+    if (!windowed) {
+        SDL_DisplayMode mode{};
+        mode.w = size.x; mode.h = size.y; mode.refresh_rate = refresh;
+        SDL_DisplayMode current{};
+        if (SDL_GetWindowDisplayMode(window, &current) != 0) return false;
+        if ((current.w != mode.w || current.h != mode.h || (refresh && current.refresh_rate != mode.refresh_rate))
+            && SDL_SetWindowDisplayMode(window, &mode) != 0) return false;
+    }
+    if (previous != requested && SDL_SetWindowFullscreen(window, requested) != 0) return false;
+    if (!windowed) {
+        SDL_DisplayMode actual{};
+        if (SDL_GetWindowDisplayMode(window, &actual) != 0) return false;
+        if (actual.w != size.x || actual.h != size.y || (refresh && actual.refresh_rate != static_cast<int>(refresh)) ||
+            (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != SDL_WINDOW_FULLSCREEN) {
+            SDL_SetError("SDL did not fulfill the requested exclusive display mode");
+            return false;
+        }
+    }
+    return true;
+}
+
+bool OsGuiGetWindowMode(void* handle, OsWindowMode& mode) {
+    if (!handle) return false;
+    const auto flags = SDL_GetWindowFlags(static_cast<SDL_Window*>(handle)) & SDL_WINDOW_FULLSCREEN_DESKTOP;
+    mode = flags == SDL_WINDOW_FULLSCREEN_DESKTOP ? OsWindowMode::WindowedFullscreen :
+        flags == SDL_WINDOW_FULLSCREEN ? OsWindowMode::ExclusiveFullscreen : OsWindowMode::Normal;
+    return true;
 }

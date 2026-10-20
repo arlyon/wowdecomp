@@ -1,3 +1,4 @@
+#include "WoW/Source/Ui/LegacyDisplayCompatibility.h"
 #include "GlueMgr.h"
 #include <cstdint>
 #include <cstdio>
@@ -316,6 +317,9 @@ static int32_t Script_SetCVar(lua_State* L) {
     }
 
     const char* name = lua_tolstring(L, 1, nullptr);
+#if !defined(_WIN32)
+    if (ConsoleIsRetiredDisplayCVar(name)) return 0;
+#endif
     CVar* var = CVar::LookupRegistered(name);
 
     if (!var) {
@@ -621,6 +625,9 @@ static int32_t Script_GetCVar(lua_State* L) {
         return 0;
     }
 
+#if !defined(_WIN32)
+    if (PushLegacyDisplayValue(L, lua_tolstring(L, 1, nullptr))) return 1;
+#endif
     CVar* var = CVar::LookupRegistered(lua_tolstring(L, 1, nullptr));
 
     if (!var) {
@@ -640,6 +647,9 @@ static int32_t Script_GetCVarDefault(lua_State* L) {
         return 0;
     }
 
+#if !defined(_WIN32)
+    if (PushLegacyDisplayValue(L, lua_tolstring(L, 1, nullptr))) return 1;
+#endif
     CVar* var = CVar::LookupRegistered(lua_tolstring(L, 1, nullptr));
 
     if (!var) {
@@ -813,6 +823,15 @@ int32_t Script_IsLinuxClient(lua_State* L) {
 // VERIFY: f53e291b auto
 // OFFSET: 0x004DD610
 int32_t Script_GetMovieResolution(lua_State* L) {
+#if !defined(_WIN32)
+    C2iVector size{1024, 768};
+    if (g_theGxDevicePtr && g_theGxDevicePtr->m_context) {
+        const auto& output = g_theGxDevicePtr->DeviceDefWindow();
+        size = {static_cast<int>(output.maxX - output.minX), static_cast<int>(output.maxY - output.minY)};
+    }
+    lua_pushnumber(L, size.x);
+    return 1;
+#else
     CVar* resolution = CVar::Lookup("gxResolution");
 
     if (!resolution || !resolution->m_stringValue.m_str) {
@@ -825,6 +844,7 @@ int32_t Script_GetMovieResolution(lua_State* L) {
     lua_pushnumber(L, width);
 
     return 1;
+#endif
 }
 
 // VERIFY: 63dd1965 auto

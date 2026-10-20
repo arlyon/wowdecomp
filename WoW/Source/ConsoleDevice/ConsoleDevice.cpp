@@ -12,6 +12,7 @@
 #include "Engine/Source/Gx/CGxDevice/Types.h"
 #include "Engine/Source/Gx/CGxFormat.h"
 #include "Engine/Source/Gx/Gx.h"
+#include "Engine/Source/Gx/DeviceSelection.h"
 #include "Engine/Source/Os/Gui.h"
 #include "Engine/Source/Os/Input.h"
 #include "Engine/Source/Os/System.h"
@@ -183,6 +184,15 @@ DefaultSettings* ConsoleDeviceGetDefaultSettings() {
 // VERIFY: d88758a1 auto
 // OFFSET: 0x00769D40
 void ConsoleDeviceDestroy() {
+#if !defined(_WIN32)
+    OsWindowPlacement placement;
+    if (OsGuiGetWindowPlacement(g_theGxDevicePtr->DeviceWindow(), placement)) {
+        char value[128];
+        std::snprintf(value, sizeof(value), "%d,%d,%d,%d,%d", placement.x, placement.y,
+            placement.width, placement.height, placement.maximized ? 1 : 0);
+        if (auto* var = CVar::Lookup("windowPlacement")) var->Set(value, true, false, false, true);
+    }
+#endif
     g_theGxDevicePtr->RemoveStereoChangedCallback(StereoChangedCallback);
     s_cvVideoOptionsVersion->Update();
     GxDevDestroy(s_device);
@@ -193,6 +203,10 @@ void ConsoleDeviceDestroy() {
 // VERIFY: 9ae0e177 manual
 // OFFSET: 0x00769E10
 void ValidateFormatMonitor(CGxFormat& format) {
+#if !defined(_WIN32)
+    // POSIX formats are resolved from normal placement or native desktop mode, not legacy mode lists.
+    return;
+#endif
     static C2iVector s_resolutions[] = {
         { 1600, 1200 },
         { 1280, 1024 },
@@ -271,7 +285,15 @@ void ConsoleDeviceDefaults(OPTION_PAGE page) {
     s_cvFixedFunction->Set("0", true, false, false, true);
 
     if (page == OPTION_PAGE_0) {
+#if !defined(_WIN32)
+        const auto window = s_requestedFormat.m_window;
+        const auto maximize = s_requestedFormat.m_maximize;
+#endif
         s_requestedFormat = *s_defaults.m_format;
+#if !defined(_WIN32)
+        s_requestedFormat.m_window = window;
+        s_requestedFormat.m_maximize = maximize;
+#endif
         SetGxCVars(s_requestedFormat);
         CCGxRestart(nullptr, nullptr);
     }
@@ -311,6 +333,14 @@ void RemoveConsoleDeviceDefaultCallback(void (*callback)(OPTION_PAGE page)) {
 void ConsoleDeviceInitialize(const char* title, bool unused_a2, bool unused_a3) {
     GxLogOpen();
 
+#if !defined(_WIN32)
+    // These restart-only preferences do not depend on detected hardware. Resolve
+    // them before the first probe; the remaining CVars need hardware defaults.
+    const auto* backendPreference = CVar::Register("gxBackend", "Renderer backend (client restart required)", 3, "auto", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
+    const auto* adapterPreference = CVar::Register("gxAdapter", "GPU UUID and driver ID (client restart required)", 3, "auto", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
+    GxConfigureDeviceSelection(backendPreference->m_stringValue.m_str, adapterPreference->m_stringValue.m_str);
+#endif
+
     s_cvHwDetect = CVar::Register("hwDetect", "do hardware detection", 1, "1", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
     ConsoleDetectDetectHardware(s_hardware, s_hwChanged);
     s_hardwareDetected = true;
@@ -344,6 +374,7 @@ void ConsoleDeviceInitialize(const char* title, bool unused_a2, bool unused_a3) 
 
     GxLog("ConsoleDeviceInitialize(): hwDetect = %d, hwChanged = %d", s_hwDetect, s_hwChanged);
 
+#if defined(_WIN32)
     if (CmdLineGetBool(static_cast<CMDOPT>(CMD_RES_800x600))) {
         s_requestedFormat.m_size.x = 800;
         s_requestedFormat.m_size.y = 600;
@@ -360,6 +391,8 @@ void ConsoleDeviceInitialize(const char* title, bool unused_a2, bool unused_a3) 
         s_requestedFormat.m_size.x = 1600;
         s_requestedFormat.m_size.y = 1200;
     }
+
+#endif
 
     if (s_cvFixedFunction->m_intValue) {
         s_requestedFormat.m_fixedFunction[4] = 0;
@@ -401,6 +434,14 @@ void ConsoleDeviceInitialize(const char* title, bool unused_a2, bool unused_a3) 
         api = GxApi_D3d9Ex;
     }
 
+#if !defined(_WIN32)
+#if defined(WOWDECOMP_VULKAN)
+    api = GxGetDeviceSelection().effectiveBackend == "vulkan" ? GxApi_Vulkan : GxApi_D3d9;
+#else
+    api = GxApi_D3d9;
+#endif
+#endif
+
     s_requestedFormat.m_fixLag = s_cvGxFixLag->m_intValue != 0;
     s_requestedFormat.m_hwTnL = !CmdLineGetBool(CMD_SW_TNL);
 
@@ -415,6 +456,17 @@ void ConsoleDeviceInitialize(const char* title, bool unused_a2, bool unused_a3) 
     s_requestedFormat.m_window = window;
     s_desktopFormat.m_window = window;
 
+#if !defined(_WIN32)
+    auto* placement = CVar::Register("windowPlacement", "Normal window placement in window units", 1,
+        "0,0,1024,768,0", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
+    const bool bounded = OsGuiSetSavedWindowPlacement(OsParseWindowPlacement(placement->m_stringValue.m_str));
+    const auto normal = OsGuiGetSavedWindowPlacement();
+    if (!bounded || !ConsoleDeviceResolveWindowFormat(s_requestedFormat, normal)) {
+        OsGuiMessageBox(nullptr, 0, "Unable to query the selected monitor desktop mode", title);
+        std::exit(1);
+    }
+    s_desktopFormat.m_size = s_fallbackFormat.m_size = s_requestedFormat.m_size;
+#endif
     bool desktopTried = false;
     CGxFormat format = s_requestedFormat;
     ValidateFormatMonitor(format);
@@ -451,7 +503,11 @@ void ConsoleDeviceInitialize(const char* title, bool unused_a2, bool unused_a3) 
 
                 OsGuiMessageBox(nullptr, 0, message, caption);
                 GxLogClose();
+#if defined(_WIN32)
                 exit(0);
+#else
+                exit(1);
+#endif
             }
 
             format = s_desktopFormat;
@@ -526,5 +582,9 @@ void ConsoleDeviceInitialize(const char* title, bool unused_a2, bool unused_a3) 
 
     OsGuiMessageBox(nullptr, 0, message, caption);
     GxLogClose();
+#if defined(_WIN32)
     exit(0);
+#else
+    exit(1);
+#endif
 }

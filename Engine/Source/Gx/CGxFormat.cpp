@@ -13,6 +13,7 @@ CGxFormat::CGxFormat() {
     this->m_stereoEnabled = false;
     this->m_multisampleCount = 1;
     this->m_aspect = true;
+    this->m_vsync = 0;
 
     for (uint32_t i = 0; i < 6; i++) {
         this->m_fixedFunction[i] = -1;

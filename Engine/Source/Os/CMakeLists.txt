@@ -17,7 +17,7 @@ target_include_directories(Os
 
 if (WOWDECOMP_POSIX)
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET GLOBAL sdl2>=2.0.22)
+    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET GLOBAL sdl2>=2.26.0)
     target_link_libraries(Os PRIVATE Threads::Threads ${CMAKE_DL_LIBS} PkgConfig::SDL2 Storm BlizzardCore)
 endif ()
 
