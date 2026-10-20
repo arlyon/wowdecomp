@@ -3,7 +3,10 @@
 #include "Engine/Source/Gx/ShadowCoverage.h"
 #include <optional>
 
+class CM2Model;
+class M2Batch;
 namespace M2Shadow {
+float BatchOpacity(const CM2Model& model,const M2Batch& batch);
 // Original authored batch/material selection, shared by the legacy shadow
 // collector and directional RT. No texture readiness or lighting flag enters
 // this decision: opaque casters cannot be delayed by diffuse/emission loading.

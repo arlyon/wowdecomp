@@ -293,7 +293,8 @@ if (WOWDECOMP_WORLD_ASSETS AND WOWDECOMP_VULKAN_CLIENT_BUILD AND TARGET Vulkan::
     add_test(NAME TerrainDistanceWorldGpu COMMAND TerrainDistanceWorldTest --elwynn-distance)
     add_test(NAME TerrainDistanceNorthrendGpu COMMAND TerrainDistanceWorldTest --northrend-distance)
     add_test(NAME RasterWorldFeaturesGpu COMMAND TerrainDistanceWorldTest --raster-features)
-    set_tests_properties(TerrainDistanceWorldGpu TerrainDistanceNorthrendGpu RasterWorldFeaturesGpu PROPERTIES TIMEOUT 180
+    add_test(NAME WorldRayVisibilityDiagnosticGpu COMMAND TerrainDistanceWorldTest --rt-visibility)
+    set_tests_properties(TerrainDistanceWorldGpu TerrainDistanceNorthrendGpu RasterWorldFeaturesGpu WorldRayVisibilityDiagnosticGpu PROPERTIES TIMEOUT 180
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terrain-world"
         ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~;WOWDECOMP_TEST_WORLD_ASSETS=${WOWDECOMP_WORLD_ASSETS}")
 else ()

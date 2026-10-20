@@ -6,6 +6,7 @@
 #include <cstdint>
 #include "Engine/Source/Gx/CGxBuf.h"
 #include "Engine/Source/Gx/FarResources.h"
+#include "Engine/Source/Gx/ShadowScene.h"
 #include "Engine/Source/Gx/CGxDevice/CGxShader.h"
 #include "Engine/Source/Gx/CGxDevice/EmergencyMem.h"
 #include "Engine/Source/Gx/CGxDevice/Types.h"
@@ -203,6 +204,11 @@ class CGxDevice {
     // Optional world-only target scope; unsupported backends keep their existing path.
     virtual bool SceneBeginWorld(bool = false, uint64_t = 0) { return false; }
     virtual void SceneEndWorld() {}
+    virtual void SceneConfigureShadows(bool, bool) {}
+    virtual bool SceneShadowsRequested() const { return false; }
+    virtual bool SceneShadowsSupported() const { return false; }
+    virtual void SceneSetShadowFrame(std::shared_ptr<const GxShadow::Frame>) {}
+    virtual GxShadow::Status SceneShadowStatus() const { GxShadow::Status s; s.result=GxShadow::FrameResult::Unavailable; return s; }
     virtual void SceneRequestHdrLut(const char*, bool = false) {}
     virtual const char* SceneHdrLutStatus() const { return "LUT unavailable on this renderer"; }
     virtual bool SceneSetHdrLut(const float*, uint32_t size) { return size == 0; }

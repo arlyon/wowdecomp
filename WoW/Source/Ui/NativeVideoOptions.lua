@@ -347,6 +347,68 @@ do
     refresh()
 end
 
+-- A real world-query diagnostic, deliberately not advertised as finished RT lighting.
+do
+    local panel = CreateFrame("Frame", "NativeRayVideoPanel", VideoOptionsFramePanelContainer)
+    panel.name = "Ray Visibility (Development)"
+    panel.controls = {}
+    panel:Hide()
+    panel:SetAllPoints(VideoOptionsFramePanelContainer)
+    local function label(y, text, font)
+        local item = panel:CreateFontString(nil, "ARTWORK", font or "GameFontHighlightSmall")
+        item:SetPoint("TOPLEFT", 16, y)
+        item:SetWidth(330)
+        item:SetJustifyH("LEFT")
+        item:SetText(text)
+        return item
+    end
+    label(-16, "World Ray-query Visibility", "GameFontNormalLarge")
+    label(-48, "Development view of actual world ray queries. Directional material lighting, GI and volumetric fog are NOT integrated yet.")
+    local enabled = CreateFrame("CheckButton", "NativeRayVisibilityCheck", panel, "UICheckButtonTemplate")
+    enabled:SetPoint("TOPLEFT", 16, -116)
+    label(-124, "       Show world visibility mask", "GameFontHighlight")
+    local strict = CreateFrame("CheckButton", "NativeRayStrictCheck", panel, "UICheckButtonTemplate")
+    strict:SetPoint("TOPLEFT", 16, -158)
+    label(-166, "       Refuse incomplete caster frames", "GameFontHighlight")
+    local status = label(-214, "")
+    label(-302, "White = visible to the directional light; dark = occluded; grey = outside the diagnostic region. Strict checks the current caster frame, not full corpus acceptance.")
+    label(-368, "Apply saves changes. Cancel restores the selection. Default: visibility Off, strict On.")
+    local originalOn, originalStrict, pendingOn, pendingStrict = 0, 1, 0, 1
+    local function showStatus()
+        local current = GetNativeShadowStatus()
+        status:SetText(current.supported and (tostring(current.status).."\nCaster triangles: "..tostring(current.triangles))
+            or "Ray queries unavailable on this renderer/device. Saved preferences are retained.")
+        if current.supported then enabled:Enable(); strict:Enable()
+        else enabled:Disable(); strict:Disable() end
+    end
+    local function show()
+        enabled:SetChecked(pendingOn == 1)
+        strict:SetChecked(pendingStrict == 1)
+        showStatus()
+    end
+    local function refresh()
+        originalOn = tonumber(GetCVar("nativeRayTracing")) or 0
+        originalStrict = tonumber(GetCVar("nativeRayStrict")) or 1
+        pendingOn, pendingStrict = originalOn, originalStrict
+        show()
+    end
+    local function okay()
+        if not GetNativeShadowStatus().supported then refresh(); return end
+        SetCVar("nativeRayTracing", tostring(pendingOn))
+        SetCVar("nativeRayStrict", tostring(pendingStrict))
+        refresh()
+    end
+    local function cancel() pendingOn, pendingStrict = originalOn, originalStrict; show() end
+    local function defaults() pendingOn, pendingStrict = 0, 1; show(); VideoOptionsFrameApply:Enable() end
+    enabled:SetScript("OnClick", function(self) pendingOn = self:GetChecked() and 1 or 0; VideoOptionsFrameApply:Enable() end)
+    strict:SetScript("OnClick", function(self) pendingStrict = self:GetChecked() and 1 or 0; VideoOptionsFrameApply:Enable() end)
+    local elapsed = 0
+    panel:SetScript("OnUpdate", function(self, delta) elapsed = elapsed + delta; if elapsed >= 1 then elapsed = 0; showStatus() end end)
+    panel:SetScript("OnShow", show)
+    VideoOptionsPanel_OnLoad(panel, okay, cancel, defaults, refresh)
+    refresh()
+end
+
 -- One HDR transaction in the stock Video Settings category list. Only the 3D
 -- scene is tone mapped/graded; native UI and the HDR-Off glow path are untouched.
 do

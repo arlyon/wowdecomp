@@ -22,6 +22,7 @@
 #include <SDL_vulkan.h>
 #include <vulkan/vulkan.h>
 #include <algorithm>
+#include <functional>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -139,6 +140,31 @@ struct NativeShader {
 struct Pipeline {
     VkPipeline handle = VK_NULL_HANDLE;
 };
+struct ShadowGpuFrame {
+    VkDevice device=VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptors=VK_NULL_HANDLE;
+    VkPipelineLayout layout=VK_NULL_HANDLE;
+    VkDescriptorPool pool=VK_NULL_HANDLE;
+    VkPipeline pipeline=VK_NULL_HANDLE;
+    VkShaderModule module=VK_NULL_HANDLE;
+    NativeImage output;
+    std::function<void(NativeImage&)> releaseImage;
+    std::vector<VkSampler> samplers;
+    GxVulkan::Buffer uniforms,triangles;
+    std::unique_ptr<GxVulkan::AccelerationScene> scene;
+    std::shared_ptr<const GxShadow::Frame> source;
+    ~ShadowGpuFrame(){
+        if(pipeline)vkDestroyPipeline(device,pipeline,nullptr);
+        if(module)vkDestroyShaderModule(device,module,nullptr);
+        if(layout)vkDestroyPipelineLayout(device,layout,nullptr);
+        if(pool)vkDestroyDescriptorPool(device,pool,nullptr);
+        if(descriptors)vkDestroyDescriptorSetLayout(device,descriptors,nullptr);
+        for(auto sampler:samplers)vkDestroySampler(device,sampler,nullptr);
+        if(releaseImage && output.image)releaseImage(output);
+        GxVulkan::DestroyBuffer(device,uniforms);GxVulkan::DestroyBuffer(device,triangles);
+        scene.reset();
+    }
+};
 
 void WindowEvent(void* context, const SDL_WindowEvent& event) {
     auto& device = *static_cast<CGxDeviceVulkan*>(context);
@@ -177,6 +203,12 @@ struct CGxDeviceVulkan::State {
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties{};
     GxVulkan::RayQueryCapabilities rayQueryCapabilities;
+    bool shadowRequested=false,shadowStrict=true;
+    std::shared_ptr<const GxShadow::Frame> shadowSource;
+    GxShadow::Status shadowStatus;
+    std::vector<std::shared_ptr<ShadowGpuFrame>> shadowRetired;
+    std::shared_ptr<ShadowGpuFrame> shadowCurrent;
+    void RecordWorldShadowVisibility();
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
@@ -795,6 +827,7 @@ bool CGxDeviceVulkan::State::BeginFrame() {
     GX_VK(vkWaitForFences(device, 1, &fence, true, UINT64_MAX));
     completedSerial = submittedSerial;
     CollectFar();
+    shadowCurrent.reset();shadowRetired.clear();
     for (auto framebuffer : framebuffers) vkDestroyFramebuffer(device, framebuffer, nullptr);
     framebuffers.clear();
     for (auto& image : retiredImages) DestroyImage(image);
@@ -923,6 +956,7 @@ void CGxDeviceVulkan::State::Destroy() {
 #endif
         completedSerial = submittedSerial;
         CollectFar(true);
+        shadowSource.reset();shadowCurrent.reset();shadowRetired.clear();
         for (auto& pipeline : pipelines) vkDestroyPipeline(device, pipeline.second.handle, nullptr);
         pipelines.clear();
         for (auto& pass : renderPasses) vkDestroyRenderPass(device, pass.second, nullptr);
@@ -1884,6 +1918,7 @@ void CGxDeviceVulkan::XformSetProjection(const C44Matrix& matrix) {
 #include "TemporalResolve.inl"
 #include "HdrScene.inl"
 #include "FarResources.inl"
+#include "WorldShadows.inl"
 
 void CGxDeviceVulkan::State::PollFarCompletion() {
     if (!device || !fence) return;
@@ -2070,10 +2105,28 @@ void CGxDeviceVulkan::SceneForgetMotionOwner(const void* owner) {
     m_native->temporalDraws.ForgetOwner(owner);
     if (m_native->motionOwner == owner) SceneSetMotionOwner(nullptr, false);
 }
+void CGxDeviceVulkan::SceneConfigureShadows(bool requested,bool strict) {
+    m_native->shadowRequested=requested;m_native->shadowStrict=strict;
+    if(!requested){m_native->shadowSource.reset();m_native->shadowStatus={};}
+    else if(!m_native->rayQueryCapabilities.Available())m_native->shadowStatus.result=GxShadow::FrameResult::Unavailable;
+    else if(m_native->shadowStatus.result==GxShadow::FrameResult::Disabled)m_native->shadowStatus.result=GxShadow::FrameResult::PendingGeometry;
+}
+bool CGxDeviceVulkan::SceneShadowsSupported() const {return m_native->rayQueryCapabilities.Available();}
+bool CGxDeviceVulkan::SceneShadowsRequested() const {
+    return m_native->shadowRequested && m_native->rayQueryCapabilities.Available() && m_native->worldActive;
+}
+void CGxDeviceVulkan::SceneSetShadowFrame(std::shared_ptr<const GxShadow::Frame> frame){
+    if(SceneShadowsRequested()){
+        m_native->shadowSource=std::move(frame);m_native->EndPass();m_native->RecordWorldShadowVisibility();
+    }
+}
+GxShadow::Status CGxDeviceVulkan::SceneShadowStatus() const {return m_native->shadowStatus;}
 bool CGxDeviceVulkan::SceneBeginWorld(bool temporal, uint64_t scene) {
     auto& state = *m_native;
     if (temporal && !SceneTemporalSupported()) return false;
-    if ((!temporal && !state.worldTargetEnabled && !state.hdrRequested && state.sceneScale == 1.f) || !m_context || !state.BeginFrame()) return false;
+    if ((!temporal && !state.worldTargetEnabled && !state.hdrRequested && !(state.shadowRequested && state.rayQueryCapabilities.Available()) && state.sceneScale == 1.f) || !m_context || !state.BeginFrame()) return false;
+    state.shadowSource.reset();state.shadowCurrent.reset();
+    if(state.shadowRequested){state.shadowStatus={};state.shadowStatus.result=GxShadow::FrameResult::PendingGeometry;}
     // One world history producer per acquired frame. Readback splits do not
     // advance bufferFrame and must not create a second temporal generation.
     if (state.historyPending || (temporal && state.temporalWorldFrame == state.bufferFrame)) return false;
@@ -2202,6 +2255,13 @@ void CGxDeviceVulkan::SceneEndWorld() {
     auto& state = *m_native;
     if (!state.worldActive) return;
     state.EndPass();
+    // FFX owns its colour snapshot and may overwrite raster depth. Query before
+    // FFX, publish the diagnostic afterwards rather than postprocess the mask.
+    if(state.shadowCurrent){
+        state.Barrier(state.worldColour.image,state.worldColour.aspect,1,1,state.worldColour.layout,VK_IMAGE_LAYOUT_GENERAL);
+        state.worldColour.layout=VK_IMAGE_LAYOUT_GENERAL;
+        GxVulkan::BlitWorldImage(state.command,state.shadowCurrent->output.image,state.worldColour.image,VK_IMAGE_ASPECT_COLOR_BIT,state.renderRect,state.renderRect,VK_FILTER_NEAREST);
+    }
     try {
         if (state.hdrAborted) state.PublishClassic();
         else if (state.temporalActive || state.sceneScale != 1.f) state.ResolveWorld();

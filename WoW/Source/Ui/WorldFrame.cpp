@@ -87,6 +87,7 @@
 #include "WoW/Source/WorldClient/MapEntity.h"
 #include "WoW/Source/WorldClient/MapWeather.h"
 #include "WoW/Source/WorldClient/World.h"
+#include "WoW/Source/WorldClient/WorldShadowScene.h"
 #include <cfloat>
 #include <cmath>
 #include "WoW/Source/Ui/SpellBookFrame.h"
@@ -1740,9 +1741,12 @@ void CGWorldFrame::OnWorldRender() {
         CWorldParam::cvar_nativeAA->Set(0, true, true, false, true);
         temporal = false;
     }
+    g_theGxDevicePtr->SceneConfigureShadows(CWorldParam::cvar_nativeRayTracing && CWorldParam::cvar_nativeRayTracing->m_intValue != 0,
+        !CWorldParam::cvar_nativeRayStrict || CWorldParam::cvar_nativeRayStrict->m_intValue != 0);
     const bool separateWorld = g_theGxDevicePtr->SceneBeginWorld(temporal, reinterpret_cast<uintptr_t>(this->m_camera));
     CShaderEffect::UpdateProjMatrix();
     CWorld::Render(this->m_camera->m_position, this->m_elapsedSec);
+    const C44Matrix shadowProjection = g_theGxDevicePtr->m_projNative;
     CMap::RenderFootprints();
     ClntObjMgrEnumVisibleObjects(UnitPostAnimateProc, this);
     CGUnit_C::NamePlateSetResortAll(false);
@@ -1804,6 +1808,8 @@ void CGWorldFrame::OnWorldRender() {
         // FFX resets the viewport. Preserve the world overlay's pre-effect coordinates.
         float left, right, bottom, top, nearDepth, farDepth;
         GxXformViewport(left, right, bottom, top, nearDepth, farDepth);
+        if (g_theGxDevicePtr->SceneShadowsRequested())
+            g_theGxDevicePtr->SceneSetShadowFrame(CollectWorldShadowScene(*World::GetCamPos(),shadowProjection));
         if (!hdr) {
             g_theGxDevicePtr->ScenePauseWorldMotion();
             FFX::Finish();

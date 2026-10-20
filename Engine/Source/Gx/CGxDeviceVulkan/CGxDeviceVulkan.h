@@ -23,6 +23,11 @@ public:
     void ScenePresent() override;
     bool SceneBeginWorld(bool temporal = false, uint64_t scene = 0) override;
     void SceneEndWorld() override;
+    void SceneConfigureShadows(bool requested, bool strict) override;
+    bool SceneShadowsRequested() const override;
+    bool SceneShadowsSupported() const override;
+    void SceneSetShadowFrame(std::shared_ptr<const GxShadow::Frame> frame) override;
+    GxShadow::Status SceneShadowStatus() const override;
     void SceneRequestHdrLut(const char* path, bool reload = false) override;
     const char* SceneHdrLutStatus() const override;
     bool SceneSetHdrLut(const float* rgb, uint32_t size) override;

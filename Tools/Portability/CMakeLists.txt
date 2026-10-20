@@ -13,6 +13,23 @@ wowdecomp_configure_platform()
 find_package(Threads REQUIRED)
 enable_testing()
 
+add_executable(M2RayCastersTest M2RayCastersTest.cpp
+    "${WOWDECOMP_ROOT}/Engine/Source/Storm/Source/Posix/DebugLog.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Base/Status.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Model2/M2ShadowMesh.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Model2/ShadowSelection.cpp")
+target_include_directories(M2RayCastersTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_definitions(M2RayCastersTest PRIVATE __stdcall= __fastcall=)
+target_compile_options(M2RayCastersTest PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+target_link_options(M2RayCastersTest PRIVATE -Wl,--gc-sections)
+if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+    target_compile_definitions(M2RayCastersTest PRIVATE WOWDECOMP_ARCH_64=1)
+else ()
+    target_compile_definitions(M2RayCastersTest PRIVATE WOWDECOMP_ARCH_32=1)
+endif ()
+target_link_libraries(M2RayCastersTest PRIVATE Tempest BlizzardCore Storm BlizzardCore Threads::Threads)
+add_test(NAME M2RayCasters COMMAND M2RayCastersTest)
+
 add_executable(RayQueryCapabilityTest RayQueryCapabilityTest.cpp)
 target_include_directories(RayQueryCapabilityTest PRIVATE "${WOWDECOMP_ROOT}")
 add_test(NAME RayQueryCapability COMMAND RayQueryCapabilityTest)

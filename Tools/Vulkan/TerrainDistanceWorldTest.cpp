@@ -69,7 +69,7 @@ struct State {
     std::chrono::steady_clock::time_point started;
     std::vector<CImVector> detailedColour;
     std::vector<float> detailedDepth;
-    bool rasterFeatures=false, ownsFonts=false;
+    bool rasterFeatures=false, shadowVisibility=false, ownsFonts=false;
     CGxFont* font=nullptr;
     CGxString* label=nullptr;
     CGxStringBatch* labelBatch=nullptr;
@@ -255,6 +255,35 @@ void TerrainTick() {
     const auto* map=g_mapDB.GetRecord(test.northrend?571:0);auto position=test.frame->m_camera->m_position;
     CWorld::LoadMap(map->m_directory,&position,map->m_id,1);Stage("map reload and Classic retirement");
 }
+void ShadowVisibilityTick(){
+    auto& gx=*test.device;const auto status=gx.SceneShadowStatus();
+    if(test.ticks%30==0)std::fprintf(stderr,"World RT visibility tick=%u result=%u rendered=%u terrain=%llu models=%llu wmo=%llu triangles=%llu unsupported=%llu\n",test.ticks,unsigned(status.result),status.diagnosticRendered,
+        (unsigned long long)status.terrain,(unsigned long long)status.models,(unsigned long long)status.buildings,(unsigned long long)status.triangles,(unsigned long long)status.unsupported);
+    if(++test.featureFrame<(test.phase?24u:90u))return;
+    CiRect rect;rect.minX=rect.minY=0;rect.maxX=Width;rect.maxY=Height;TSGrowableArray<CImVector> pixels;gx.DeviceReadPixels(rect,pixels);
+    Check(pixels.Count()==Width*Height,"world RT visibility readback missing");
+    if(!test.phase){
+        Check(status.result==GxShadow::FrameResult::Disabled&&!status.diagnosticRendered,"RT-off baseline unexpectedly queried shadows");
+        test.rasterBaseline.assign(&pixels[0],&pixels[0]+pixels.Count());test.phase=1;test.featureFrame=0;
+        Set(CWorldParam::cvar_nativeRayTracing,"1");return;
+    }
+    if(test.phase==2){
+        Check(status.result==GxShadow::FrameResult::Disabled&&!status.diagnosticRendered,"RT-off did not restore disabled status");
+        double difference=0;for(unsigned i=0;i<pixels.Count();++i){const auto a=pixels[i],b=test.rasterBaseline[i];difference+=std::abs(int(a.r)-int(b.r))+std::abs(int(a.g)-int(b.g))+std::abs(int(a.b)-int(b.b));}
+        difference/=3*pixels.Count();std::fprintf(stderr,"World RT-off roundtrip mean absolute RGB difference=%g\n",difference);
+        Check(difference<5,"RT-off did not restore raster appearance");
+        Check(!test.networkAttempts,"world RT diagnostic attempted network");test.result=0;EventPostClose();return;
+    }
+    if(!status.diagnosticRendered)return;
+    Check(status.result==GxShadow::FrameResult::Ready&&!status.unsupported,"strict world visibility accepted an incomplete caster frame");
+    Check(status.terrain && status.models && status.buildings && status.triangles,"world RT did not collect all three actual geometry domains");
+    unsigned lit=0,shadow=0;for(unsigned i=0;i<pixels.Count();++i){const auto p=pixels[i];lit+=p.r>240&&p.g>240&&p.b>240;shadow+=p.r<50&&p.g<50&&p.b<50;}
+    const auto centre=pixels[Height/2*Width+Width/2];
+    std::fprintf(stderr,"Actual game RT visibility lit=%u shadow=%u centreRGB=(%u,%u,%u); diagnostic, NOT full material/lighting coverage\n",lit,shadow,centre.r,centre.g,centre.b);
+    RasterCase capture{"rt-visibility","12","0","1","0","0","0"};SaveRasterCapture(capture,pixels);
+    Check(lit>100&&shadow>100,"actual world RT query output was vacuous");
+    test.phase=2;test.featureFrame=0;Set(CWorldParam::cvar_nativeRayTracing,"0");
+}
 int32_t Tick(const void*,void*) {
     try {
         Check(++test.ticks<=1200,"production world did not reach required state");
@@ -265,7 +294,7 @@ int32_t Tick(const void*,void*) {
         test.frame->UpdateDayNight(test.frame->m_elapsedSec);
         C3Vector target=position+camera->Forward();CWorld::Update(&position,&target,&position);
         gx.SceneClear(3,CImVector(0,0,0,255));test.frame->OnWorldRender();
-        if(test.rasterFeatures)RasterTick();else TerrainTick();
+        if(test.shadowVisibility)ShadowVisibilityTick();else if(test.rasterFeatures)RasterTick();else TerrainTick();
         gx.ScenePresent();
     }catch(const std::exception& error) {std::fprintf(stderr,"FAIL synchronous terrain: %s\n",error.what());test.result=1;EventPostClose();}
     return 1;
@@ -281,7 +310,8 @@ int32_t Initialize(const void*,void*) {
         M2Initialize(GetM2CvarFlags(),0);test.models=true;
         SysMsgInitialize();Check(FrameScript_Initialize(0)!=0,"script context failed");ScrnInitialize(0);ILayerDestroy();
         Stage("database");ClientDBInitialize();CWorldParam::Initialize();CameraRegisterCVars();
-        Set(CWorldParam::cvar_landscapeDistance,test.rasterFeatures?"0":"4000");Set(CWorldParam::cvar_nativeAA,"0");
+        Set(CWorldParam::cvar_landscapeDistance,(test.rasterFeatures||test.shadowVisibility)?"0":"4000");Set(CWorldParam::cvar_nativeAA,"0");
+        Set(CWorldParam::cvar_nativeRayTracing,"0");Set(CWorldParam::cvar_nativeRayStrict,"1");
         Set(CWorldParam::cvar_nativeHDR,"0");Set(CWorldParam::cvar_localTimePreview,"12");
         Stage("world");CWorld::Initialize();test.world=true;ShadowInit();GxuLightInitialize();GxuLightSetGridSize(16.665001f);
         SpellVisualsInitialize();test.spells=true;
@@ -294,8 +324,8 @@ int32_t Initialize(const void*,void*) {
         camera->m_position=test.northrend?C3Vector(3060,5300,6000):C3Vector(-9464,-95,6000);camera->SetFacing(C3Vector(1,0,-1));
         camera->SetGxProjectionAndView(CRect{0,0,1,1});const auto* map=g_mapDB.GetRecord(test.northrend?571:0);
         Check(map && std::strcmp(map->m_directory,test.northrend?"Northrend":"Azeroth")==0,"map directory mismatch");
+        if(test.rasterFeatures||test.shadowVisibility){camera->m_position=C3Vector(-9505,70,62);camera->SetFacing(C3Vector(1,-.4f,-.15f));}
         if(test.rasterFeatures) {
-            camera->m_position=C3Vector(-9505,70,62);camera->SetFacing(C3Vector(1,-.4f,-.15f));
             if(!g_FTLibrary){GxuFontInitialize();test.ownsFonts=true;}
             Check(GxuFontCreateFont("Fonts\\FRIZQT__.TTF",18.f/Height,test.font,8),"actual game font load failed");
             test.labelBatch=GxuFontCreateBatch(false,false);
@@ -346,18 +376,19 @@ extern "C" int __wrap_connect(int socket,const sockaddr* address,socklen_t size)
     return __real_connect(socket,address,size);
 }
 int main(int argc,char** argv) {
-    if(argc!=2 || (std::strcmp(argv[1],"--elwynn-distance") && std::strcmp(argv[1],"--northrend-distance") && std::strcmp(argv[1],"--raster-features"))) {
-        std::fputs("Pass --elwynn-distance, --northrend-distance or --raster-features; environment cannot select a weaker test.\n",stderr);return 1;
+    if(argc!=2 || (std::strcmp(argv[1],"--elwynn-distance") && std::strcmp(argv[1],"--northrend-distance") && std::strcmp(argv[1],"--raster-features") && std::strcmp(argv[1],"--rt-visibility"))) {
+        std::fputs("Pass --elwynn-distance, --northrend-distance, --raster-features or --rt-visibility; environment cannot select a weaker test.\n",stderr);return 1;
     }
     const char* assets=std::getenv("WOWDECOMP_TEST_WORLD_ASSETS");
     if(!assets || !*assets){std::fputs("WOWDECOMP_TEST_WORLD_ASSETS must identify read-only Data\n",stderr);return 1;}
     test.assets=std::filesystem::absolute(assets);test.northrend=!std::strcmp(argv[1],"--northrend-distance");
-    test.rasterFeatures=!std::strcmp(argv[1],"--raster-features");
+    test.rasterFeatures=!std::strcmp(argv[1],"--raster-features");test.shadowVisibility=!std::strcmp(argv[1],"--rt-visibility");
     Check(std::filesystem::is_directory(test.assets),"external world assets missing");
     StormRtlInitialize();BaseInitializeGlobal();EventInitialize(1,0);OsTimeStartup(static_cast<OsTimeManager::TimingMethod>(0));
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)!=0)return 1;
     g_clientEventContext=EventCreateContextEx(1,Initialize,Destroy,0,0);EventDoMessageLoop();
-    if(!test.result)std::puts(test.rasterFeatures?
+    if(!test.result && test.shadowVisibility)std::puts("PASS actual Goldshire AS visibility diagnostic only; NOT complete RT material/receiver acceptance");
+    else if(!test.result)std::puts(test.rasterFeatures?
         "PASS synchronous Goldshire raster feature matrix, actual archive font, native UI, night/exposure changes and feature-off parity; no login":
         "PASS synchronous original world: 4000/10000 ADT colour/depth versus coarse path, map unload/reload and Classic resource retirement; no login");
     return test.result;

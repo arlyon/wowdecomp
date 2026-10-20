@@ -23,6 +23,8 @@ class CWorldParam {
     static CVar* cvar_horizonFarClip;
     static CVar* cvar_localTimePreview;
     static CVar* cvar_nightDarkness;
+    static CVar* cvar_nativeRayTracing;
+    static CVar* cvar_nativeRayStrict;
     static CVar* cvar_nativeAA;
     static CVar* cvar_nativeSceneScale;
     static CVar* cvar_nativeHDR;

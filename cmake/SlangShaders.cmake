@@ -52,4 +52,12 @@ foreach (variant fixed fixed-temporal fixed-fogless fixed-temporal-fogless fixed
         list(APPEND GX_SLANG_OUTPUTS "${output}")
     endforeach ()
 endforeach ()
+set(worldShadowSource "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shaders/WorldShadowVisibility.slang")
+set(worldShadowOutput "${WOWDECOMP_VULKAN_SHADER_DIR}/world-shadow-visibility.comp.spv")
+add_custom_command(OUTPUT "${worldShadowOutput}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${WOWDECOMP_VULKAN_SHADER_DIR}"
+    COMMAND "${WOWDECOMP_SLANGC}" "${worldShadowSource}" -entry computeMain -stage compute
+        -target spirv -profile spirv_1_5 -matrix-layout-row-major -o "${worldShadowOutput}"
+    DEPENDS "${worldShadowSource}" "${WOWDECOMP_SLANGC}" VERBATIM)
+list(APPEND GX_SLANG_OUTPUTS "${worldShadowOutput}")
 add_custom_target(GxSlangShaders DEPENDS ${GX_SLANG_OUTPUTS})

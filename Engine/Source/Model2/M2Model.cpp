@@ -2160,13 +2160,7 @@ void CM2Model::SetEmittersEnabled(int32_t enabled) {
 }
 
 float CM2Model::GetBatchOpacity(const M2Batch* batch) const {
-    const auto* data = this->m_shared->m_data;
-    float alpha = this->m_alpha;
-    if (batch->m_colorIndex < data->m_colors.m_count)
-        alpha *= this->m_colors[batch->m_colorIndex].m_alphaTrack.m_currentValue;
-    if (batch->m_textureCount)
-        alpha *= this->m_textureWeights[data->m_textureWeightCombos[batch->m_textureWeightComboIndex]].m_currentValue;
-    return alpha;
+    return M2Shadow::BatchOpacity(*this, *batch);
 }
 
 // VERIFY: 962d124c manual

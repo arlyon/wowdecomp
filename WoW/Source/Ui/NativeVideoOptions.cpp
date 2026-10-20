@@ -24,6 +24,27 @@ int NativeHdrStatus(lua_State* state) {
     lua_pushstring(state, g_theGxDevicePtr ? g_theGxDevicePtr->SceneHdrLutStatus() : "No graphics device"); lua_setfield(state, -2, "lut");
     return 1;
 }
+int NativeShadowStatus(lua_State* state) {
+    const auto status=g_theGxDevicePtr?g_theGxDevicePtr->SceneShadowStatus():GxShadow::Status{};
+    const char* message="Invalid status";
+    switch(status.result){
+    case GxShadow::FrameResult::Disabled:message="Off (original raster)";break;
+    case GxShadow::FrameResult::Ready:message="Caster frame ready (visibility diagnostic only)";break;
+    case GxShadow::FrameResult::Unavailable:message="Ray queries unavailable on this device";break;
+    case GxShadow::FrameResult::PendingGeometry:message="Waiting for loaded world geometry";break;
+    case GxShadow::FrameResult::PendingTexture:message="Waiting for original coverage textures";break;
+    case GxShadow::FrameResult::StalePose:message="Current caster pose unavailable";break;
+    case GxShadow::FrameResult::InvalidGeometry:message="Invalid caster geometry";break;
+    case GxShadow::FrameResult::UnsupportedCoverage:message="Unsupported caster coverage; raster retained in strict mode";break;
+    case GxShadow::FrameResult::AllocationFailed:message="Ray resource allocation/recording failed; raster retained";break;
+    }
+    lua_createtable(state,0,4);
+    lua_pushboolean(state,g_theGxDevicePtr&&g_theGxDevicePtr->SceneShadowsSupported());lua_setfield(state,-2,"supported");
+    lua_pushboolean(state,status.diagnosticRendered);lua_setfield(state,-2,"rendered");
+    lua_pushstring(state,message);lua_setfield(state,-2,"status");
+    lua_pushnumber(state,status.triangles);lua_setfield(state,-2,"triangles");
+    return 1;
+}
 int NativeTemporalSupported(lua_State* state) {
     lua_pushboolean(state, g_theGxDevicePtr && g_theGxDevicePtr->SceneTemporalSupported());
     return 1;
@@ -72,6 +93,7 @@ void InstallNativeVideoOptions() {
     // Run only after the original FrameXML has passed its normal signature check.
     FrameScript_RegisterFunction("ReloadNativeHdrLut", NativeReloadHdrLut);
     FrameScript_RegisterFunction("GetNativeHdrStatus", NativeHdrStatus);
+    FrameScript_RegisterFunction("GetNativeShadowStatus", NativeShadowStatus);
     FrameScript_RegisterFunction("GetNativeGraphicsDevices", NativeGraphicsDevices);
     FrameScript_RegisterFunction("IsNativeTemporalAASupported", NativeTemporalSupported);
     FrameScript_RegisterFunction("IsNativeSceneScalingSupported", NativeSceneScaleSupported);

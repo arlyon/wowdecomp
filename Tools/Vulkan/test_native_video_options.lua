@@ -1,5 +1,5 @@
 -- Exercise the production settings script in the client's bundled Lua runtime.
-local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1",nativeHDR="0",nativeHDRExposure="0",nativeHDRLut="",landscapeDistance="0"}, 0, 0
+local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1",nativeHDR="0",nativeHDRExposure="0",nativeHDRLut="",landscapeDistance="0",nativeRayTracing="0",nativeRayStrict="1"}, 0, 0
 local methods = {}
 for _, key in ipairs({"SetAllPoints","SetWidth","SetJustifyH","SetMinMaxValues","SetValueStep","SetHeight","SetAutoFocus","SetMaxLetters","ClearFocus"}) do methods[key] = function() end end
 function methods:Enable() self.enabled=true end
@@ -55,6 +55,8 @@ function IsNativeSceneScalingSupported() return scaleSupported end
 function IsNativeTemporalAASupported() return aaSupported end
 local hdrSupported, lutState, reloads=true,"None",0
 function GetNativeHdrStatus() return {supported=hdrSupported,active=false,lut=lutState} end
+local raySupported=true
+function GetNativeShadowStatus() return {supported=raySupported,rendered=false,status="Off (original raster)",triangles=0} end
 function ReloadNativeHdrLut() reloads=reloads+1 end
 function GetCVar(name) assert(saved[name],"Unexpected feature CVar: "..name);return saved[name] end
 function SetCVar(name,value) assert(saved[name]);saved[name]=value;writes=writes+1 end
@@ -83,7 +85,7 @@ display.okay=apply;display.cancel=apply
 display.default=function() error("Legacy resolution defaults invoked") end
 function VideoOptionsPanel_Default(self) for _,v in ipairs(self.controls) do v:SetValue(v.defaultValue) end end
 loadProduction()()
-assert(categories==4 and writes==0 and modeWrites==0,"Installation changed settings or installed unavailable features")
+assert(categories==5 and writes==0 and modeWrites==0,"Installation changed settings or installed unavailable features")
 assert(resolution.hidden and refresh.hidden and resolution.newValue==nil and refresh.newValue==nil)
 assert(#display.controls==5 and display.controls[1]==samples and display.controls[2]==ui and display.controls[3]==vsync and display.controls[4]==window and display.controls[5]==gamma)
 assert(samples.point[2]==display and vsync.point[2]==samples and ui.point[2]==display)
@@ -111,7 +113,7 @@ snapshot.backendOverride="vulkan";snapshot.adapterOverride=identity;snapshot.loa
 renderer.refresh()
 local status=renderer.fontStrings[#renderer.fontStrings].text
 assert(status:find("WOWDECOMP_GX_BACKEND",1,true) and status:find("Loader-filtered",1,true) and status:find("Recovery",1,true))
-loadProduction()();assert(categories==4,"Duplicate installation")
+loadProduction()();assert(categories==5,"Duplicate installation")
 assert(not NativeRayTracedShadowsCheck,"Unimplemented graphics features exposed")
 local lighting=frames.NativeNightLightingPanel
 local darkness=frames.NativeNightDarknessSlider
@@ -184,3 +186,18 @@ ev:SetValue(100);assert(ev:GetValue()==8);ev:SetValue(-100);assert(ev:GetValue()
 hdrSupported=false;saved.nativeHDR="1";saved.nativeHDRExposure="2";saved.nativeHDRLut="controlled.cube";hdr.refresh()
 oldWrites=writes;oldReloads=reloads;hdr.default();hdr.okay()
 assert(not enabled.enabled and not ev.enabled and not path.mouseEnabled and writes==oldWrites and reloads==oldReloads,"Unsupported HDR preferences overwritten or falsely applied")
+local ray=frames.NativeRayVideoPanel
+local visibility,strict=frames.NativeRayVisibilityCheck,frames.NativeRayStrictCheck
+oldWrites=writes
+visibility:SetChecked(true);visibility.scripts.OnClick(visibility)
+strict:SetChecked(false);strict.scripts.OnClick(strict)
+assert(writes==oldWrites and saved.nativeRayTracing=="0","Ray controls saved before Apply")
+ray.cancel();assert(not visibility:GetChecked() and strict:GetChecked(),"Ray Cancel did not restore selection")
+visibility:SetChecked(true);visibility.scripts.OnClick(visibility);ray.okay()
+assert(saved.nativeRayTracing=="1" and saved.nativeRayStrict=="1","Ray Apply failed")
+oldWrites=writes;ray.default();assert(writes==oldWrites,"Ray defaults saved early")
+ray.cancel();assert(visibility:GetChecked() and strict:GetChecked(),"Ray defaults could not be cancelled")
+ray.default();ray.okay();assert(saved.nativeRayTracing=="0" and saved.nativeRayStrict=="1","Ray defaults not Off/strict On")
+raySupported=false;saved.nativeRayTracing="1";ray.refresh();oldWrites=writes;ray.default();ray.okay()
+assert(not visibility.enabled and not strict.enabled and writes==oldWrites and saved.nativeRayTracing=="1","Unsupported ray preferences were overwritten")
+assert(ray.fontStrings[2].text:find("NOT integrated",1,true),"Development visibility was presented as finished lighting")

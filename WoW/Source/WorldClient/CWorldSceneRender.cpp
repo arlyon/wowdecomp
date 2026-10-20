@@ -6,6 +6,7 @@
 #include "Engine/Source/Gxu/GxuScene.h"
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Model2/M2Scene.h"
+#include "Engine/Source/Model2/M2ShadowMesh.h"
 #include "Engine/Source/ShaderEffect/ShaderEffect.h"
 #include "Engine/Source/Tempest/CMath.h"
 #include "WoW/Source/LiquidSystem/Liquid.h"
@@ -186,6 +187,7 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
     if (scene) {
         scene->m_flags |= 0x1;
         scene->AdvanceTime(static_cast<uint32_t>(CMath::fint_(time * 1000.0f)));
+        if (g_theGxDevicePtr->SceneShadowsRequested()) PrepareM2ShadowPoses(*scene);
         scene->Animate(cameraPos);
         scene->m_flags &= ~0x1;
     }
