@@ -29,7 +29,7 @@ endif ()
 enable_testing()
 add_test(NAME VulkanShader COMMAND VulkanShaderTest)
 set_tests_properties(VulkanShader PROPERTIES TIMEOUT 20)
-foreach (name TemporalHistory TemporalBackend HdrToneMapping HdrLut HdrLutJob)
+foreach (name TemporalHistory TemporalBackend HdrToneMapping HdrLut HdrLutJob LandscapeSettings)
     add_executable(${name}Test ${name}Test.cpp)
     target_include_directories(${name}Test PRIVATE "${WOWDECOMP_ROOT}")
     target_compile_options(${name}Test PRIVATE -UNDEBUG)
@@ -41,6 +41,11 @@ foreach (name TemporalHistory TemporalBackend HdrToneMapping HdrLut HdrLutJob)
 endforeach ()
 find_package(Threads REQUIRED)
 target_link_libraries(HdrLutJobTest PRIVATE Threads::Threads)
+add_executable(FarCpuAdmissionTest FarCpuAdmissionTest.cpp
+    "${WOWDECOMP_ROOT}/Engine/Source/Gx/FarResources.cpp")
+target_include_directories(FarCpuAdmissionTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_definitions(FarCpuAdmissionTest PRIVATE WOWDECOMP_FAR_TESTING=1)
+add_test(NAME FarCpuAdmission COMMAND FarCpuAdmissionTest)
 if (WOWDECOMP_SLANGC)
     include("${WOWDECOMP_ROOT}/cmake/SlangCompiler.cmake")
     target_sources(GxVulkanShaders PRIVATE "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Slang.cpp")
@@ -132,6 +137,38 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
     add_test(NAME HdrLiveGpu COMMAND HdrLiveTest)
     set_tests_properties(HdrLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
 
+    add_executable(FarResourcesLiveTest FarResourcesLiveTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/FarResources.cpp")
+    target_include_directories(FarResourcesLiveTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(FarResourcesLiveTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1
+        WOWDECOMP_VULKAN_TESTING=1 WOWDECOMP_FAR_TESTING=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_link_libraries(FarResourcesLiveTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    add_dependencies(FarResourcesLiveTest GxSlangShaders)
+    add_test(NAME FarResourcesLiveGpu COMMAND FarResourcesLiveTest)
+    set_tests_properties(FarResourcesLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    set(farTerrainArchives ${ffxArchives})
+    foreach (library Services BLPFile Event ConsoleBase ShaderEffect Model2 FFX FrameScript lua pcre)
+        list(APPEND farTerrainArchives "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/lib${library}.a")
+    endforeach ()
+    add_executable(MapLowDetailTest MapLowDetailTest.cpp
+        "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/MapLowDetail.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/FVBBList.cpp")
+    target_include_directories(MapLowDetailTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(MapLowDetailTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_link_libraries(MapLowDetailTest PRIVATE GxVulkanShaders -Wl,--start-group ${farTerrainArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    target_link_options(MapLowDetailTest PRIVATE
+        "LINKER:--wrap=_Z13SFileReadFileP9SFileImplPvjPjP11SOVERLAPPEDj"
+        "LINKER:--wrap=_Z17AsyncFileReadWaitP12CAsyncObject")
+    add_dependencies(MapLowDetailTest GxSlangShaders)
+    add_test(NAME MapLowDetailGpu COMMAND MapLowDetailTest)
+    set_tests_properties(MapLowDetailGpu PROPERTIES TIMEOUT 60 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
     add_executable(WindowStartupTest WindowStartupTest.cpp WindowConsoleHost.cpp
         "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice.cpp"
         "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice_CVar.cpp"
@@ -207,6 +244,33 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
     add_test(NAME NativeVideoOptions COMMAND NativeVideoOptionsTest
         "${CMAKE_CURRENT_SOURCE_DIR}/test_native_video_options.lua"
         "${WOWDECOMP_ROOT}/WoW/Source/Ui/NativeVideoOptions.lua")
+endif ()
+
+set(WOWDECOMP_WORLD_ASSETS "" CACHE PATH "External read-only game Data for synchronous production world acceptance")
+if (WOWDECOMP_WORLD_ASSETS AND WOWDECOMP_VULKAN_CLIENT_BUILD AND TARGET Vulkan::Vulkan)
+    file(GLOB worldClientSources CONFIGURE_DEPENDS "${WOWDECOMP_ROOT}/WoW/Source/*.cpp")
+    file(GLOB worldClientArchives "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/*.a")
+    add_executable(TerrainDistanceWorldTest TerrainDistanceWorldTest.cpp ${worldClientSources}
+        "${WOWDECOMP_ROOT}/WoW/Source/Posix/BotCheck.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp")
+    target_include_directories(TerrainDistanceWorldTest PRIVATE "${WOWDECOMP_ROOT}" "${WOWDECOMP_ROOT}/ThirdParty/freetype/include")
+    target_compile_definitions(TerrainDistanceWorldTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_POSIX=1 WOWDECOMP_VULKAN=1 WOWDECOMP_VULKAN_TESTING=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_compile_options(TerrainDistanceWorldTest PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(TerrainDistanceWorldTest PRIVATE -Wl,--gc-sections "LINKER:--wrap=connect"
+        "LINKER:--wrap=_Z16FarAdtRenderTileP11CMapAreaLow")
+    target_link_libraries(TerrainDistanceWorldTest PRIVATE GxVulkanShaders -Wl,--start-group ${worldClientArchives} -Wl,--end-group
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/libXvidDecoder.so" Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    add_dependencies(TerrainDistanceWorldTest GxSlangShaders)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terrain-world")
+    add_test(NAME TerrainDistanceWorldGpu COMMAND TerrainDistanceWorldTest)
+    add_test(NAME TerrainDistanceNorthrendGpu COMMAND TerrainDistanceWorldTest)
+    set_tests_properties(TerrainDistanceWorldGpu TerrainDistanceNorthrendGpu PROPERTIES TIMEOUT 180
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terrain-world"
+        ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~;WOWDECOMP_TEST_WORLD_ASSETS=${WOWDECOMP_WORLD_ASSETS}")
+    set_property(TEST TerrainDistanceNorthrendGpu APPEND PROPERTY ENVIRONMENT "WOWDECOMP_TEST_TERRAIN_NORTHREND=1")
+else ()
+    message(STATUS "Synchronous production world acceptance unverified: configure WOWDECOMP_WORLD_ASSETS and native client archives")
 endif ()
 
 add_executable(DeviceSelectionTest DeviceSelectionTest.cpp "${WOWDECOMP_ROOT}/Engine/Source/Gx/DeviceSelection.cpp")

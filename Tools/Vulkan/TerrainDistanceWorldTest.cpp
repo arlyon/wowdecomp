@@ -1,0 +1,226 @@
+// Synchronous production world acceptance against external read-only archives.
+// No account, saved client configuration, synthetic terrain or world executor.
+#include "Engine/Source/Base/Base.h"
+#include "Engine/Source/Base/Coordinate.h"
+#include "Engine/Source/BlizzardCore/SFile2-Core.h"
+#include "Engine/Source/ConsoleBase/ConsoleVar.h"
+#include "Engine/Source/Event/Event.h"
+#include "Engine/Source/Frame/CSimpleTop.h"
+#include "Engine/Source/FrameScript/FrameScript.h"
+#include "Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.h"
+#include "Engine/Source/Gx/Gx.h"
+#include "Engine/Source/Gxu/GxuLight.h"
+#include "Engine/Source/Model2/M2Cache.h"
+#include "Engine/Source/Os/TimeManager.h"
+#include "Engine/Source/Os/Time.h"
+#include "Engine/Source/Scrn/Layer.h"
+#include "Engine/Source/Scrn/Scrn.h"
+#include "Engine/Source/Services/AsyncFile.h"
+#include "Engine/Source/Services/SysMessage.h"
+#include "Engine/Source/Services/Texture.h"
+#include "Engine/Source/Storm/H/storm.h"
+#include "WoW/Source/Client.h"
+#include "WoW/Source/DB/DBClient/DBClient.h"
+#include "WoW/Source/Magic/MagicClient/SpellVisuals.h"
+#include "WoW/Source/Net/NetClient/NetClient.h"
+#include "WoW/Source/ObjectAlloc/HeapUsage.h"
+#include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
+#include "WoW/Source/UIUtil/Camera.h"
+#include "WoW/Source/Ui/GameUI.h"
+#include "WoW/Source/Ui/WorldFrame.h"
+#include "WoW/Source/WorldClient/FarAdtService.h"
+#include "WoW/Source/WorldClient/Map.h"
+#include "WoW/Source/WorldClient/MapLowDetail.h"
+#include "WoW/Source/WorldClient/World.h"
+#include "WoW/Source/WorldClient/WorldParam.h"
+#include "WoW/Source/WorldClient/shadow.h"
+#include <SDL.h>
+#include <cerrno>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
+#include <sys/socket.h>
+#include <vector>
+
+namespace {
+constexpr unsigned Width=640, Height=480;
+struct State {
+    std::filesystem::path assets;
+    std::vector<SArchive*> archives;
+    std::unique_ptr<CGxDeviceVulkan> device;
+    std::unique_ptr<CSimpleTop> top;
+    std::unique_ptr<ObjectMgr> objects;
+    CGWorldFrame* frame=nullptr;
+    bool northrend=false, world=false, models=false, spells=false, textures=false, suppressPrepared=false;
+    unsigned ticks=0, phase=0, resetFrames=0, networkAttempts=0;
+    int result=1;
+    std::chrono::steady_clock::time_point started;
+    std::vector<CImVector> detailedColour;
+    std::vector<float> detailedDepth;
+} test;
+void Check(bool value,const char* message) { if(!value) throw std::runtime_error(message); }
+void Stage(const char* name) { std::fprintf(stderr,"Terrain stage=%s map=%s\n",name,test.northrend?"Northrend":"Azeroth"); }
+void Set(CVar* variable,const char* value) {
+    Check(variable,"production CVar missing");variable->Set(value,true,false,false,false);
+}
+void MountAssets() {
+    SFile::Initialize();
+    const auto scratch=std::filesystem::current_path().string();
+    SFile::SetBasePath(scratch.c_str()); // Never make external Data the writable base.
+    struct Archive {const char* name;int priority;};
+    const Archive archives[]={{"common.MPQ",0},{"common-2.MPQ",10},{"expansion.MPQ",20},{"lichking.MPQ",30},
+        {"enUS/locale-enUS.MPQ",40},{"enUS/speech-enUS.MPQ",40},
+        {"enUS/expansion-locale-enUS.MPQ",50},{"enUS/expansion-speech-enUS.MPQ",50},
+        {"enUS/lichking-locale-enUS.MPQ",60},{"enUS/lichking-speech-enUS.MPQ",60},
+        {"patch.MPQ",100},{"enUS/patch-enUS.MPQ",110},{"patch-2.MPQ",200},{"enUS/patch-enUS-2.MPQ",210},
+        {"patch-3.MPQ",300},{"enUS/patch-enUS-3.MPQ",310},{"patch-W.mpq",400}};
+    for(const auto& entry:archives) {
+        const auto path=test.assets/entry.name;
+        if(!std::filesystem::exists(path)) {Check(std::strcmp(entry.name,"patch-W.mpq")==0,"required archive missing");continue;}
+        SArchive* archive=nullptr;
+        Check(SFile::OpenArchive(path.c_str(),entry.priority,0xC00,&archive)!=0,"read-only archive mount failed");
+        test.archives.push_back(archive);
+    }
+}
+void TerrainTick() {
+    auto& gx=*test.device;const auto& census=CMap::s_lowDetail.GetCensus();
+    if(test.ticks%15==0) std::fprintf(stderr,"Terrain phase=%u tick=%u setting=%g horizon=%g admitted=%u prepared=%u chunks=%u min=%g ready=%u\n",
+        test.phase,test.ticks,double(census.setting),double(census.horizonFar),census.admitted,census.preparedTiles,
+        census.preparedChunks,double(census.minPreparedDistance),FarAdtCensus().ready);
+    if(test.phase==3) {
+        if(++test.resetFrames<3)return;
+        const auto usage=gx.SceneFarResourceUsage();
+        Check(!census.preparedTiles && !usage.farGeometryBytes && !usage.farImageBytes,"Classic reset retained drawable FAR GPU resources");
+        Check(!FarAdtCensus().transferred,"Classic reset retained producer tickets");
+        Check(!test.networkAttempts,"production fixture attempted network");
+        test.result=0;
+        EventPostClose();return;
+    }
+    CiRect rect;rect.minX=rect.minY=0;rect.maxX=Width;rect.maxY=Height;
+    if(test.phase==0) {
+        if(test.ticks<20 || !census.wdlRead)return;
+        TSGrowableArray<float> depth;gx.DeviceReadDepths(rect,depth);
+        Check(depth.Count()==Width*Height,"baseline depth readback incomplete");
+        unsigned covered=0;for(unsigned i=0;i<depth.Count();++i)if(std::isfinite(depth[i]) && depth[i]>0 && depth[i]<1)++covered;
+        Check(!covered,"4000-unit horizon rendered ground over 4000 units below camera");
+        Set(CWorldParam::cvar_landscapeDistance,"10000");test.phase=1;Stage("10000 awaiting real prepared ADTs");return;
+    }
+    if(test.phase==1) {
+        if(!census.preparedTriangles || census.minPreparedDistance<=4000)return;
+        TSGrowableArray<CImVector> colour;TSGrowableArray<float> depth;
+        gx.DeviceReadPixels(rect,colour);gx.DeviceReadDepths(rect,depth);
+        Check(colour.Count()==Width*Height && depth.Count()==Width*Height,"prepared world readback incomplete");
+        test.detailedColour.assign(&colour[0],&colour[0]+colour.Count());
+        test.detailedDepth.assign(&depth[0],&depth[0]+depth.Count());
+        test.suppressPrepared=true;test.phase=2;Stage("same-view coarse control");return;
+    }
+    Check(!census.preparedTiles,"coarse control still selected prepared geometry");
+    TSGrowableArray<CImVector> colour;TSGrowableArray<float> depth;gx.DeviceReadPixels(rect,colour);gx.DeviceReadDepths(rect,depth);
+    Check(colour.Count()==Width*Height && depth.Count()==Width*Height,"coarse readback incomplete");
+    unsigned covered=0,changed=0;
+    for(unsigned i=0;i<depth.Count();++i) {
+        const auto d=test.detailedDepth[i];if(!std::isfinite(d) || d<=0 || d>=1)continue;
+        ++covered;const auto a=test.detailedColour[i],b=colour[i];
+        if(std::abs(d-depth[i])>1e-7f || std::abs(int(a.r)-int(b.r))>1 || std::abs(int(a.g)-int(b.g))>1 || std::abs(int(a.b)-int(b.b))>1)++changed;
+    }
+    std::fprintf(stderr,"Terrain actual covered=%u prepared-versus-coarse changed=%u\n",covered,changed);
+    Check(covered>Width*Height/20 && changed>=16,"real prepared ADTs did not change distant colour/depth");
+    Check(gx.SceneFarResourceUsage().farGeometryBytes>0,"unload control had no live geometry");
+    CMap::Unload();
+    Check(!FarAdtCensus().transferred && !FarAdtCensus().ready && !FarAdtCensus().resident,"map unload retained live tickets/payloads");
+    Set(CWorldParam::cvar_landscapeDistance,"0");test.suppressPrepared=false;test.phase=3;
+    const auto* map=g_mapDB.GetRecord(test.northrend?571:0);auto position=test.frame->m_camera->m_position;
+    CWorld::LoadMap(map->m_directory,&position,map->m_id,1);Stage("map reload and Classic retirement");
+}
+int32_t Tick(const void*,void*) {
+    try {
+        Check(++test.ticks<=1200,"production world did not reach required state");
+        Check(std::chrono::steady_clock::now()-test.started<std::chrono::seconds(120),"production render deadline exceeded");
+        auto& gx=*test.device;auto* camera=test.frame->m_camera;auto position=camera->m_position;
+        test.frame->m_elapsedSec=1.f/60;
+        camera->SetGxProjectionAndView(CRect{0,0,1,1});
+        test.frame->UpdateDayNight(test.frame->m_elapsedSec);
+        C3Vector target=position+camera->Forward();CWorld::Update(&position,&target,&position);
+        gx.SceneClear(3,CImVector(0,0,0,255));test.frame->OnWorldRender();
+        TerrainTick();gx.ScenePresent();
+    }catch(const std::exception& error) {std::fprintf(stderr,"FAIL synchronous terrain: %s\n",error.what());test.result=1;EventPostClose();}
+    return 1;
+}
+int32_t Initialize(const void*,void*) {
+    try {
+        Stage("context");BaseInitializeContext();HeapUsageInitialize();MountAssets();
+        test.device=std::make_unique<CGxDeviceVulkan>();g_theGxDevicePtr=test.device.get();
+        CGxFormat format;format.m_window=1;format.m_maximize=0;format.m_size={Width,Height};
+        Check(test.device->DeviceCreate(static_cast<GxWindowProc>(nullptr),format)!=0,"native device creation failed");
+        test.device->m_cursorVisible=0;
+        Stage("services");AsyncFileReadRegisterCVars();TextureInitialize();test.textures=true;
+        M2Initialize(GetM2CvarFlags(),0);test.models=true;
+        SysMsgInitialize();Check(FrameScript_Initialize(0)!=0,"script context failed");ScrnInitialize(0);ILayerDestroy();
+        Stage("database");ClientDBInitialize();CWorldParam::Initialize();CameraRegisterCVars();
+        Set(CWorldParam::cvar_landscapeDistance,"4000");Set(CWorldParam::cvar_nativeAA,"0");
+        Set(CWorldParam::cvar_nativeHDR,"0");Set(CWorldParam::cvar_localTimePreview,"12");
+        Stage("world");CWorld::Initialize();test.world=true;ShadowInit();GxuLightInitialize();GxuLightSetGridSize(16.665001f);
+        SpellVisualsInitialize();test.spells=true;
+        Check(!ClntObjMgrGetCurrent(),"offline manager must start empty");
+        test.objects=std::make_unique<ObjectMgr>(0);NetClient::PushObjMgr(reinterpret_cast<ClntObjMgr*>(test.objects.get()));
+        Stage("frame");CGGameUI::RegisterGameCVars();CoordinateSetAspectRatio(float(Width)/Height);
+        test.top=std::make_unique<CSimpleTop>();test.frame=static_cast<CGWorldFrame*>(CGWorldFrame::Create(nullptr));
+        Check(test.frame,"world frame creation failed");test.frame->SetAllPoints(test.top.get(),1);CLayoutFrame::ResizePending();
+        auto* camera=test.frame->m_camera;Check(camera==CGWorldFrame::GetActiveCamera(),"production camera missing");
+        camera->m_position=test.northrend?C3Vector(3060,5300,6000):C3Vector(-9464,-95,6000);camera->SetFacing(C3Vector(1,0,-1));
+        camera->SetGxProjectionAndView(CRect{0,0,1,1});const auto* map=g_mapDB.GetRecord(test.northrend?571:0);
+        Check(map && std::strcmp(map->m_directory,test.northrend?"Northrend":"Azeroth")==0,"map directory mismatch");
+        auto position=camera->m_position;Stage("map load");CWorld::LoadMap(map->m_directory,&position,map->m_id,1);
+        test.started=std::chrono::steady_clock::now();EventRegister(EVENT_ID_IDLE,Tick);Stage("render");
+    }catch(const std::exception& error) {std::fprintf(stderr,"FAIL terrain bootstrap: %s\n",error.what());test.result=1;EventPostClose();}
+    return 1;
+}
+int32_t Destroy(const void*,void*) {
+    EventUnregister(EVENT_ID_IDLE,Tick);
+    if(test.spells)SpellVisualsShutdown();
+    test.top.reset();test.frame=nullptr;
+    if(test.world)CWorld::Destroy();
+    if(test.models)M2Destroy();
+    if(test.objects){NetClient::PushObjMgr(nullptr);test.objects.reset();}
+    if(test.textures)TextureGxCacheFlush();
+    if(test.device) {
+        test.device->DeviceDestroy();
+        if(!test.device->SceneHdrTestValidationClean()) {
+            std::fputs("FAIL production world emitted Vulkan diagnostics\n",stderr);test.result=1;
+        }
+    }
+    test.device.reset();g_theGxDevicePtr=nullptr;
+    for(auto i=test.archives.rbegin();i!=test.archives.rend();++i)SFile::CloseArchive(*i);
+    test.archives.clear();EventInitiateShutdown();return 1;
+}
+}
+extern "C" bool RealFarDraw(CMapAreaLow*) asm("__real__Z16FarAdtRenderTileP11CMapAreaLow");
+extern "C" bool ObserveFarDraw(CMapAreaLow*) asm("__wrap__Z16FarAdtRenderTileP11CMapAreaLow");
+extern "C" bool ObserveFarDraw(CMapAreaLow* area) {
+    if(test.suppressPrepared)return false;
+    float saved[2][1024];for(unsigned i=0;i<2;++i)std::memcpy(saved[i],CGxDevice::s_shadowConstants[i].constants,sizeof(saved[i]));
+    const bool result=RealFarDraw(area);
+    for(unsigned i=0;i<2;++i)Check(!std::memcmp(saved[i],CGxDevice::s_shadowConstants[i].constants,sizeof(saved[i])),"prepared terrain did not restore shader constants");
+    return result;
+}
+extern "C" int __real_connect(int,const sockaddr*,socklen_t);
+extern "C" int __wrap_connect(int socket,const sockaddr* address,socklen_t size) {
+    if(address && (address->sa_family==AF_INET || address->sa_family==AF_INET6)){++test.networkAttempts;errno=EPERM;return -1;}
+    return __real_connect(socket,address,size);
+}
+int main() {
+    const char* assets=std::getenv("WOWDECOMP_TEST_WORLD_ASSETS");
+    if(!assets || !*assets){std::fputs("WOWDECOMP_TEST_WORLD_ASSETS must identify read-only Data\n",stderr);return 1;}
+    test.assets=std::filesystem::absolute(assets);test.northrend=std::getenv("WOWDECOMP_TEST_TERRAIN_NORTHREND")!=nullptr;
+    Check(std::filesystem::is_directory(test.assets),"external world assets missing");
+    StormRtlInitialize();BaseInitializeGlobal();EventInitialize(1,0);OsTimeStartup(static_cast<OsTimeManager::TimingMethod>(0));
+    if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)!=0)return 1;
+    g_clientEventContext=EventCreateContextEx(1,Initialize,Destroy,0,0);EventDoMessageLoop();
+    if(!test.result)std::puts("PASS synchronous original world: 4000/10000 ADT colour/depth versus coarse path, map unload/reload and Classic resource retirement; no login");
+    return test.result;
+}

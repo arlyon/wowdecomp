@@ -1,4 +1,7 @@
 #include "TimePreview.h"
+#include "LandscapeSettings.h"
+#include "HorizonState.h"
+#include <array>
 #if !defined(_WIN32)
 #include <cfloat>
 #endif
@@ -687,6 +690,15 @@ void World::CreateWaterRipple(const C3Vector& pos, float a2, float a3, float a4,
 // OFFSET: 0x0077F490
 void World::SetNearClip(float nearClip) {
     World::s_nearClip = 0.2f;
+}
+
+float World::GetHorizonDistance() {
+    const float setting = CWorldParam::cvar_landscapeDistance ? CWorldParam::cvar_landscapeDistance->m_floatValue : 0.f;
+    return LandscapeSettings::Horizon(s_farClip, s_horizonFarClipScale, setting);
+}
+float World::GetLandscapeFogScale(float authoredEnd) {
+    const float setting = CWorldParam::cvar_landscapeDistance ? CWorldParam::cvar_landscapeDistance->m_floatValue : 0.f;
+    return LandscapeSettings::FogScale(authoredEnd, setting);
 }
 
 // VERIFY: 632775d6 auto
@@ -2054,7 +2066,8 @@ void CWorldScene::BuildHorizonProjection(C44Matrix* projection) {
     CGCamera* camera = CGWorldFrame::GetActiveCamera();
     float farZ = camera->m_farZ;
     float fov = camera->FOV();
-    GxuXformCreateProjection_Exact(fov * 0.60000002f, camera->m_aspect, farZ - 50.0f, World::s_horizonFarClipScale * World::s_farClip, *projection);
+    const float nearZ = CMap::s_lowDetail.FarTerrainEnabled() ? farZ * .75f : farZ - 50.f;
+    GxuXformCreateProjection_Exact(fov * 0.60000002f, camera->m_aspect, nearZ, World::GetHorizonDistance(), *projection);
 }
 
 // VERIFY: 6cb64bd1 manual
@@ -2293,12 +2306,6 @@ void CWorldScene::AddToDistanceBucket(CChunkLiquid* liquid, const C3Vector& pos)
     }
 
     CWorldScene::sortTable.m_table[bucket].m_liquidList.LinkToTail(liquid);
-}
-
-// VERIFY: 82a2066d auto
-// OFFSET: 0x00792F60
-void CWorldScene::AddHorizonChunk(CMapAreaLow* area) {
-    CWorldScene::sortTable.m_horizonChunkList.LinkToTail(area);
 }
 
 // VERIFY: d71b0b88 auto
@@ -4939,6 +4946,7 @@ void CWorldScene::RenderHorizon() {
     float maxZ = g_theGxDevicePtr->m_viewport.m_z.m_h;
     GxXformSetViewport(minX, maxX, minY, maxY, s_horizonMinZ, s_horizonMaxZ);
     g_theGxDevicePtr->RsPush();
+    HorizonState::Bind(*g_theGxDevicePtr);
     C44Matrix world;
     world.Translate(C3Vector(-CWorldScene::s_activeWorldView.x, -CWorldScene::s_activeWorldView.y, -CWorldScene::s_activeWorldView.z));
     g_theGxDevicePtr->XformPushAndSet(GxXform_World, world);
@@ -4952,8 +4960,18 @@ void CWorldScene::RenderHorizon() {
     }
 
     uint32_t count = 0;
-    CMapObjGroup** groups = static_cast<CMapObjGroup**>(alloca(256 * sizeof(CMapObjGroup*)));
-    C44Matrix** matrices = static_cast<C44Matrix**>(alloca(256 * sizeof(C44Matrix*)));
+    std::array<CMapObjGroup*,256> groups{};
+    std::array<C44Matrix*,256> matrices{};
+    const auto flush = [&] {
+        if (!count) return;
+        DayNight::DNInfo* info = DayNight::GetInfo();
+        GxRsSet(GxRs_FogStart,0.0f); GxRsSet(GxRs_FogEnd,1.0f);
+        GxRsSet(GxRs_FogColor,*reinterpret_cast<int32_t*>(&info->m_fog.m_color));
+        GxRsSet(GxRs_Fog,1); GxRsSet(GxRs_Lighting,0);
+        int32_t previous = -1;
+        CMapObj::RenderMapObjGroupsColor(groups.data(),count,matrices.data(),&world,&previous);
+        count = 0;
+    };
     CMapObjDef* nextDef;
 
     for (CMapObjDef* def = CWorldScene::sortTable.m_horizonMapObjList.Head(); def; def = nextDef) {
@@ -4965,6 +4983,7 @@ void CWorldScene::RenderHorizon() {
                 CMapObjGroup* group = mapObj->GetGroup(i, 0);
 
                 if (group->m_flags & 0x8) {
+                    if (count == groups.size()) flush();
                     groups[count] = group;
                     matrices[count] = &def->m_mat;
                     count++;
@@ -4977,16 +4996,7 @@ void CWorldScene::RenderHorizon() {
         def->m_horizonLink.Unlink();
     }
 
-    if (count) {
-        DayNight::DNInfo* info = DayNight::GetInfo();
-        GxRsSet(GxRs_FogStart, 0.0f);
-        GxRsSet(GxRs_FogEnd, 1.0f);
-        GxRsSet(GxRs_FogColor, *reinterpret_cast<int32_t*>(&info->m_fog.m_color));
-        GxRsSet(GxRs_Fog, 1);
-        GxRsSet(GxRs_Lighting, 0);
-        int32_t a5 = -1;
-        CMapObj::RenderMapObjGroupsColor(groups, count, matrices, &world, &a5);
-    }
+    flush();
 
     GxXformPop(GxXform_World);
     g_theGxDevicePtr->RsPop();

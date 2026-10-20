@@ -36,6 +36,17 @@ int main() {
         }
         Check(!CWorldParam::NativeAACallback(nullptr, nullptr, nullptr, nullptr), "Null AA accepted");
         Check(!CWorldParam::NativeSceneScaleCallback(nullptr, nullptr, nullptr, nullptr), "Null scale accepted");
+        auto* landscape = CVar::Register("sceneRegressionLandscape", "", 1, "0", CWorldParam::LandscapeDistanceCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+        for (const char* valid : {"4000", "7500", "10000", "4500.5", "0"}) {
+            landscape->Set(valid, true, false, false, true);
+            Check(std::string(landscape->m_stringValue.m_str) == valid, "Landscape boundary rejected");
+        }
+        landscape->Set("8000", true, false, false, true);
+        for (const char* invalid : {"", "3999", "10001", "-1", "nan", "inf", "1e999", "8000x"}) {
+            landscape->Set(invalid, true, false, false, true);
+            Check(landscape->m_floatValue == 8000 && std::string(landscape->m_stringValue.m_str) == "8000", "Invalid landscape distance replaced saved preference");
+        }
+        Check(!CWorldParam::LandscapeDistanceCallback(nullptr, nullptr, nullptr, nullptr), "Null landscape distance accepted");
         Check(CVar::m_needsSave, "Scene settings did not request persistence");
         std::cout << "PASS production AA/scene-scale callbacks and CVar persistence/rejection\n";
     } catch (const std::exception& error) {

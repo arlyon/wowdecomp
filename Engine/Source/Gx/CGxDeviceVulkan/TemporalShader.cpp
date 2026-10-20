@@ -92,6 +92,14 @@ std::string TemporalPixel(std::string source) {
     return "[[vk::binding(2, 3)]] cbuffer GxTemporalOptions { float4 gx_temporalOptions; };\n" + source;
 }
 }
+RecoveredShader RecoverFoglessSlangShader(const void* bytecode, size_t size, bool temporal) {
+    auto recovered = RecoverSlangShader(bytecode, size);
+    if (recovered.reflection->shader_type != MOJOSHADER_TYPE_VERTEX)
+        throw std::runtime_error("FOG output pruning requires a vertex shader");
+    recovered.source = PruneVertexFogOutput(std::move(recovered.source));
+    if (temporal) recovered.source = TemporalVertex(std::move(recovered.source));
+    return recovered;
+}
 RecoveredShader RecoverTemporalSlangShader(const void* bytecode, size_t size) {
     auto recovered = RecoverSlangShader(bytecode, size);
     recovered.source = recovered.reflection->shader_type == MOJOSHADER_TYPE_VERTEX ?

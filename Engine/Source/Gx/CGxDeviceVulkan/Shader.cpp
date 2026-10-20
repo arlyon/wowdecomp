@@ -215,6 +215,40 @@ ShaderPair LinkShaders(const MOJOSHADER_parseData& vertex,
     return result;
 }
 
+bool ShaderUsesInputLocation(const std::vector<uint32_t>& code,uint32_t location) {
+    if(code.size()<5 || code[0]!=0x07230203u) throw std::runtime_error("Invalid SPIR-V interface header");
+    std::vector<uint32_t> inputs,decorated;
+    for(size_t i=5;i<code.size();) {
+        const auto words=code[i]>>16,op=code[i]&0xffffu;
+        if(!words || words>code.size()-i) throw std::runtime_error("Invalid SPIR-V interface instruction");
+        // Decoration groups/alternate decoration encodings are not resolved
+        // here. Unknown interface provenance must retain the export, not turn
+        // an unfamiliar module into a false absence certificate.
+        if(op==73 || op==74 || op==75 || op==332 || op==5632 || op==5633) return true;
+        if(op==59 && words>=4 && code[i+3]==1) inputs.push_back(code[i+2]); // OpVariable Input
+        if(op==71 && words>=4 && code[i+2]==30 && code[i+3]==location) decorated.push_back(code[i+1]);
+        // Do not guess the storage class of an unfamiliar interface block.
+        if(op==72 && words>=5 && code[i+3]==30 && code[i+4]==location) return true;
+        i+=words;
+    }
+    for(auto id:inputs) if(std::find(decorated.begin(),decorated.end(),id)!=decorated.end()) return true;
+    return false;
+}
+std::string PruneVertexFogOutput(std::string source) {
+    const std::regex field(R"(\[\[vk::location\(10\)\]\]\s*float\s+(\w+)\s*:\s*FOG\s*;)");
+    std::smatch match;
+    if(!std::regex_search(source,match,field)) throw std::runtime_error("Unrecognised unused vertex FOG ABI");
+    const auto name=match[1].str();source=std::regex_replace(source,field,"");
+    if(name.rfind("m_",0)!=0) throw std::runtime_error("Unrecognised vertex FOG field name");
+    const auto alias="#define "+name.substr(2)+" output."+name;
+    const auto offset=source.find(alias);
+    if(offset==std::string::npos || source.find(alias,offset+alias.size())!=std::string::npos)
+        throw std::runtime_error("Unrecognised unused vertex FOG alias");
+    source.replace(offset,alias.size(),"float gx_unusedFog;\n#define "+name.substr(2)+" gx_unusedFog");
+    if(source.find("output."+name)!=std::string::npos) throw std::runtime_error("Unexpected vertex FOG reference");
+    return source;
+}
+
 std::string ShaderOutputBoundary(std::string source, bool decode) {
     // Wrap only the generated entry's final colour. Do not inspect or alter its
     // lighting arithmetic, original clips, alpha or resource bindings.

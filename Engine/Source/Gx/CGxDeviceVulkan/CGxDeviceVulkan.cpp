@@ -8,6 +8,7 @@
 #include "TemporalHistory.h"
 #include "TemporalBackend.h"
 #include "HdrLutJob.h"
+#include "GpuAdmission.h"
 #include "Engine/Source/Gx/Blit.h"
 #include "Engine/Source/Gx/Buffer.h"
 #include "Engine/Source/Gx/CGxPool.h"
@@ -26,6 +27,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <list>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -67,6 +69,7 @@ struct CachedGeometry {
     uint32_t index = 0, bytes = 0;
     GxVulkan::ResidentBuffer resident;
 };
+class FarBudgetExceeded final : public std::exception {};
 struct NativeImage {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -77,11 +80,51 @@ struct NativeImage {
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkDeviceSize allocationBytes = 0;
+    GxVulkan::GpuAdmission* admission = nullptr;
+    bool farAllocation = false;
+};
+EGxTexFormat FarTextureFormat(GxFarTextureFormat format) {
+    switch(format) {
+        case GxFarTextureFormat::Rgba8:return GxTex_Abgr8888;
+        case GxFarTextureFormat::Bc1:return GxTex_Dxt1;
+        case GxFarTextureFormat::Bc2:return GxTex_Dxt3;
+        case GxFarTextureFormat::Bc3:return GxTex_Dxt5;
+    }
+    throw std::invalid_argument("Invalid FAR texture encoding");
+}
+struct NativeFarLease final : GxFarResourceLease {
+    explicit NativeFarLease(const GxFarResourceRequest& r)
+        : vertexPool(GxPoolTarget_Vertex, GxPoolUsage_Static, 0, GxPoolHintBit_Unk3, "FAR vertices"),
+          indexPool(GxPoolTarget_Index, GxPoolUsage_Static, 0, GxPoolHintBit_Unk3, "FAR indices"),
+          vertex(&vertexPool, r.vertexStride, r.vertexCount, 0), index(&indexPool, 2, r.indexCount, 0),
+          texture(GxTex_2d, r.width, r.height, 1, FarTextureFormat(r.format), FarTextureFormat(r.format),
+              CGxTexFlags(r.linearFilter ? GxTex_LinearMipLinear : GxTex_Nearest, r.wrapU, r.wrapV), nullptr, nullptr, "FAR authored material"),
+          hasTexture(!r.mips.empty()) {}
+    std::shared_ptr<const void> metadata;
+    GxFarResourceStatus status = GxFarResourceStatus::Resident;
+    CGxPool vertexPool, indexPool;
+    CGxBuf vertex, index;
+    CGxTex texture;
+    bool hasTexture;
+    GxFarResourceStatus Status() const override { return status; }
+    CGxBuf* VertexBuffer() const override { return status == GxFarResourceStatus::Resident && vertex.m_size ? const_cast<CGxBuf*>(&vertex) : nullptr; }
+    CGxBuf* IndexBuffer() const override { return status == GxFarResourceStatus::Resident && index.m_size ? const_cast<CGxBuf*>(&index) : nullptr; }
+    CGxTex* Texture() const override { return status == GxFarResourceStatus::Resident && hasTexture ? const_cast<CGxTex*>(&texture) : nullptr; }
+    void Withdraw() override { if (status == GxFarResourceStatus::Resident) status = GxFarResourceStatus::Withdrawn; }
+};
+struct FarBuffer { NativeBuffer buffer; VkDeviceSize allocationBytes = 0; bool farAllocation = true; };
+struct FarEntry {
+    std::shared_ptr<NativeFarLease> lease;
+    FarBuffer vertex, index, staging;
+    NativeImage image;
+    uint64_t lastUse = 0;
 };
 struct NativeShader {
     uint64_t id;
     GxVulkan::Shader reflection;
     std::vector<uint32_t> code, temporalCode;
+    std::vector<uint32_t> foglessCode[2];
+    bool inputFog = false, outputFog = false;
 };
 struct Pipeline {
     VkPipeline handle = VK_NULL_HANDLE;
@@ -253,6 +296,7 @@ struct CGxDeviceVulkan::State {
     uint64_t nextShader = 1;
     GxVulkan::SlangCompiler shaderCompiler;
     std::vector<uint32_t> fixedVertex, fixedPixel, temporalFixedVertex, temporalFixedPixel;
+    std::vector<uint32_t> fixedFoglessVertex[2];
     bool msdfFontActive = false;
     uint32_t msdfOutlinePixels = 0;
     std::vector<uint32_t> msdfFontVertex, msdfFontPixel, temporalMsdfFontPixel;
@@ -262,13 +306,34 @@ struct CGxDeviceVulkan::State {
     VkRenderPass currentPass = VK_NULL_HANDLE;
     VkExtent2D targetExtent{};
     uint64_t drawCount = 0;
+    uint64_t submittedSerial = 0, completedSerial = 0;
+    std::shared_ptr<GxVulkan::GpuAdmission> sceneAdmission = std::make_shared<GxVulkan::GpuAdmission>(UINT64_MAX, UINT64_MAX);
+    GxVulkan::GpuAdmission imageAdmission{UINT64_MAX, UINT64_MAX};
+    std::list<std::unique_ptr<FarEntry>> farEntries;
+    std::map<CGxBuf*, FarEntry*> farBuffers;
+    std::map<CGxTex*, FarEntry*> farTextures;
+    FarBuffer MakeFarBuffer(VkDeviceSize bytes, VkBufferUsageFlags usage, bool farAllocation = true);
+    void DestroyFarBuffer(FarBuffer& buffer);
+    void CollectFar(bool destroy = false);
+    void WithdrawFar();
+    void PollFarCompletion();
+    bool FarDrawAllowed(const std::array<CGxBuf*, GxVAs_Last>& buffers, const std::vector<int>& required, bool indexed) const;
+    GxFarResourceAdmission CreateFar(const GxFarResourceRequest& request);
+#ifdef WOWDECOMP_VULKAN_TESTING
+    uint32_t farFailAllocation = 0;
+    std::vector<FarBuffer> farTestNearBuffers;
+    std::vector<NativeImage> farTestNearImages;
+    VkSemaphore farTestGate = VK_NULL_HANDLE;
+    bool farTestTimeline = false;
+#endif
 
     uint32_t MemoryType(uint32_t mask, VkMemoryPropertyFlags flags) const;
     NativeBuffer MakeBuffer(VkDeviceSize size, VkBufferUsageFlags usage);
     void DestroyBuffer(NativeBuffer& buffer);
     NativeImage MakeImage(uint32_t width, uint32_t height, uint32_t levels, uint32_t layers,
         VkFormat format, VkImageAspectFlags aspect, VkImageUsageFlags usage,
-        VkDeviceSize maximumBytes = std::numeric_limits<VkDeviceSize>::max());
+        VkDeviceSize maximumBytes = std::numeric_limits<VkDeviceSize>::max(),
+        GxVulkan::GpuAdmission* admission = nullptr, bool farAllocation = false);
     void DestroyImage(NativeImage& image);
     void Barrier(VkImage image, VkImageAspectFlags aspect, uint32_t levels, uint32_t layers,
         VkImageLayout oldLayout, VkImageLayout newLayout);
@@ -300,7 +365,8 @@ void CGxDeviceVulkan::State::DestroyBuffer(NativeBuffer& buffer) {
     GxVulkan::DestroyBuffer(device, buffer);
 }
 NativeImage CGxDeviceVulkan::State::MakeImage(uint32_t width, uint32_t height, uint32_t levels,
-    uint32_t layers, VkFormat format, VkImageAspectFlags aspect, VkImageUsageFlags usage, VkDeviceSize maximumBytes) {
+    uint32_t layers, VkFormat format, VkImageAspectFlags aspect, VkImageUsageFlags usage, VkDeviceSize maximumBytes,
+    GxVulkan::GpuAdmission* admission, bool farAllocation) {
     NativeImage image;
     image.width = width; image.height = height; image.levels = levels; image.layers = layers;
     image.format = format; image.aspect = aspect;
@@ -313,8 +379,19 @@ NativeImage CGxDeviceVulkan::State::MakeImage(uint32_t width, uint32_t height, u
     try {
         VkMemoryRequirements requirements;
         vkGetImageMemoryRequirements(device, image.image, &requirements);
-        if (requirements.size > maximumBytes) throw std::runtime_error("Scene image allocation budget exceeded");
+        if (requirements.size > maximumBytes) {
+            if (admission) throw FarBudgetExceeded{};
+            throw std::runtime_error("Scene image allocation budget exceeded");
+        }
         image.allocationBytes = requirements.size;
+        if (admission) {
+            if (!admission->Charge(requirements.size, farAllocation)) throw FarBudgetExceeded{};
+            image.admission = admission; image.farAllocation = farAllocation;
+        }
+#ifdef WOWDECOMP_VULKAN_TESTING
+        if (admission && farAllocation && farFailAllocation && !--farFailAllocation)
+            throw std::runtime_error("Injected FAR image allocation failure");
+#endif
         VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         allocation.allocationSize = requirements.size;
         allocation.memoryTypeIndex = MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -332,6 +409,7 @@ void CGxDeviceVulkan::State::DestroyImage(NativeImage& image) {
     if (image.view) vkDestroyImageView(device, image.view, nullptr);
     if (image.image) vkDestroyImage(device, image.image, nullptr);
     if (image.memory) vkFreeMemory(device, image.memory, nullptr);
+    if (image.admission) image.admission->Release(image.allocationBytes, image.farAllocation);
     image = {};
 }
 void CGxDeviceVulkan::State::Barrier(VkImage image, VkImageAspectFlags aspect,
@@ -359,6 +437,8 @@ VkDeviceSize CGxDeviceVulkan::State::Upload(const void* bytes, size_t size, size
 }
 
 void CGxDeviceVulkan::State::Initialize() {
+    sceneAdmission->withdrawFar = [this] { WithdrawFar(); };
+    imageAdmission.withdrawFar = [this] { WithdrawFar(); };
     // Engineering switch for exercising the world target without temporal AA.
     worldTargetEnabled = false;
     if (const char* target = std::getenv("WOWDECOMP_VULKAN_WORLD_TARGET")) {
@@ -460,6 +540,17 @@ void CGxDeviceVulkan::State::Initialize() {
     VkDeviceCreateInfo create{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     create.queueCreateInfoCount = 1; create.pQueueCreateInfos = &queueInfo; create.pEnabledFeatures = &enabled;
     create.enabledExtensionCount = static_cast<uint32_t>(extensions.size()); create.ppEnabledExtensionNames = extensions.data();
+#ifdef WOWDECOMP_VULKAN_TESTING
+    VkPhysicalDeviceTimelineSemaphoreFeatures timeline{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+    farTestTimeline = false;
+    if (app.apiVersion >= VK_API_VERSION_1_2 && properties.apiVersion >= VK_API_VERSION_1_2) {
+        VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        supported.pNext = &timeline;
+        vkGetPhysicalDeviceFeatures2(physical, &supported);
+        farTestTimeline = timeline.timelineSemaphore == VK_TRUE;
+        if (farTestTimeline) create.pNext = &timeline;
+    }
+#endif
     GX_VK(vkCreateDevice(physical, &create, nullptr, &device));
     vkGetDeviceQueue(device, queueFamily, 0, &queue);
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -628,6 +719,8 @@ bool CGxDeviceVulkan::State::BeginFrame() {
         ResetTemporal(); return false;
     }
     GX_VK(vkWaitForFences(device, 1, &fence, true, UINT64_MAX));
+    completedSerial = submittedSerial;
+    CollectFar();
     for (auto framebuffer : framebuffers) vkDestroyFramebuffer(device, framebuffer, nullptr);
     framebuffers.clear();
     for (auto& image : retiredImages) DestroyImage(image);
@@ -738,11 +831,24 @@ void CGxDeviceVulkan::State::BeginPass() {
 void CGxDeviceVulkan::State::Destroy() {
     hdrLutJob.reset();
     if (device) {
+#ifdef WOWDECOMP_VULKAN_TESTING
+        if (farTestGate) {
+            VkSemaphoreSignalInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
+            signal.semaphore = farTestGate; signal.value = 1;
+            vkSignalSemaphore(device, &signal);
+        }
+#endif
         vkDeviceWaitIdle(device);
         if (commandPool) vkResetCommandPool(device, commandPool, 0);
         recording = inPass = false;
         for (auto framebuffer : framebuffers) vkDestroyFramebuffer(device, framebuffer, nullptr);
         framebuffers.clear();
+#ifdef WOWDECOMP_VULKAN_TESTING
+        gx.SceneFarTestReleaseNear();
+        if (farTestGate) { vkDestroySemaphore(device, farTestGate, nullptr); farTestGate = VK_NULL_HANDLE; }
+#endif
+        completedSerial = submittedSerial;
+        CollectFar(true);
         for (auto& pipeline : pipelines) vkDestroyPipeline(device, pipeline.second.handle, nullptr);
         pipelines.clear();
         for (auto& pass : renderPasses) vkDestroyRenderPass(device, pass.second, nullptr);
@@ -809,6 +915,13 @@ void CGxDeviceVulkan::State::Destroy() {
 }
 
 NativeImage& CGxDeviceVulkan::State::Texture(CGxTex* texture) {
+    const auto far = farTextures.find(texture);
+    if (far != farTextures.end()) {
+        if (far->second->lease->Status() != GxFarResourceStatus::Resident)
+            throw std::runtime_error("Withdrawn FAR texture");
+        far->second->lastUse = submittedSerial + 1;
+        return far->second->image;
+    }
     if (!texture) {
         if (!white.image) {
             EndPass();
@@ -944,6 +1057,13 @@ int InputLocation(MOJOSHADER_usage usage, int index) {
 }
 
 std::pair<VkBuffer, VkDeviceSize> CGxDeviceVulkan::State::Geometry(CGxBuf* buffer) {
+    const auto far = farBuffers.find(buffer);
+    if (far != farBuffers.end()) {
+        auto& entry = *far->second;
+        if (entry.lease->Status() != GxFarResourceStatus::Resident) throw std::runtime_error("Withdrawn FAR geometry");
+        entry.lastUse = submittedSerial + 1;
+        return {buffer == &entry.lease->vertex ? entry.vertex.buffer.buffer : entry.index.buffer.buffer, 0};
+    }
     auto& data = pools[buffer->m_pool];
     if (!buffer->m_size || buffer->m_index > data.size() || buffer->m_size > data.size() - buffer->m_index)
         throw std::runtime_error("Geometry buffer lies outside its pool");
@@ -1002,7 +1122,24 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     }
     if (temporal && msdfFont && temporalMsdfFontPixel.empty())
         temporalMsdfFontPixel = ReadModule("font-msdf-temporal.frag.spv");
-    const auto& vertexCode = msdfFont ? msdfFontVertex : fixedVertexStage ?
+    const std::vector<uint32_t>* foglessVertex = nullptr;
+    if (!msdfFont && fixedVertexStage && p && !p->inputFog) {
+        auto& code = fixedFoglessVertex[temporal ? 1 : 0];
+        if (code.empty()) code = ReadModule(temporal ? "fixed-temporal-fogless.vert.spv" : "fixed-fogless.vert.spv");
+        foglessVertex = &code;
+    }
+    if (!msdfFont && !fixedVertexStage && v && p && !p->inputFog) {
+        if (v->outputFog) {
+            auto& code = v->foglessCode[temporal ? 1 : 0];
+            if (code.empty()) {
+                auto recovered = GxVulkan::RecoverFoglessSlangShader(vertexShader->m_code.Ptr(), vertexShader->m_code.Count(), temporal);
+                if (temporal) recovered.source = GxVulkan::TemporalViewportSource(std::move(recovered.source));
+                code = Compile(recovered.source, true);
+            }
+            foglessVertex = &code;
+        }
+    }
+    const auto& vertexCode = foglessVertex ? *foglessVertex : msdfFont ? msdfFontVertex : fixedVertexStage ?
         (temporal ? temporalFixedVertex : fixedVertex) : (temporal ? temporalCode(v, vertexShader) : v->code);
     const auto& originalPixelCode = msdfFont ? (temporal ? temporalMsdfFontPixel : msdfFontPixel) : fixedPixelStage ?
         (temporal ? temporalFixedPixel : fixedPixel) : (temporal ? temporalCode(p, pixelShader) : p->code);
@@ -1046,6 +1183,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     std::vector<VkDeviceSize> offsets;
     std::vector<VkBuffer> vertexBuffers;
     std::map<CGxBuf*, uint32_t> streams;
+    if (!FarDrawAllowed(buffers, required, indexed)) return;
     for (int location : required) {
         const auto* declaration = declarations[location];
         CGxBuf* buffer = buffers[location];
@@ -1081,11 +1219,16 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     std::array<std::array<VkDescriptorImageInfo, 16>, 2> images{};
     // Resolve uploads before beginning a render pass, since transfers cannot
     // occur inside it. Descriptor snapshots remain valid until the frame fence.
+    bool withdrawnFarTexture = false;
     auto sample = [&](unsigned set, uint32_t slot, bool useBoundTexture = true) {
         if (slot >= (set == 0 ? 4u : 16u)) throw std::runtime_error("Shader texture register is out of range");
         auto& descriptor = images[set == 0 ? 0 : 1][slot];
         if (!descriptor.imageView) {
             auto* texture = useBoundTexture ? static_cast<CGxTex*>(gx.m_appRenderStates[GxRs_Texture0 + slot].m_value.m_data.p) : nullptr;
+            const auto far = farTextures.find(texture);
+            if (far != farTextures.end() && far->second->lease->Status() != GxFarResourceStatus::Resident) {
+                withdrawnFarTexture = true; return;
+            }
             auto& image = Texture(texture);
             descriptor = {image.sampler, image.view, image.layout};
         }
@@ -1109,6 +1252,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     if (v) for (int i = 0; i < v->reflection->sampler_count; ++i) sample(0, v->reflection->samplers[i].index);
     C44Matrix transform = gx.m_xforms[GxXform_World].m_mtx[gx.m_xforms[GxXform_World].m_level] *
         gx.m_xforms[GxXform_View].m_mtx[gx.m_xforms[GxXform_View].m_level] * gx.m_projNative;
+    if (withdrawnFarTexture) return;
     std::vector<float> vertexUniforms, pixelUniforms;
     if (msdfFont) {
         const auto* matrix = reinterpret_cast<const float*>(&transform);
@@ -1160,6 +1304,13 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
                 static_cast<float>(colourOp), static_cast<float>(alphaOp), 0});
         }
         vertexUniforms.insert(vertexUniforms.end(), coordinates.begin(), coordinates.end());
+        const bool fog = enabled(GxRs_Fog, GxMasterEnable_Fog);
+        vertexUniforms.insert(vertexUniforms.end(), {fog ? 1.f : 0.f,
+            gx.m_appRenderStates[GxRs_FogStart].m_value.m_data.f[0],
+            gx.m_appRenderStates[GxRs_FogEnd].m_value.m_data.f[0], 0.f});
+        const uint32_t fogColour = gx.m_appRenderStates[GxRs_FogColor].m_value.m_data.u[0];
+        pixelUniforms.insert(pixelUniforms.end(), {((fogColour >> 16) & 255) / 255.f,
+            ((fogColour >> 8) & 255) / 255.f, (fogColour & 255) / 255.f, fog ? 1.f : 0.f});
     }
     if (v) vertexUniforms = GxVulkan::ShaderUniforms(*v->reflection, CGxDevice::s_shadowConstants[1].constants, 256);
     if (p) pixelUniforms = GxVulkan::ShaderUniforms(*p->reflection, CGxDevice::s_shadowConstants[0].constants, 256);
@@ -1399,10 +1550,14 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         if (indexed) {
             auto* buffer = gx.m_primIndexBuf;
             if (!buffer) throw std::runtime_error("Indexed draw has no index buffer");
-            auto& data = pools[buffer->m_pool];
-            if (buffer->m_index > data.size() || (static_cast<uint64_t>(batch.m_start) + batch.m_count) * 2 > data.size() - buffer->m_index)
+            const auto far = farBuffers.find(buffer);
+            const auto* data = far == farBuffers.end() ? &pools[buffer->m_pool] : nullptr;
+            const size_t available = data ? data->size() : buffer->m_size;
+            if (buffer->m_index > available || (static_cast<uint64_t>(batch.m_start) + batch.m_count) * 2 > available - buffer->m_index)
                 throw std::runtime_error("Triangle fan index buffer overrun");
-            original = reinterpret_cast<const uint16_t*>(data.data() + buffer->m_index) + batch.m_start;
+            const auto* source = data ? data->data() : far->second->index.buffer.mapped;
+            original = reinterpret_cast<const uint16_t*>(source + buffer->m_index) + batch.m_start;
+            if (!data) far->second->lastUse = submittedSerial + 1;
         }
         for (uint32_t i = 1; i + 1 < batch.m_count; ++i) {
             indices.push_back(original ? original[0] : batch.m_start);
@@ -1415,14 +1570,15 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     } else if (indexed) {
         auto* buffer = gx.m_primIndexBuf;
         if (!buffer) throw std::runtime_error("Indexed draw has no index buffer");
-        auto& data = pools[buffer->m_pool];
-        if (buffer->m_index > data.size() || (static_cast<uint64_t>(batch.m_start) + batch.m_count) * 2 > data.size() - buffer->m_index)
+        const auto* data = farBuffers.count(buffer) ? nullptr : &pools[buffer->m_pool];
+        const size_t available = data ? data->size() : buffer->m_size;
+        if (buffer->m_index > available || (static_cast<uint64_t>(batch.m_start) + batch.m_count) * 2 > available - buffer->m_index)
             throw std::runtime_error("Index buffer overrun");
         VkBuffer indexBuffer = upload.buffer;
         if (residentIndex.first) {
             indexBuffer = residentIndex.first;
             indexOffset = residentIndex.second + static_cast<uint64_t>(batch.m_start) * 2;
-        } else indexOffset = Upload(data.data() + buffer->m_index + batch.m_start * 2, batch.m_count * 2, 4);
+        } else indexOffset = Upload(data->data() + buffer->m_index + batch.m_start * 2, batch.m_count * 2, 4);
         vkCmdBindIndexBuffer(command, indexBuffer, indexOffset, VK_INDEX_TYPE_UINT16);
         vkCmdDrawIndexed(command, batch.m_count, 1, 0, 0, 0);
     } else {
@@ -1448,9 +1604,24 @@ void CGxDeviceVulkan::State::Submit(bool present, bool resume) {
     }
     submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
     if (present) { submit.signalSemaphoreCount = 1; submit.pSignalSemaphores = &complete[imageIndex]; }
+#ifdef WOWDECOMP_VULKAN_TESTING
+    VkSemaphore testWaits[2]{};
+    VkPipelineStageFlags testWaitStages[2]{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+    uint64_t testWaitValues[2]{};
+    VkTimelineSemaphoreSubmitInfo timeline{VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+    if (farTestGate) {
+        unsigned waits = 0;
+        if (acquirePending) testWaits[waits++] = acquired;
+        testWaits[waits] = farTestGate; testWaitValues[waits++] = 1;
+        timeline.waitSemaphoreValueCount = waits; timeline.pWaitSemaphoreValues = testWaitValues;
+        submit.pNext = &timeline; submit.waitSemaphoreCount = waits;
+        submit.pWaitSemaphores = testWaits; submit.pWaitDstStageMask = testWaitStages;
+    }
+#endif
     const auto submitted = vkQueueSubmit(queue, 1, &submit, fence);
     if (submitted != VK_SUCCESS) ResetTemporal();
     VkCheck(submitted, "vkQueueSubmit");
+    ++submittedSerial;
     if (historyPending) {
         temporalHistory.Commit(); temporalDraws.Commit(); historyPending = false;
         historyIndex ^= 1;
@@ -1470,6 +1641,8 @@ void CGxDeviceVulkan::State::Submit(bool present, bool resume) {
     }
     if (resume) {
         GX_VK(vkWaitForFences(device, 1, &fence, true, UINT64_MAX));
+        completedSerial = submittedSerial;
+        CollectFar();
         GX_VK(vkResetCommandPool(device, commandPool, 0));
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1648,6 +1821,14 @@ void CGxDeviceVulkan::XformSetProjection(const C44Matrix& matrix) {
 }
 #include "TemporalResolve.inl"
 #include "HdrScene.inl"
+#include "FarResources.inl"
+
+void CGxDeviceVulkan::State::PollFarCompletion() {
+    if (!device || !fence) return;
+    const auto result = vkGetFenceStatus(device, fence);
+    if (result == VK_SUCCESS) completedSerial = submittedSerial;
+    else if (result != VK_NOT_READY) VkCheck(result, "vkGetFenceStatus");
+}
 
 #ifdef WOWDECOMP_VULKAN_TESTING
 std::array<uint64_t,4> CGxDeviceVulkan::SceneHdrTestLutState() const {
@@ -2137,7 +2318,12 @@ void CGxDeviceVulkan::IShaderCreate(CGxShader* shader) {
         auto recovered = GxVulkan::RecoverSlangShader(shader->m_code.Ptr(), shader->m_code.Count());
         auto code = m_native->Compile(recovered.source, shader->m_target == GxSh_Vertex);
         m_native->shaders.insert_or_assign(shader, NativeShader{m_native->nextShader++, std::move(recovered.reflection), std::move(code)});
-        shader->m_apiSpecific = &m_native->shaders.at(shader); shader->m_valid = 1;
+        auto& native = m_native->shaders.at(shader);
+        native.inputFog = shader->m_target == GxSh_Pixel && GxVulkan::ShaderUsesInputLocation(native.code, 10);
+        if (shader->m_target == GxSh_Vertex)
+            for (int i = 0; i < native.reflection->output_count; ++i)
+                native.outputFog |= native.reflection->outputs[i].usage == MOJOSHADER_USAGE_FOG;
+        shader->m_apiSpecific = &native; shader->m_valid = 1;
     } catch (const std::exception& error) {
         CGxDevice::Log("Vulkan/Slang shader: %s", error.what());
         std::fprintf(stderr, "Vulkan/Slang shader: %s\n", error.what());

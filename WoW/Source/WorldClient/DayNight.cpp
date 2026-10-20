@@ -2157,6 +2157,13 @@ void DayNight::UpdateFog() {
     }
 
     int32_t liquidStatus = World::SceneCamLiquidStatus(nullptr);
+    if (!liquidStatus && !s_fogOverride) {
+        // Extend the outdoor contribution before blending authored interior fog.
+        // Colour and the dimensionless density/shape parameter stay unchanged.
+        const float scale = World::GetLandscapeFogScale(info.m_fog.m_end);
+        info.m_fog.m_start *= scale;
+        info.m_fog.m_end *= scale;
+    }
     float density;
 
     if (inside) {

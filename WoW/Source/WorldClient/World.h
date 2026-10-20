@@ -471,6 +471,8 @@ void SetDetailDoodadDensity(int32_t density);
 void SetDetailDoodadDist(float dist);
 void SetFarClip(float farClip);
 void SetHorizonFarClipScale(float scale);
+float GetHorizonDistance();
+float GetLandscapeFogScale(float authoredEnd);
 void SetHorizonNearClipScale(float scale);
 void SetNearClip(float nearClip);
 void SetTexLodBias(float bias);

@@ -2,6 +2,9 @@
 #include "Engine/Source/BlizzardCore/Source/Packages/Mopaq/SFile.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Mopaq/SFileArchives.h"
 #include <array>
+#include <atomic>
+#include <thread>
+#include <type_traits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -17,6 +20,27 @@ void Check(bool ok, const char* expression, int line) {
 }
 
 int main() {
+    static_assert(std::is_same<decltype(System_SFile::s_lastError), std::atomic<uint32_t>>::value,
+        "Asynchronous archive errors must not race on plain global storage");
+    const auto previousError = Blizzard::Mopaq::SFileGetLastError();
+    std::thread otherOwner([] { System_SFile::s_lastError = 0x12345678; });
+    otherOwner.join();
+    CHECK(Blizzard::Mopaq::SFileGetLastError() == 0x12345678); // Still process-global, not thread-local.
+    System_SFile::s_lastError = 0x60000000;
+    std::atomic<bool> invalidError{false};
+    std::array<std::thread, 4> writers;
+    for (unsigned i = 0; i < writers.size(); ++i) {
+        writers[i] = std::thread([&, i] {
+            for (unsigned attempt = 0; attempt < 5000; ++attempt) {
+                System_SFile::s_lastError = 0x60000000 + i;
+                const auto error = Blizzard::Mopaq::SFileGetLastError();
+                if (error < 0x60000000 || error > 0x60000003) invalidError.store(true);
+            }
+        });
+    }
+    for (auto& writer : writers) writer.join();
+    CHECK(!invalidError.load());
+    System_SFile::s_lastError = previousError;
     // Two generated files exercise reverse in-place expansion, especially row 0:
     // its raw compressed-size word overlaps the expanded 64-bit offset.
     const std::array<const char*, 2> names = {"first.bin", "second.bin"};

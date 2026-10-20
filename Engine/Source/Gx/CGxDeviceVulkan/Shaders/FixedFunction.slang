@@ -6,6 +6,10 @@
 #ifndef GX_HDR_OUTPUT
 #define GX_HDR_OUTPUT 0
 #endif
+// Legacy pixel programs do not necessarily consume the fixed vertex FOG ABI.
+#ifndef GX_FOG_EXPORT
+#define GX_FOG_EXPORT 1
+#endif
 #if GX_HDR_OUTPUT
 #include "HdrToneMapping.slang"
 #endif
@@ -17,11 +21,13 @@ struct VertexConstants
     row_major float4x4 normalTransform;
     row_major float4x4 textureTransform[8];
     float4 textureControl[8]; // coordinate index, texgen mode, transform mode, enabled
+    float4 fog; // enabled, linear start/end, reserved
 };
 struct PixelConstants
 {
     float4 options; // alpha threshold
     float4 stage[8]; // enabled, colour operation, alpha operation
+    float4 fog; // encoded RGB fog colour, enabled
 };
 [[vk::binding(0, 1)]] ConstantBuffer<VertexConstants> vertexConstants;
 [[vk::binding(0, 3)]] ConstantBuffer<PixelConstants> pixelConstants;
@@ -58,7 +64,9 @@ struct VertexOutput
     [[vk::location(0)]] float4 colour : COLOR0;
     [[vk::location(1)]] float4 secondaryColour : COLOR1;
     [[vk::location(2)]] float4 uv[8] : TEXCOORD0;
+#if GX_FOG_EXPORT
     [[vk::location(10)]] float fog : FOG;
+#endif
 };
 
 [shader("vertex")]
@@ -75,6 +83,16 @@ VertexOutput vertexMain(VertexInput input)
 #endif
     output.colour = input.colour.bgra;
     float3 eyePosition = mul(float4(input.position, 1.0), vertexConstants.worldView).xyz;
+#if GX_FOG_EXPORT
+    output.fog = 1.0;
+    if (vertexConstants.fog.x != 0.0)
+    {
+        float distance = abs(eyePosition.z);
+        float range = vertexConstants.fog.z - vertexConstants.fog.y;
+        output.fog = range > 0.0 ? saturate((vertexConstants.fog.z - distance) / range) :
+            (distance < vertexConstants.fog.z ? 1.0 : 0.0);
+    }
+#endif
     float3 eyeNormal = mul(float4(input.normal, 0.0), vertexConstants.normalTransform).xyz;
     [unroll] for (int i = 0; i < 8; ++i)
     {
@@ -150,6 +168,10 @@ float4 pixelMain(VertexOutput input) : SV_Target
         colour.a = combine(texel, previous, input.colour, int(stage.z)).a;
     }
     clip(colour.a - pixelConstants.options.x);
+#if GX_FOG_EXPORT
+    if (pixelConstants.fog.w != 0.0)
+        colour.rgb = lerp(pixelConstants.fog.rgb, colour.rgb, saturate(input.fog));
+#endif
 #if GX_TEMPORAL || GX_HDR_OUTPUT
     FixedOutput output;
     output.colour = colour;

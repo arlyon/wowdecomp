@@ -30,6 +30,10 @@ std::string RecoverSlangSource(const void* bytecode, size_t size);
 // Preserve encoded C0 at target2 while optionally decoding final RGB into float C0.
 // This is an output transport boundary, not reconstruction of material lighting.
 std::string ShaderOutputBoundary(std::string source, bool decode = true);
+// Pair linking may omit an unused scalar FOG export, without changing arithmetic.
+bool ShaderUsesInputLocation(const std::vector<uint32_t>& code, uint32_t location);
+std::string PruneVertexFogOutput(std::string source);
+RecoveredShader RecoverFoglessSlangShader(const void* bytecode, size_t size, bool temporal);
 // Optional motion variant: previous packed vertex registers at set1/binding1,
 // clip-space jitter at set1/binding2; pixel options at set3/binding2 are
 // (previous-pose validity, reactivity, previous viewport minDepth/maxDepth).

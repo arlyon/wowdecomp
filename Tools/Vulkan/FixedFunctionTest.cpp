@@ -21,9 +21,9 @@ void Check(bool ok, const char* message) { if (!ok) throw std::runtime_error(mes
 void Vk(VkResult result) { if (result != VK_SUCCESS) throw std::runtime_error("Vulkan fixture error " + std::to_string(result)); }
 using Matrix = std::array<float, 16>;
 Matrix Identity() { Matrix m{}; m[0] = m[5] = m[10] = m[15] = 1; return m; }
-struct VertexConstants { Matrix projection, view, normal; std::array<Matrix, 8> texture; std::array<std::array<float, 4>, 8> control; };
-struct PixelConstants { std::array<float, 4> options; std::array<std::array<float, 4>, 8> stage; };
-static_assert(sizeof(VertexConstants) == 832 && sizeof(PixelConstants) == 144, "Fixed shader uniform ABI changed");
+struct VertexConstants { Matrix projection, view, normal; std::array<Matrix, 8> texture; std::array<std::array<float, 4>, 8> control; std::array<float,4> fog; };
+struct PixelConstants { std::array<float, 4> options; std::array<std::array<float, 4>, 8> stage; std::array<float,4> fog; };
+static_assert(sizeof(VertexConstants) == 848 && sizeof(PixelConstants) == 160, "Fixed shader uniform ABI changed");
 struct Vertex { float position[3], normal[3]; uint32_t colour; float uv[8][2]; };
 struct Buffer { VkBuffer handle{}; VkDeviceMemory memory{}; void* mapped{}; };
 struct Image { VkImage handle{}; VkDeviceMemory memory{}; VkImageView view{}; };
@@ -549,6 +549,19 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::strcmp(argv[1],"--world-target") == 0) { fixture.TestWorldTargets(); return 0; }
         VertexConstants v{}; PixelConstants p{};
         v.projection = v.view = v.normal = Identity(); for (auto& matrix : v.texture) matrix = Identity();
+        // Low-detail terrain supplies white vertices and a full-fog interval.
+        p.fog={.1f,.4f,.7f,1}; v.fog={1,0,1,0}; v.view[14]=10;
+        fixture.Draw(v,p); fixture.Pixel(32,32,{.1f,.4f,.7f,1});
+        v.fog={1,5,15,0};
+        v.view[14]=2; fixture.Draw(v,p); fixture.Pixel(32,32,{1,1,1,1});
+        v.view[14]=10; fixture.Draw(v,p); fixture.Pixel(32,32,{.55f,.7f,.85f,1});
+        v.view[14]=-10; fixture.Draw(v,p); fixture.Pixel(32,32,{.55f,.7f,.85f,1});
+        v.view[14]=20; fixture.Draw(v,p,0x80FFFFFF); fixture.Pixel(32,32,{.1f,.4f,.7f,128.f/255});
+        p.fog[3]=0; fixture.Draw(v,p); fixture.Pixel(32,32,{1,1,1,1});
+        p.fog[3]=1; v.fog[0]=0; fixture.Draw(v,p); fixture.Pixel(32,32,{1,1,1,1});
+        v.fog={1,10,10,0}; v.view[14]=9; fixture.Draw(v,p); fixture.Pixel(32,32,{1,1,1,1});
+        v.view[14]=10; fixture.Draw(v,p); fixture.Pixel(32,32,{.1f,.4f,.7f,1});
+        v.fog={}; p.fog={}; v.view=Identity();
         fixture.Draw(v,p,0xFF0000FF); fixture.Pixel(32,32,{0,0,1,1});
         v.control[0] = {0,0,0,1}; p.stage[0] = {1,0,0,0}; p.options[0] = .1f;
         fixture.Draw(v,p); const std::array<float,4> base{128.f/255,64.f/255,32.f/255,128.f/255}; fixture.Pixel(32,32,base);

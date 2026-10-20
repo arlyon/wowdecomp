@@ -56,6 +56,27 @@ constexpr uint32_t relativeVertex[] = {
 }
 int main() {
     try {
+        // Interface-only FOG pruning retains arithmetic and fails closed on
+        // unknown ABI/decoration forms; it does not infer material lighting.
+        const std::vector<uint32_t> inputFog{0x07230203,0x00010500,0,16,0,
+            (4u<<16)|71u,7,30,10,(4u<<16)|59u,3,7,1};
+        Check(GxVulkan::ShaderUsesInputLocation(inputFog,10),"Live fragment FOG not detected");
+        Check(!GxVulkan::ShaderUsesInputLocation(inputFog,9),"Absent fragment input invented");
+        const std::vector<uint32_t> grouped{0x07230203,0x00010500,0,16,0,(2u<<16)|73u,7};
+        Check(GxVulkan::ShaderUsesInputLocation(grouped,10),"Unknown decoration group certified absence");
+        const std::vector<uint32_t> alternate{0x07230203,0x00010500,0,16,0,(4u<<16)|332u,7,30,9};
+        Check(GxVulkan::ShaderUsesInputLocation(alternate,26),"Unknown decoration encoding certified absence");
+        auto outputFog=inputFog;outputFog.back()=3;
+        Check(!GxVulkan::ShaderUsesInputLocation(outputFog,10),"Output mistaken for fragment input");
+        auto malformed=inputFog;malformed.pop_back();
+        Reject([&]{GxVulkan::ShaderUsesInputLocation(malformed,10);});
+        const std::string fogSource="struct main_Output { [[vk::location(10)]] float m_oFog : FOG; };\n"
+            "main_Output main() { main_Output output;\n#define oFog output.m_oFog\noFog = 1; return output; }";
+        const auto fogless=GxVulkan::PruneVertexFogOutput(fogSource);
+        Check(fogless.find("location(10)")==std::string::npos && fogless.find("float gx_unusedFog;")!=std::string::npos &&
+            fogless.find("oFog = 1;")!=std::string::npos,"Unused FOG pruning changed arithmetic or retained export");
+        Reject([&]{GxVulkan::PruneVertexFogOutput("unexpected ABI");});
+        Reject([&]{GxVulkan::PruneVertexFogOutput(fogSource+"\noutput.m_oFog = 2;");});
         using namespace GxVulkan;
         auto v = TranslateShader(vertex, sizeof(vertex));
         auto p = TranslateShader(pixel, sizeof(pixel));

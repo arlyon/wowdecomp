@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include "Engine/Source/Services/AsyncFile.h"
 #include "Engine/Source/Base/Prop.h"
 #include "Engine/Source/BlizzardCore/SFile2-Core.h"
@@ -296,12 +297,16 @@ void AsyncFileReadWait(CAsyncObject* object) {
 
     g_queueLock.Leave();
 
-    if (SFile::IsStreamingMode()) {
+    if (SFile::IsStreamingMode() && !object->m_readFilename[0]) {
         SFile::SetFilePriority(object->m_file, 1, 0);
     }
 
     char name[256];
-    SFile::GetActualFileName(object->m_file, name, sizeof(name));
+    if (object->m_readFilename[0]) {
+        SStrCopy(name, object->m_readFilename, sizeof(name));
+    } else {
+        SFile::GetActualFileName(object->m_file, name, sizeof(name));
+    }
     DebugLog("AsyncFileReadWait():%s\n", name);
 
     if (s_ingameStartCallback) {
@@ -340,6 +345,14 @@ CAsyncObject* AsyncFileReadAllocObject() {
     g_queueLock.Leave();
 
     object->m_file = nullptr;
+    object->m_readFilename[0] = '\0';
+    object->m_openFlags = object->m_bytesRead = 0;
+    object->m_readSucceeded = false;
+    object->m_filenameMode = AsyncFilenameMode::WholeFile;
+    object->m_filenameResult = AsyncFilenameResult::Pending;
+    object->m_readOffset = 0;
+    object->m_fileBytes = object->m_expectedFileBytes = object->m_expectedPrefixBytes = 0;
+    object->m_expectedPrefix = nullptr;
     object->m_buffer = nullptr;
     object->m_size = 0;
     object->m_userArg = nullptr;
@@ -435,7 +448,29 @@ uint32_t STORMAPI AsyncFileReadThread(void* param) {
             thread->m_currentObject = object;
             g_queueLock.Leave();
 
-            for (int32_t retries = 10; retries; ) {
+            if (object->m_readFilename[0]) {
+                // Deferred filename/range reads use explicit outcomes, never shared last-error.
+                SFileImpl* file = nullptr;
+                object->m_filenameResult = AsyncFilenameResult::OpenError;
+                if (SFile::OpenEx(nullptr, object->m_readFilename, object->m_openFlags, &file) && file) {
+                    object->m_file = file;
+                    struct Reader {
+                        SFileImpl* file;
+                        uint32_t Size() {return SFileGetFileSize(file,nullptr);}
+                        bool Read(uint32_t offset,void* buffer,uint32_t count,uint32_t& got) {
+                            // Disk SFile ignores distanceHigh; use positive
+                            // signed steps so legal32-bit MPQ offsets also work
+                            // through the faithful POSIX disk adapter.
+                            const uint32_t first=offset>0x7fffffffu?0x7fffffffu:offset;
+                            int32_t high=0;
+                            if(uint32_t(SFile::SetFilePointer(file,int32_t(first),&high,0))!=first) return false;
+                            if(offset>first && uint32_t(SFile::SetFilePointer(file,int32_t(offset-first),&high,1))!=offset) return false;
+                            return SFileReadFile(file,buffer,count,&got,nullptr,0);
+                        }
+                    } reader{file};
+                    AsyncFileReadFilenameBytes(*object,reader);
+                }
+            } else for (int32_t retries = 10; retries; ) {
                 if (SFile::IsStreamingMode() && object->m_file->m_type) {
                     SFile::MakeFileLocal(object->m_file, (object->m_priority > 127) + 1, true);
                 }
@@ -563,6 +598,37 @@ void AsyncFileReadObject(CAsyncObject* object, int32_t urgent) {
     if (SFile::IsStreamingMode()) {
         SFile::SetFilePriority(object->m_file, 0, 0);
     }
+}
+
+static void EnqueueFilename(CAsyncObject* object, const char* filename, uint32_t flags) {
+    SStrCopy(object->m_readFilename, filename, sizeof(object->m_readFilename));
+    object->m_openFlags = flags;
+    object->m_filenameResult = AsyncFilenameResult::Pending;
+    object->m_readSucceeded = false;
+    object->m_bytesRead = 0;
+    // Filename reads must not inspect an unopened handle or use streaming queues.
+    g_queueLock.Enter();
+    object->m_queue = s_asyncQueues[0];
+    AsyncFileReadLinkObject(object, 0);
+    g_queueLock.Leave();
+}
+
+void AsyncFileReadFilename(CAsyncObject* object, const char* filename, uint32_t flags) {
+    object->m_filenameMode = AsyncFilenameMode::WholeFile;
+    object->m_readOffset = 0;
+    object->m_expectedFileBytes = object->m_expectedPrefixBytes = 0;
+    object->m_expectedPrefix = nullptr;
+    EnqueueFilename(object,filename,flags);
+}
+
+void AsyncFileReadFilenameRange(CAsyncObject* object, const char* filename, uint32_t flags,
+    uint64_t offset, uint32_t expectedFileBytes, const uint8_t* prefix, uint32_t prefixBytes) {
+    object->m_filenameMode = AsyncFilenameMode::Range;
+    object->m_readOffset = offset;
+    object->m_expectedFileBytes = expectedFileBytes;
+    object->m_expectedPrefix = prefix;
+    object->m_expectedPrefixBytes = prefixBytes;
+    EnqueueFilename(object, filename, flags);
 }
 
 // VERIFY: 2f496060 auto

@@ -9,6 +9,9 @@ class CAsyncObject;
 class CAsyncQueue;
 class SFileImpl;
 
+enum class AsyncFilenameMode { WholeFile, Range };
+enum class AsyncFilenameResult { Pending, Complete, OpenError, InvalidRange, EndOfFile, ReadError, SourceChanged };
+
 class CAsyncObject {
     public:
     /* 0000 */ SFileImpl* m_file;
@@ -27,6 +30,19 @@ class CAsyncObject {
     /* 0025 */ int8_t m_char25;
     /* 0026 */ uint16_t m_padding;
     /* 0028 */ TSLink<CAsyncObject> m_link;
+
+    // Optional deferred filename read, owned by this request until completion.
+    char m_readFilename[260]{};
+    uint32_t m_openFlags = 0;
+    uint32_t m_bytesRead = 0;
+    bool m_readSucceeded = false;
+    AsyncFilenameMode m_filenameMode = AsyncFilenameMode::WholeFile;
+    AsyncFilenameResult m_filenameResult = AsyncFilenameResult::Pending;
+    uint64_t m_readOffset = 0;
+    uint32_t m_fileBytes = 0, m_expectedFileBytes = 0;
+    // Borrowed immutable prefix, kept alive by request owner until callback.
+    const uint8_t* m_expectedPrefix = nullptr;
+    uint32_t m_expectedPrefixBytes = 0;
 
     int32_t IsPending();
 };

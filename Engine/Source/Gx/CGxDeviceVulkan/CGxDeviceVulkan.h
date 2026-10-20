@@ -37,6 +37,18 @@ public:
     bool SceneHdrActive() const override;
     bool SceneSetHdr(bool enabled, float exposureEV) override;
     bool SceneSetLinearOutput(bool linear) override;
+    bool SceneFarResourcesSupported() const override;
+    GxFarResourceAdmission SceneCreateFarResources(const GxFarResourceRequest&) override;
+    GxFarResourceUsage SceneFarResourceUsage() const override;
+    void SceneWithdrawFarResources() override;
+#ifdef WOWDECOMP_VULKAN_TESTING
+    void SceneFarTestAdmissionLimits(uint64_t scene, uint64_t images, uint64_t far);
+    void SceneFarTestFailAllocation(uint32_t ordinal);
+    bool SceneFarTestNearCharge(bool images, uint64_t bytes);
+    void SceneFarTestReleaseNear();
+    void SceneFarTestHoldGpu();
+    void SceneFarTestReleaseGpu();
+#endif
     bool SceneTemporalSupported() const override;
     bool SceneRenderScaleSupported() const override;
     bool SceneSetRenderScale(float scale) override;

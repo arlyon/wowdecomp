@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "Engine/Source/Gx/CGxBuf.h"
+#include "Engine/Source/Gx/FarResources.h"
 #include "Engine/Source/Gx/CGxDevice/CGxShader.h"
 #include "Engine/Source/Gx/CGxDevice/EmergencyMem.h"
 #include "Engine/Source/Gx/CGxDevice/Types.h"
@@ -210,6 +211,10 @@ class CGxDevice {
     virtual bool SceneSetHdr(bool enabled, float) { return !enabled; }
     // Scoped explicit linear/emissive producer; never infer from registers.
     virtual bool SceneSetLinearOutput(bool) { return false; }
+    virtual bool SceneFarResourcesSupported() const { return false; }
+    virtual GxFarResourceAdmission SceneCreateFarResources(const GxFarResourceRequest&) { return {}; }
+    virtual GxFarResourceUsage SceneFarResourceUsage() const { return {}; }
+    virtual void SceneWithdrawFarResources() {}
     virtual bool SceneTemporalSupported() const { return false; }
     virtual bool SceneRenderScaleSupported() const { return false; }
     virtual bool SceneSetRenderScale(float scale) { return scale == 1.0f; }

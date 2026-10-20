@@ -1,5 +1,5 @@
 -- Exercise the production settings script in the client's bundled Lua runtime.
-local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1",nativeHDR="0",nativeHDRExposure="0",nativeHDRLut=""}, 0, 0
+local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1",nativeHDR="0",nativeHDRExposure="0",nativeHDRLut="",landscapeDistance="0"}, 0, 0
 local methods = {}
 for _, key in ipairs({"SetAllPoints","SetWidth","SetJustifyH","SetMinMaxValues","SetValueStep","SetHeight","SetAutoFocus","SetMaxLetters","ClearFocus"}) do methods[key] = function() end end
 function methods:Enable() self.enabled=true end
@@ -148,6 +148,18 @@ saved.nativeAA="1";saved.nativeSceneScale="0.5";scaleSupported=false;aaSupported
 scene.refresh();assert(not scale.enabled and not aa.enabled and not aa:GetChecked(),"Unavailable scene features enabled")
 scale:SetValue(75);aa:SetChecked(true);aa.scripts.OnClick(aa);scene.okay()
 assert(saved.nativeAA=="0" and saved.nativeSceneScale=="1","Unsupported scene features persisted")
+local distance=frames.NativeLandscapeDistanceSlider
+assert(distance:GetValue()==0 and saved.landscapeDistance=="0")
+oldWrites=writes;distance:SetValue(9);scene.scripts.OnShow()
+assert(saved.landscapeDistance=="0" and distance:GetValue()==9 and writes==oldWrites,"Landscape applied early or lost staging")
+scene.cancel();assert(distance:GetValue()==0 and writes==oldWrites)
+distance:SetValue(9);scene.okay();assert(saved.landscapeDistance=="8000")
+oldWrites=writes;scene.default();assert(writes==oldWrites and saved.landscapeDistance=="8000","Landscape defaults persisted early")
+scene.cancel();assert(distance:GetValue()==9)
+distance:SetValue(99);scene.okay();assert(saved.landscapeDistance=="10000")
+distance:SetValue(-9);scene.okay();assert(saved.landscapeDistance=="0")
+for index=1,13 do distance:SetValue(index);scene.okay();assert(tonumber(saved.landscapeDistance)==4000+(index-1)*500,"Landscape slider emitted wrong value") end
+scene.default();scene.okay();assert(saved.landscapeDistance=="0")
 local hdr=frames.NativeHdrVideoPanel
 local enabled=frames.NativeHdrCheck
 local ev=frames.NativeHdrExposureSlider

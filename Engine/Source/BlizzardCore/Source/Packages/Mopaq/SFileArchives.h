@@ -1,6 +1,7 @@
 #ifndef ENGINE_SOURCE_BLIZZARDCORE_SOURCE_PACKAGES_MOPAQ_SFILEARCHIVES_H
 #define ENGINE_SOURCE_BLIZZARDCORE_SOURCE_PACKAGES_MOPAQ_SFILEARCHIVES_H
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -237,7 +238,8 @@ class HeapArray {
 
 extern Blizzard::Util::Digest<16> s_emptyMd5;
 extern Blizzard::Lock::Atomic s_nextArchiveId;
-extern uint32_t s_lastError;
+// Process-global error semantics are retained across asynchronous file opens.
+extern std::atomic<uint32_t> s_lastError;
 
 char* BackslashPath(const char* path, char* buffer, uint32_t size);
 bool CheckFileExistsOnDisk(const char* name, uint32_t flags, char* result);
