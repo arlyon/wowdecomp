@@ -1,4 +1,5 @@
 #include "ResidentBuffer.h"
+#include "GpuAdmission.h"
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -17,7 +18,8 @@ VkDeviceSize AlignedSize(VkDeviceSize bytes) {
 }
 }
 Buffer CreateBuffer(VkDevice device, const VkPhysicalDeviceMemoryProperties& memory,
-    VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) {
+    VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, GpuAdmission* nearAdmission) {
+    if (!size) throw std::invalid_argument("Invalid zero-sized Vulkan buffer");
     Buffer buffer;
     buffer.size = size;
     VkBufferCreateInfo create{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -32,7 +34,15 @@ Buffer CreateBuffer(VkDevice device, const VkPhysicalDeviceMemoryProperties& mem
                 (memory.memoryTypes[i].propertyFlags & properties) == properties) { type = i; break; }
         }
         if (type == memory.memoryTypeCount) throw std::runtime_error("Vulkan buffer has no suitable memory type");
+        buffer.allocationBytes = requirements.size;
+        if (nearAdmission) {
+            if (!nearAdmission->Charge(requirements.size, false)) throw std::runtime_error("Near buffer physical admission exhausted");
+            buffer.admission = nearAdmission;
+        }
+        VkMemoryAllocateFlagsInfo flags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+        flags.flags = (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT : 0;
         VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocate.pNext = flags.flags ? &flags : nullptr;
         allocate.allocationSize = requirements.size; allocate.memoryTypeIndex = type;
         Check(vkAllocateMemory(device, &allocate, nullptr, &buffer.memory), "vkAllocateMemory(buffer)");
         Check(vkBindBufferMemory(device, buffer.buffer, buffer.memory, 0), "vkBindBufferMemory");
@@ -45,6 +55,7 @@ void DestroyBuffer(VkDevice device, Buffer& buffer) {
     if (buffer.mapped) vkUnmapMemory(device, buffer.memory);
     if (buffer.buffer) vkDestroyBuffer(device, buffer.buffer, nullptr);
     if (buffer.memory) vkFreeMemory(device, buffer.memory, nullptr);
+    if (buffer.admission) buffer.admission->Release(buffer.allocationBytes, false);
     buffer = {};
 }
 bool ResidentBuffer::NeedsUpload(VkDeviceSize bytes) const {

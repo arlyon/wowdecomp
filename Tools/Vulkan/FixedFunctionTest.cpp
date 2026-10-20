@@ -2,6 +2,7 @@
 #include "Engine/Source/Gx/CGxDeviceVulkan/Shader.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/Slang.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/ResidentBuffer.h"
+#include "Engine/Source/Gx/CGxDeviceVulkan/GpuAdmission.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/WorldTarget.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/TemporalBackend.h"
 #include <limits>
@@ -34,6 +35,7 @@ struct Fixture {
     VkPipelineLayout layout{}; VkPipeline pipeline{}; VkDescriptorPool descriptorPool{}; VkSampler sampler{};
     std::array<VkDescriptorSetLayout, 4> setLayouts{}; std::array<VkDescriptorSet, 4> sets{};
     std::vector<Buffer> buffers; std::vector<Image> images; std::vector<VkShaderModule> modules;
+    GxVulkan::GpuAdmission bufferAdmission{16 * 1024 * 1024};
     GxVulkan::ResidentBuffer resident;
     std::vector<GxVulkan::Buffer> retired;
     uint64_t residentFrame = 0, residentDrawUploads = 0;
@@ -472,6 +474,35 @@ struct Fixture {
             Check(std::memcmp(static_cast<uint8_t*>(readback.mapped)+offset,expected,bytes)==0,
                 "Resident GPU snapshot changed unexpectedly");
         };
+        // Reservations follow physical allocation and recorded/submitted
+        // ownership, not the logical handle or requested (unaligned) byte count.
+        const uint32_t admittedData[] = {101,202,303};
+        auto admitted = GxVulkan::CreateBuffer(device, memoryProperties, sizeof(admittedData),
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &bufferAdmission);
+        retired.push_back(admitted); // Fixture owns cleanup even if an assertion fails.
+        Check(bufferAdmission.Used() == admitted.allocationBytes && admitted.allocationBytes >= admitted.size,
+            "Buffer admission did not charge physical requirements");
+        std::memcpy(admitted.mapped, admittedData, sizeof(admittedData));
+        Begin();
+        VkBufferMemoryBarrier hostSource{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        hostSource.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT; hostSource.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        hostSource.srcQueueFamilyIndex = hostSource.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hostSource.buffer = admitted.buffer; hostSource.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,1,&hostSource,0,nullptr);
+        const VkBufferCopy admittedCopy{0,0,sizeof(admittedData)};
+        vkCmdCopyBuffer(command,admitted.buffer,readback.handle,1,&admittedCopy);
+        admitted = {};
+        Check(bufferAdmission.Used() != 0,"Logical buffer retirement released physical reservation early");
+        submit(); equal(0,admittedData,sizeof(admittedData));
+        Check(bufferAdmission.Used() == 0,"Completed buffer destruction leaked reservation");
+        GxVulkan::GpuAdmission pressure(1);
+        bool rejected = false;
+        try { auto unexpected = GxVulkan::CreateBuffer(device,memoryProperties,1024,VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,&pressure);
+            GxVulkan::DestroyBuffer(device,unexpected);
+        } catch (const std::runtime_error&) { rejected = true; }
+        Check(rejected && pressure.Used() == 0,"Rejected physical admission leaked or allocated beyond pressure");
         const uint32_t a[] = {11,22,33}, b[] = {44,55,66}, c[] = {77,88,99};
         Begin();
         const auto first = resolve(1,a,sizeof(a));

@@ -13,6 +13,10 @@ wowdecomp_configure_platform()
 find_package(Threads REQUIRED)
 enable_testing()
 
+add_executable(RayQueryCapabilityTest RayQueryCapabilityTest.cpp)
+target_include_directories(RayQueryCapabilityTest PRIVATE "${WOWDECOMP_ROOT}")
+add_test(NAME RayQueryCapability COMMAND RayQueryCapabilityTest)
+
 add_executable(M2LightingSourceTest M2LightingSourceTest.cpp
     "${WOWDECOMP_ROOT}/Engine/Source/Model2/M2Light.cpp"
     "${WOWDECOMP_ROOT}/Engine/Source/Model2/M2Model.cpp")

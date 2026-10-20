@@ -10,6 +10,7 @@
 #include "TemporalBackend.h"
 #include "HdrLutJob.h"
 #include "GpuAdmission.h"
+#include "RayQueryCapabilities.h"
 #include "Engine/Source/Gx/Blit.h"
 #include "Engine/Source/Gx/Buffer.h"
 #include "Engine/Source/Gx/CGxPool.h"
@@ -174,6 +175,7 @@ struct CGxDeviceVulkan::State {
 #endif
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties properties{};
+    GxVulkan::RayQueryCapabilities rayQueryCapabilities;
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
@@ -561,18 +563,67 @@ void CGxDeviceVulkan::State::Initialize() {
     temporalFormatsSupported = temporalCapable;
     VkDeviceCreateInfo create{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     create.queueCreateInfoCount = 1; create.pQueueCreateInfos = &queueInfo; create.pEnabledFeatures = &enabled;
-    create.enabledExtensionCount = static_cast<uint32_t>(extensions.size()); create.ppEnabledExtensionNames = extensions.data();
-#ifdef WOWDECOMP_VULKAN_TESTING
-    VkPhysicalDeviceTimelineSemaphoreFeatures timeline{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
-    farTestTimeline = false;
-    if (app.apiVersion >= VK_API_VERSION_1_2 && properties.apiVersion >= VK_API_VERSION_1_2) {
+    using RayRequirement = GxVulkan::RayQueryRequirement;
+    rayQueryCapabilities = {};
+    const bool core12 = app.apiVersion >= VK_API_VERSION_1_2 && properties.apiVersion >= VK_API_VERSION_1_2;
+    rayQueryCapabilities.Set(RayRequirement::Core12, core12);
+    uint32_t queueCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &queueCount, nullptr);
+    std::vector<VkQueueFamilyProperties> queues(queueCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &queueCount, queues.data());
+    rayQueryCapabilities.Set(RayRequirement::ComputeQueue,
+        queueFamily < queueCount && (queues[queueFamily].queueFlags & VK_QUEUE_COMPUTE_BIT));
+    const auto hasExtension = [&](const char* name) {
+        return std::any_of(available.begin(), available.end(), [&](const VkExtensionProperties& extension) {
+            return std::strcmp(extension.extensionName, name) == 0;
+        });
+    };
+    const bool accelerationExtension = hasExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+    const bool queryExtension = hasExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    const bool deferredExtension = hasExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    rayQueryCapabilities.Set(RayRequirement::AccelerationExtension, accelerationExtension);
+    rayQueryCapabilities.Set(RayRequirement::QueryExtension, queryExtension);
+    rayQueryCapabilities.Set(RayRequirement::DeferredHostExtension, deferredExtension);
+    VkPhysicalDeviceVulkan12Features supported12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR supportedAcceleration{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+    VkPhysicalDeviceRayQueryFeaturesKHR supportedQuery{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+    VkPhysicalDeviceShaderDrawParametersFeatures supportedDraw{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES};
+    if (core12) {
         VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-        supported.pNext = &timeline;
+        supported.pNext = &supported12;
+        if (accelerationExtension && queryExtension && deferredExtension) {
+            supported12.pNext = &supportedAcceleration; supportedAcceleration.pNext = &supportedQuery;
+            supportedQuery.pNext = &supportedDraw;
+        }
         vkGetPhysicalDeviceFeatures2(physical, &supported);
-        farTestTimeline = timeline.timelineSemaphore == VK_TRUE;
-        if (farTestTimeline) create.pNext = &timeline;
     }
+    rayQueryCapabilities.Set(RayRequirement::BufferAddress, supported12.bufferDeviceAddress);
+    rayQueryCapabilities.Set(RayRequirement::AccelerationFeature, supportedAcceleration.accelerationStructure);
+    rayQueryCapabilities.Set(RayRequirement::QueryFeature, supportedQuery.rayQuery);
+    rayQueryCapabilities.Set(RayRequirement::RuntimeTextureArray, supported12.runtimeDescriptorArray);
+    rayQueryCapabilities.Set(RayRequirement::NonUniformTextureIndex, supported12.shaderSampledImageArrayNonUniformIndexing);
+    rayQueryCapabilities.Set(RayRequirement::VariableTextureCount, supported12.descriptorBindingVariableDescriptorCount);
+    VkPhysicalDeviceVulkan12Features enabled12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR enabledAcceleration{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+    VkPhysicalDeviceRayQueryFeaturesKHR enabledQuery{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+    VkPhysicalDeviceShaderDrawParametersFeatures enabledDraw{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES};
+    if (rayQueryCapabilities.Available()) {
+        extensions.insert(extensions.end(), {VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+            VK_KHR_RAY_QUERY_EXTENSION_NAME, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME});
+        enabled12.bufferDeviceAddress = VK_TRUE; enabled12.runtimeDescriptorArray = VK_TRUE;
+        enabled12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        enabled12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+        enabledAcceleration.accelerationStructure = VK_TRUE; enabledQuery.rayQuery = VK_TRUE;
+        enabled12.pNext = &enabledAcceleration; enabledAcceleration.pNext = &enabledQuery;
+        enabledDraw.shaderDrawParameters = supportedDraw.shaderDrawParameters;
+        if (enabledDraw.shaderDrawParameters) enabledQuery.pNext = &enabledDraw;
+        create.pNext = &enabled12;
+    }
+#ifdef WOWDECOMP_VULKAN_TESTING
+    farTestTimeline = core12 && supported12.timelineSemaphore;
+    if (farTestTimeline) { enabled12.timelineSemaphore = VK_TRUE; create.pNext = &enabled12; }
 #endif
+    create.enabledExtensionCount = static_cast<uint32_t>(extensions.size()); create.ppEnabledExtensionNames = extensions.data();
     GX_VK(vkCreateDevice(physical, &create, nullptr, &device));
     vkGetDeviceQueue(device, queueFamily, 0, &queue);
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -2174,6 +2225,19 @@ void CGxDeviceVulkan::SceneEndWorld() {
 }
 #ifdef WOWDECOMP_VULKAN_TESTING
 std::array<uint32_t,4> CGxDeviceVulkan::SceneWorldTestCompletedFrame() const { return m_native->completedWorldTest; }
+bool CGxDeviceVulkan::SceneRayQueryTestDeviceAddress() {
+    auto& state = *m_native;
+    if (!state.device || !state.rayQueryCapabilities.Available()) return false;
+    const auto before = state.sceneAdmission->Used();
+    auto buffer = GxVulkan::CreateBuffer(state.device, state.memoryProperties, 64,
+        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, state.sceneAdmission.get());
+    VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO}; info.buffer = buffer.buffer;
+    const auto address = vkGetBufferDeviceAddress(state.device, &info);
+    const bool charged = state.sceneAdmission->Used() == before + buffer.allocationBytes;
+    GxVulkan::DestroyBuffer(state.device, buffer);
+    return address != 0 && charged && state.sceneAdmission->Used() == before;
+}
 #endif
 void CGxDeviceVulkan::SceneClear(uint32_t mask, CImVector colour) {
 #ifdef WOWDECOMP_VULKAN_TESTING

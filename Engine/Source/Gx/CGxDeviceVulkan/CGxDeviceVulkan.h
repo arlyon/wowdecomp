@@ -44,6 +44,7 @@ public:
     GxFarResourceUsage SceneFarResourceUsage() const override;
     void SceneWithdrawFarResources() override;
 #ifdef WOWDECOMP_VULKAN_TESTING
+    bool SceneRayQueryTestDeviceAddress();
     void SceneFarTestAdmissionLimits(uint64_t scene, uint64_t images, uint64_t far);
     void SceneFarTestFailAllocation(uint32_t ordinal);
     bool SceneFarTestNearCharge(bool images, uint64_t bytes);

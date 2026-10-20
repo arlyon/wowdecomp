@@ -165,6 +165,7 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
         Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
     add_dependencies(FarResourcesLiveTest GxSlangShaders)
     add_test(NAME FarResourcesLiveGpu COMMAND FarResourcesLiveTest)
+    add_test(NAME RayQueryCapabilityGpu COMMAND FarResourcesLiveTest --ray-query-capability)
     set_tests_properties(FarResourcesLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
 
     set(farTerrainArchives ${ffxArchives})

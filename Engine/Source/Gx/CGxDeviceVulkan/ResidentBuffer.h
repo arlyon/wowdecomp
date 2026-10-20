@@ -6,14 +6,19 @@
 #include <vector>
 
 namespace GxVulkan {
+class GpuAdmission;
 struct Buffer {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     uint8_t* mapped = nullptr;
     VkDeviceSize size = 0;
+    VkDeviceSize allocationBytes = 0;
+    // Optional render-thread near reservation. Owner must outlive retirement.
+    GpuAdmission* admission = nullptr;
 };
 Buffer CreateBuffer(VkDevice device, const VkPhysicalDeviceMemoryProperties& memory,
-    VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
+    VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+    GpuAdmission* nearAdmission = nullptr);
 void DestroyBuffer(VkDevice device, Buffer& buffer);
 
 // One Gx buffer's persistent device-local snapshot. The renderer owns retirement:
