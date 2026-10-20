@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstddef>
 #include <memory>
+#include <string>
+#include <map>
 #include <vector>
 class CGxTex;
 namespace GxShadow {
@@ -39,6 +41,7 @@ struct Status {
     bool diagnosticRendered=false;
     uint64_t terrainReceivers=0;
     bool terrainRendered=false;
+    std::string detail;
 };
 struct Frame {
     FrameResult result=FrameResult::Disabled;
@@ -49,6 +52,9 @@ struct Frame {
     float regionRadius=64,rayDistance=128;
     uint64_t terrain=0,models=0,buildings=0,triangles=0;
     uint64_t nonCasters=0,unready=0,unsupported=0;
+    double collectionMilliseconds=0;
+    std::map<std::string,uint64_t> modelIssues;
+    std::string detail;
 };
 }
 #endif

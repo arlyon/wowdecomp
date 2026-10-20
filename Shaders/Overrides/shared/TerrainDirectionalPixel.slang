@@ -10,7 +10,9 @@
 [[vk::binding(0,2)]] Sampler2D<float4> layer0;
 [[vk::binding(1,2)]] Sampler2D<float4> layer1;
 [[vk::binding(2,2)]] Sampler2D<float4> layer2;
+#if GX_TERRAIN_LAYERS >= 3
 [[vk::binding(3,2)]] Sampler2D<float4> layer3OrWeights;
+#endif
 #if GX_TERRAIN_LAYERS == 4
 [[vk::binding(4,2)]] Sampler2D<float4> layerWeights;
 #endif
@@ -20,7 +22,9 @@ struct main_Input {
     [[vk::location(2)]] float4 uv0:TEXCOORD0;
     [[vk::location(3)]] float4 uv1:TEXCOORD1;
     [[vk::location(4)]] float4 uv2:TEXCOORD2;
+#if GX_TERRAIN_LAYERS >= 3
     [[vk::location(5)]] float4 uv3:TEXCOORD3;
+#endif
 #if GX_TERRAIN_LAYERS == 4
     [[vk::location(6)]] float4 uv4:TEXCOORD4;
 #endif
@@ -34,11 +38,15 @@ main_Output main(main_Input input) {
     main_Output output;
 #if GX_TERRAIN_LAYERS == 4
     float4 weights=layerWeights.Sample(input.uv4.xy);
-#else
+#elif GX_TERRAIN_LAYERS == 3
     float4 weights=layer3OrWeights.Sample(input.uv3.xy);
+#else
+    float4 weights=layer2.Sample(input.uv2.xy);
 #endif
     float4 reflectance=lerp(layer0.Sample(input.uv0.xy),layer1.Sample(input.uv1.xy),weights.x);
+#if GX_TERRAIN_LAYERS >= 3
     reflectance=lerp(reflectance,layer2.Sample(input.uv2.xy),weights.y);
+#endif
 #if GX_TERRAIN_LAYERS == 4
     reflectance=lerp(reflectance,layer3OrWeights.Sample(input.uv3.xy),weights.z);
 #endif
@@ -49,7 +57,7 @@ main_Output main(main_Input input) {
     if(gxShadowFrame[6].y!=0 && all(abs(input.worldPosition-gxShadowFrame[4].xyz)<=gxShadowFrame[4].w)){
         float visibility=GxWorldSunVisibility(input.worldPosition);
         float3 light=GxComposeLighting(input.unshadowedLight*staticShadow,0,0,input.worldSun,0,visibility);
-        shaded=reflectance.rgb*min(light,1);
+        shaded=reflectance.rgb*min(light,1)+reflectance.a*input.classicSpecular.rgb*visibility;
     }
     float3 fog=terrainPixelRegisters[2].xyz;
     output.m_oC0=float4(lerp(fog,shaded,input.fog),1);

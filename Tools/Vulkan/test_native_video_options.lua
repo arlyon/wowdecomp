@@ -1,5 +1,5 @@
 -- Exercise the production settings script in the client's bundled Lua runtime.
-local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1",nativeHDR="0",nativeHDRExposure="0",nativeHDRLut="",landscapeDistance="0",nativeRayTracing="0",nativeRayStrict="1"}, 0, 0
+local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1",nativeHDR="0",nativeHDRExposure="0",nativeHDRLut="",landscapeDistance="0",nativeRayTracing="0",nativeRayStrict="1",nativeTerrainRayShadows="0"}, 0, 0
 local methods = {}
 for _, key in ipairs({"SetAllPoints","SetWidth","SetJustifyH","SetMinMaxValues","SetValueStep","SetHeight","SetAutoFocus","SetMaxLetters","ClearFocus"}) do methods[key] = function() end end
 function methods:Enable() self.enabled=true end
@@ -56,7 +56,8 @@ function IsNativeTemporalAASupported() return aaSupported end
 local hdrSupported, lutState, reloads=true,"None",0
 function GetNativeHdrStatus() return {supported=hdrSupported,active=false,lut=lutState} end
 local raySupported=true
-function GetNativeShadowStatus() return {supported=raySupported,rendered=false,status="Off (original raster)",triangles=0} end
+local rayMessage="Off (original raster)"
+function GetNativeShadowStatus() return {supported=raySupported,rendered=false,terrainRendered=false,status=rayMessage,triangles=0,receivers=0} end
 function ReloadNativeHdrLut() reloads=reloads+1 end
 function GetCVar(name) assert(saved[name],"Unexpected feature CVar: "..name);return saved[name] end
 function SetCVar(name,value) assert(saved[name]);saved[name]=value;writes=writes+1 end
@@ -200,4 +201,22 @@ ray.cancel();assert(visibility:GetChecked() and strict:GetChecked(),"Ray default
 ray.default();ray.okay();assert(saved.nativeRayTracing=="0" and saved.nativeRayStrict=="1","Ray defaults not Off/strict On")
 raySupported=false;saved.nativeRayTracing="1";ray.refresh();oldWrites=writes;ray.default();ray.okay()
 assert(not visibility.enabled and not strict.enabled and writes==oldWrites and saved.nativeRayTracing=="1","Unsupported ray preferences were overwritten")
-assert(ray.fontStrings[2].text:find("NOT integrated",1,true),"Development visibility was presented as finished lighting")
+assert(ray.fontStrings[2].text:find("do not receive",1,true),"Terrain-only scope was not explained")
+raySupported=true;saved.nativeHDR="0";saved.nativeAA="0";saved.nativeSceneScale="1";saved.nativeRayTracing="0";saved.nativeTerrainRayShadows="0";ray.refresh()
+local terrain=frames.NativeTerrainRayShadowsCheck
+oldWrites=writes;terrain:SetChecked(true);terrain.scripts.OnClick(terrain)
+assert(writes==oldWrites and saved.nativeTerrainRayShadows=="0","Terrain option saved before Apply")
+ray.cancel();assert(not terrain:GetChecked(),"Terrain Cancel did not restore selection")
+terrain:SetChecked(true);terrain.scripts.OnClick(terrain);ray.okay()
+assert(saved.nativeTerrainRayShadows=="1" and saved.nativeRayTracing=="0","Terrain Apply did not select actual shadows")
+visibility:SetChecked(true);visibility.scripts.OnClick(visibility)
+assert(not terrain:GetChecked(),"Mask and terrain choices are not exclusive")
+ray.okay();assert(saved.nativeTerrainRayShadows=="0" and saved.nativeRayTracing=="1","Mask Apply did not deselect terrain")
+terrain:SetChecked(true);terrain.scripts.OnClick(terrain);assert(not visibility:GetChecked(),"Terrain did not deselect mask")
+saved.nativeHDR="1";ray.scripts.OnUpdate(ray,1)
+local rayStatus=ray.fontStrings[#ray.fontStrings-1].text
+assert(rayStatus:find("Scene Colour",1,true) and rayStatus:find("Apply",1,true),"HDR requirement lacks UI instructions")
+assert(saved.nativeHDR=="1","Terrain selection silently changed HDR")
+rayMessage="Missing shader |cBAD\n104";ray.scripts.OnUpdate(ray,1);rayStatus=ray.fontStrings[#ray.fontStrings-1].text
+assert(rayStatus:find("||cBAD",1,true) and not rayStatus:find("\n104",1,true),"Renderer status injected UI markup/control text")
+ray.cancel();ray.default();ray.okay();assert(saved.nativeTerrainRayShadows=="0" and saved.nativeRayTracing=="0" and saved.nativeRayStrict=="1","Ray defaults inconsistent")

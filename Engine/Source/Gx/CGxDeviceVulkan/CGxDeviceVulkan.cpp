@@ -23,6 +23,7 @@
 #include <vulkan/vulkan.h>
 #include <algorithm>
 #include <functional>
+#include <chrono>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -210,6 +211,13 @@ struct CGxDeviceVulkan::State {
     GxVulkan::RayQueryCapabilities rayQueryCapabilities;
     bool shadowRequested=false,shadowStrict=true;
     bool terrainShadowRequested=false,terrainShadowActive=false,terrainReceiver=false,terrainShadowFailed=false;
+    std::string terrainLoggedState;
+    std::map<std::string,uint64_t> loggedCasterIssues;
+    std::map<std::string,uint64_t> loggedReceiverIssues;
+    VkQueryPool shadowTimingPool=VK_NULL_HANDLE;
+    uint32_t shadowTimestampBits=0,shadowTimingMask=0;
+    double shadowCollectMs=0,shadowPackMs=0,shadowBuildRecordMs=0;
+    std::chrono::steady_clock::time_point shadowTimingLog{};
 #ifdef WOWDECOMP_VULKAN_TESTING
     bool shadowTestModels=true,shadowTestBuildings=true;
 #endif
@@ -614,6 +622,7 @@ void CGxDeviceVulkan::State::Initialize() {
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &queueCount, nullptr);
     std::vector<VkQueueFamilyProperties> queues(queueCount);
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &queueCount, queues.data());
+    shadowTimestampBits=queueFamily<queueCount?queues[queueFamily].timestampValidBits:0;
     rayQueryCapabilities.Set(RayRequirement::ComputeQueue,
         queueFamily < queueCount && (queues[queueFamily].queueFlags & VK_QUEUE_COMPUTE_BIT));
     const auto hasExtension = [&](const char* name) {
@@ -855,6 +864,19 @@ bool CGxDeviceVulkan::State::BeginFrame() {
     }
     GX_VK(vkWaitForFences(device, 1, &fence, true, UINT64_MAX));
     completedSerial = submittedSerial;
+    if(shadowTimingPool&&shadowTimingMask==15){
+        uint64_t times[4]{};
+        if(vkGetQueryPoolResults(device,shadowTimingPool,0,4,sizeof(times),times,sizeof(uint64_t),VK_QUERY_RESULT_64_BIT)==VK_SUCCESS){
+            const auto now=std::chrono::steady_clock::now();
+            if(now-shadowTimingLog>=std::chrono::seconds(2)){
+                const uint64_t mask=shadowTimestampBits>=64?UINT64_MAX:(uint64_t(1)<<shadowTimestampBits)-1;
+                const double unit=properties.limits.timestampPeriod/1e6;
+                std::fprintf(stderr,"RT timing: collectCPU=%.2fms packUploadCPU=%.2fms buildRecordCPU=%.2fms ASsetupGPU=%.2fms terrainDrawGPU=%.2fms resolution=%ux%u triangles=%llu\n",shadowCollectMs,shadowPackMs,shadowBuildRecordMs,((times[1]-times[0])&mask)*unit,((times[3]-times[2])&mask)*unit,renderExtent.width,renderExtent.height,(unsigned long long)shadowStatus.triangles);
+                shadowTimingLog=now;
+            }
+        }
+    }
+    shadowTimingMask=0;
     CollectFar();
     shadowCurrent.reset();shadowRetired.clear();
     for (auto framebuffer : framebuffers) vkDestroyFramebuffer(device, framebuffer, nullptr);
@@ -882,6 +904,7 @@ bool CGxDeviceVulkan::State::BeginFrame() {
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     GX_VK(vkBeginCommandBuffer(command, &begin));
     recording = true; acquirePending = true;
+    if(shadowTimingPool)vkCmdResetQueryPool(command,shadowTimingPool,0,4);
     Barrier(swapImages[imageIndex], VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
     if (depth.layout == VK_IMAGE_LAYOUT_UNDEFINED) {
         Barrier(depth.image, depth.aspect, 1, 1, depth.layout, VK_IMAGE_LAYOUT_GENERAL);
@@ -1026,6 +1049,7 @@ void CGxDeviceVulkan::State::Destroy() {
         for (auto semaphore : complete) if (semaphore) vkDestroySemaphore(device, semaphore, nullptr);
         complete.clear();
         if (commandPool) vkDestroyCommandPool(device, commandPool, nullptr);
+        if(shadowTimingPool){vkDestroyQueryPool(device,shadowTimingPool,nullptr);shadowTimingPool=VK_NULL_HANDLE;}
         vkDestroyDevice(device, nullptr);
         device = VK_NULL_HANDLE;
         // Reuse of this State (including failed reinitialization) must not pass
@@ -1232,8 +1256,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         if (vertexShader) v = load(vertexShader);
         if (pixelShader) p = load(pixelShader);
     }
-    bool terrainDraw=terrainShadowActive&&terrainReceiver&&!hdrAborted&&!terrainShadowFailed&&shadowCurrent&&shadowCurrent->querySet;
-    if(terrainDraw){
+    const bool terrainUse=terrainShadowActive&&terrainReceiver&&!hdrAborted;
+    bool terrainDraw=terrainUse&&!terrainShadowFailed&&shadowCurrent&&shadowCurrent->querySet;
+    if(terrainUse){
         const auto prepare=[&](NativeShader* shader,CGxShader* original){
             if(!shader||!original)throw std::runtime_error("Terrain receiver requires authored vertex and pixel programs");
             if(!shader->directionalAttempted){
@@ -1250,8 +1275,16 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
             }
             if(!shader->directionalError.empty())throw std::runtime_error(shader->directionalError);
         };
-        try{prepare(v,vertexShader);prepare(p,pixelShader);++shadowStatus.terrainReceivers;}
-        catch(const std::exception& e){std::fprintf(stderr,"Terrain RT raster fallback: %s\n",e.what());terrainShadowFailed=true;shadowStatus.result=GxShadow::FrameResult::UnsupportedCoverage;++shadowStatus.unsupported;terrainDraw=false;}
+        const auto check=[&](NativeShader* shader,CGxShader* original){
+            try{prepare(shader,original);}
+            catch(const std::exception& e){
+                terrainShadowFailed=true;shadowStatus.result=GxShadow::FrameResult::UnsupportedCoverage;shadowStatus.detail=e.what();++shadowStatus.unsupported;terrainDraw=false;
+                auto issue=loggedReceiverIssues.emplace(e.what(),0);++issue.first->second;
+                if(issue.second)std::fprintf(stderr,"RT receiver rejected: %s (continuing to enumerate remaining receiver programs)\n",e.what());
+            }
+        };
+        check(v,vertexShader);check(p,pixelShader);
+        if(terrainDraw)++shadowStatus.terrainReceivers;
     }
     const auto* vertexBindings=v?(terrainDraw?&v->directional.bindings:&v->bindings):nullptr;
     const auto* pixelBindings=p?(terrainDraw?&p->directional.bindings:&p->bindings):nullptr;
@@ -2160,6 +2193,9 @@ void CGxDeviceVulkan::SceneForgetMotionOwner(const void* owner) {
     if (m_native->motionOwner == owner) SceneSetMotionOwner(nullptr, false);
 }
 void CGxDeviceVulkan::SceneConfigureShadows(bool requested,bool strict) {
+    if(m_native->shadowRequested!=requested||m_native->shadowStrict!=strict)
+        std::fprintf(stderr,"RT diagnostic settings: visibilityMask=%s incompleteInputSafety=%s (separate from terrain shadows)\n",requested?"On":"Off",strict?"On":"Off");
+    if(requested&&!m_native->shadowRequested){m_native->loggedCasterIssues.clear();m_native->loggedReceiverIssues.clear();}
     m_native->shadowRequested=requested;m_native->shadowStrict=strict;
     if(!requested){m_native->shadowSource.reset();m_native->shadowStatus={};}
     else if(!m_native->rayQueryCapabilities.Available())m_native->shadowStatus.result=GxShadow::FrameResult::Unavailable;
@@ -2176,9 +2212,24 @@ void CGxDeviceVulkan::SceneSetShadowFrame(std::shared_ptr<const GxShadow::Frame>
     }
 }
 GxShadow::Status CGxDeviceVulkan::SceneShadowStatus() const {return m_native->shadowStatus;}
-void CGxDeviceVulkan::SceneConfigureTerrainShadows(bool requested){m_native->terrainShadowRequested=requested;}
+void CGxDeviceVulkan::SceneConfigureTerrainShadows(bool requested){
+    if(m_native->terrainShadowRequested!=requested){
+        std::fprintf(stderr,"Terrain RT request: %s (basic near-terrain receivers; M2/WMO cast only)\n",requested?"On":"Off");
+        m_native->terrainLoggedState.clear();
+        if(requested){m_native->loggedCasterIssues.clear();m_native->loggedReceiverIssues.clear();}
+    }
+    m_native->terrainShadowRequested=requested;
+    if(requested&&m_native->device&&m_native->shadowTimestampBits&&!m_native->shadowTimingPool){
+        auto& s=*m_native;s.EndPass();
+        VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};info.queryType=VK_QUERY_TYPE_TIMESTAMP;info.queryCount=4;
+        if(vkCreateQueryPool(s.device,&info,nullptr,&s.shadowTimingPool)==VK_SUCCESS&&s.recording)vkCmdResetQueryPool(s.command,s.shadowTimingPool,0,4);
+    }
+}
 bool CGxDeviceVulkan::SceneTerrainShadowsRequested() const {return m_native->terrainShadowActive&&m_native->worldActive;}
-void CGxDeviceVulkan::SceneSetTerrainReceiver(bool enabled){m_native->terrainReceiver=enabled;}
+void CGxDeviceVulkan::SceneSetTerrainReceiver(bool enabled){
+    auto& s=*m_native;s.terrainReceiver=enabled;
+    if(s.terrainShadowActive&&s.shadowTimingPool){s.EndPass();vkCmdWriteTimestamp(s.command,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,s.shadowTimingPool,enabled?2:3);s.shadowTimingMask|=enabled?4u:8u;}
+}
 void CGxDeviceVulkan::SceneFinishTerrainShadows(){
     auto& s=*m_native;if(!s.terrainShadowActive)return;
     s.EndPass();
@@ -2212,7 +2263,13 @@ bool CGxDeviceVulkan::SceneBeginWorld(bool temporal, uint64_t scene) {
     state.hdrAborted = false; state.hdrDraws = 0;
     state.terrainShadowActive=state.terrainShadowRequested && state.shadowTextureCapacity && SceneHdrSupported() && !state.hdrRequested && !temporal && state.sceneScale==1.f;
     state.terrainShadowFailed=false;state.terrainReceiver=false;
-    if(state.terrainShadowRequested&&!state.terrainShadowActive)state.shadowStatus.result=GxShadow::FrameResult::Unavailable;
+    if(state.terrainShadowRequested&&!state.terrainShadowActive){
+        state.shadowStatus.result=GxShadow::FrameResult::Unavailable;
+        if(!state.shadowTextureCapacity||!SceneHdrSupported())state.shadowStatus.detail="Required terrain query/output features unavailable on this renderer/device";
+        else if(state.hdrRequested)state.shadowStatus.detail="HDR is On: turn off float scene transport in Scene Colour and Apply";
+        else if(temporal)state.shadowStatus.detail="AA is On: turn off experimental AA in Landscape & AA and Apply";
+        else if(state.sceneScale!=1.f)state.shadowStatus.detail="Scene scale is not 100%: set it to 100% in Landscape & AA and Apply";
+    }
     state.hdrActive = (state.hdrRequested||state.terrainShadowActive) && SceneHdrSupported();
     if (state.hdrActive && !state.PrepareHdrImages(temporal)) {
         GxLog("HDR attachment set refused; using Classic rendering for this frame");
@@ -2352,7 +2409,16 @@ void CGxDeviceVulkan::SceneEndWorld() {
         GxVulkan::CopyWorldImage(state.command, state.worldDepth.image, state.depth.image,
             VK_IMAGE_ASPECT_DEPTH_BIT, state.worldRect);
     else state.PublishWorldDepth(state.depth.image);
-    if(state.terrainShadowActive&&state.hdrAborted){state.shadowStatus.terrainRendered=false;state.shadowStatus.result=GxShadow::FrameResult::AllocationFailed;}
+    if(state.terrainShadowActive&&state.hdrAborted){state.shadowStatus.terrainRendered=false;state.shadowStatus.result=GxShadow::FrameResult::AllocationFailed;state.shadowStatus.detail="World output transport failed; original raster retained";}
+    if(state.terrainShadowRequested){
+        const std::string current=std::to_string(unsigned(state.shadowStatus.result))+":"+(state.shadowStatus.terrainRendered?"running":"raster")+":"+state.shadowStatus.detail;
+        if(current!=state.terrainLoggedState){
+            state.terrainLoggedState=current;
+            std::fprintf(stderr,"Terrain RT state: %s reason=%u detail=%s receivers=%llu triangles=%llu terrain=%llu models=%llu buildings=%llu region=64 rayDistance=128\n",
+                state.shadowStatus.terrainRendered?"Running":"Raster retained",unsigned(state.shadowStatus.result),state.shadowStatus.detail.empty()?"none":state.shadowStatus.detail.c_str(),
+                (unsigned long long)state.shadowStatus.terrainReceivers,(unsigned long long)state.shadowStatus.triangles,(unsigned long long)state.shadowStatus.terrain,(unsigned long long)state.shadowStatus.models,(unsigned long long)state.shadowStatus.buildings);
+        }
+    }
 #ifdef WOWDECOMP_VULKAN_TESTING
     state.completedWorldTest={uint32_t(state.hdrRequested && state.hdrActive && !state.hdrAborted),uint32_t(state.temporalActive),
         state.renderRect.extent.width,state.renderRect.extent.height};

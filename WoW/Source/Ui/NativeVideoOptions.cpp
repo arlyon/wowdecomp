@@ -29,19 +29,22 @@ int NativeShadowStatus(lua_State* state) {
     const char* message="Invalid status";
     switch(status.result){
     case GxShadow::FrameResult::Disabled:message="Off (original raster)";break;
-    case GxShadow::FrameResult::Ready:message="Caster frame ready (visibility diagnostic only)";break;
-    case GxShadow::FrameResult::Unavailable:message="Ray queries unavailable on this device";break;
+    case GxShadow::FrameResult::Ready:message=status.terrainRendered?"Running: shadows on terrain":status.diagnosticRendered?"Running: diagnostic visibility mask":"Geometry ready; waiting for receivers";break;
+    case GxShadow::FrameResult::Unavailable:message="Not running: required terrain settings or renderer features unavailable";break;
     case GxShadow::FrameResult::PendingGeometry:message="Waiting for loaded world geometry";break;
     case GxShadow::FrameResult::PendingTexture:message="Waiting for original coverage textures";break;
     case GxShadow::FrameResult::StalePose:message="Current caster pose unavailable";break;
     case GxShadow::FrameResult::InvalidGeometry:message="Invalid caster geometry";break;
-    case GxShadow::FrameResult::UnsupportedCoverage:message="Unsupported caster coverage; raster retained in strict mode";break;
+    case GxShadow::FrameResult::UnsupportedCoverage:message="Not running: unsupported caster or receiver material; original rendering retained";break;
     case GxShadow::FrameResult::AllocationFailed:message="Ray resource allocation/recording failed; raster retained";break;
     }
-    lua_createtable(state,0,4);
+    lua_createtable(state,0,7);
     lua_pushboolean(state,g_theGxDevicePtr&&g_theGxDevicePtr->SceneShadowsSupported());lua_setfield(state,-2,"supported");
     lua_pushboolean(state,status.diagnosticRendered);lua_setfield(state,-2,"rendered");
-    lua_pushstring(state,message);lua_setfield(state,-2,"status");
+    const std::string description=status.detail.empty()?message:std::string("Not running: ")+status.detail;
+    lua_pushlstring(state,description.data(),description.size());lua_setfield(state,-2,"status");
+    lua_pushboolean(state,status.terrainRendered);lua_setfield(state,-2,"terrainRendered");
+    lua_pushnumber(state,status.terrainReceivers);lua_setfield(state,-2,"receivers");
     lua_pushnumber(state,status.triangles);lua_setfield(state,-2,"triangles");
     return 1;
 }

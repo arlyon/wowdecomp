@@ -7,7 +7,20 @@ void CGxDeviceVulkan::State::RecordWorldShadowVisibility(bool inlineOnly){
     if(!rayQueryCapabilities.Available()){shadowStatus.result=FrameResult::Unavailable;return;}
     if(!shadowSource){shadowStatus.result=FrameResult::PendingGeometry;return;}
     const auto& source=*shadowSource;
+    const auto packingStarted=std::chrono::steady_clock::now();shadowCollectMs=source.collectionMilliseconds;
     shadowStatus={source.result,source.terrain,source.models,source.buildings,source.triangles,source.unsupported,false};
+    shadowStatus.detail=source.detail;
+    const bool newIssues=std::any_of(source.modelIssues.begin(),source.modelIssues.end(),[&](const auto& issue){return !loggedCasterIssues.count(issue.first);});
+    if(newIssues){
+        uint64_t occurrences=0;for(const auto& issue:source.modelIssues)occurrences+=issue.second;
+        std::fprintf(stderr,"RT caster scan: loadedModelInstances=%llu uniqueRejectedAssetBatches=%zu rejectedBatchInstances=%llu authoredNoncasterBatches=%llu globalUnsupported=%llu globalUnready=%llu (logging every new asset/batch/reason; no truncation)\n",
+            (unsigned long long)source.models,source.modelIssues.size(),(unsigned long long)occurrences,(unsigned long long)source.nonCasters,(unsigned long long)source.unsupported,(unsigned long long)source.unready);
+    }
+    for(const auto& issue:source.modelIssues){
+        auto inserted=loggedCasterIssues.emplace(issue.first,issue.second);
+        if(inserted.second)std::fprintf(stderr,"RT caster rejected: %s instancesInFrame=%llu\n",issue.first.c_str(),(unsigned long long)issue.second);
+        else inserted.first->second=std::max(inserted.first->second,issue.second);
+    }
     if(source.result!=FrameResult::Ready&&(shadowStrict||inlineOnly))return;
     if(source.meshes.empty())return;
     auto gpu=std::make_shared<ShadowGpuFrame>();gpu->device=device;gpu->source=shadowSource;
@@ -76,7 +89,12 @@ void CGxDeviceVulkan::State::RecordWorldShadowVisibility(bool inlineOnly){
         std::memcpy(gpu->uniforms.mapped,inlineOnly?static_cast<const void*>(&directional):static_cast<const void*>(&data),gpu->uniforms.size);
         std::memcpy(gpu->triangles.mapped,triangles.data(),gpu->triangles.size);
         gpu->scene=std::make_unique<GxVulkan::AccelerationScene>(device,physical,memoryProperties,rayQueryCapabilities,sceneAdmission);
+        shadowPackMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-packingStarted).count();
+        const auto buildStarted=std::chrono::steady_clock::now();
+        if(inlineOnly&&shadowTimingPool){vkCmdWriteTimestamp(command,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,shadowTimingPool,0);shadowTimingMask|=1;}
         gpu->scene->Build(command,positions.data(),positions.size(),indices.data(),indices.size());
+        if(inlineOnly&&shadowTimingPool){vkCmdWriteTimestamp(command,VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,shadowTimingPool,1);shadowTimingMask|=2;}
+        shadowBuildRecordMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-buildStarted).count();
         if(inlineOnly){
             if(textureCount>shadowTextureCapacity)throw std::runtime_error("Terrain query texture capacity exceeded");
             const VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,textureCount}};
@@ -130,5 +148,5 @@ void CGxDeviceVulkan::State::RecordWorldShadowVisibility(bool inlineOnly){
         vkCmdDispatch(command,(renderExtent.width+7)/8,(renderExtent.height+7)/8,1);
         Barrier(gpu->output.image,gpu->output.aspect,1,1,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_GENERAL);
         shadowCurrent=gpu;shadowStatus.diagnosticRendered=true;
-    }catch(const std::exception& error){shadowStatus.result=FrameResult::AllocationFailed;GxLog("RT visibility fallback: %s",error.what());}
+    }catch(const std::exception& error){shadowStatus.result=FrameResult::AllocationFailed;shadowStatus.detail=error.what();GxLog("RT visibility fallback: %s",error.what());}
 }

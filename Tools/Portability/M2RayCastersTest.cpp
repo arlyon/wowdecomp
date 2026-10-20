@@ -68,6 +68,11 @@ int main(){
  using namespace GxShadow;
  for(unsigned influences:{1u,2u,4u}){
   Fixture f(influences);Mesh hardware,software;assert(BuildM2ShadowMesh(f.model,f.scene,0,hardware)==FrameResult::Ready);assert(hardware.positions.size()==3&&hardware.indices==std::vector<uint32_t>({2,0,1}));
+  M2ModelOptGeo optimized{};optimized.m_batches=f.batch;optimized.m_batchCount=1;optimized.m_skinSections=f.section;optimized.m_skinSectionCount=1;
+  f.model.m_optGeo=&optimized;Mesh optimizedSnapshot;
+  assert(BuildM2ShadowMesh(f.model,f.scene,0,optimizedSnapshot)==FrameResult::Ready);
+  assert(optimizedSnapshot.indices==hardware.indices);for(unsigned j=0;j<3;++j)Near(optimizedSnapshot.positions[j].xyz[0],hardware.positions[j].xyz[0]);
+  f.visible[0]=0;assert(BuildM2ShadowMesh(f.model,f.scene,0,optimizedSnapshot)==FrameResult::Ready&&optimizedSnapshot.indices.empty());f.visible[0]=1;
   const auto original=hardware.positions;f.Pose(100,3);Mesh moved;assert(BuildM2ShadowMesh(f.model,f.scene,0,moved)==FrameResult::Ready);for(unsigned j=0;j<3;++j)Near(moved.positions[j].xyz[0],original[j].xyz[0]+3);
   f.Software();assert(BuildM2ShadowMesh(f.model,f.scene,0,software)==FrameResult::Ready);for(unsigned j=0;j<3;++j)Near(software.positions[j].xyz[0],moved.positions[j].xyz[0]);
  }

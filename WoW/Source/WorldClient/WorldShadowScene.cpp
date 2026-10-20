@@ -18,6 +18,7 @@
 #include "Engine/Source/Base/Handle.h"
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 namespace {
 using namespace GxShadow;
@@ -36,6 +37,7 @@ std::shared_ptr<const void> Retain(CTexture* texture){auto handle=HandleDuplicat
 }
 std::shared_ptr<const GxShadow::Frame> CollectWorldShadowScene(const C3Vector& camera,const C44Matrix& projection){
     using namespace GxShadow;
+    const auto started=std::chrono::steady_clock::now();
     auto frame=std::make_shared<Frame>();frame->result=FrameResult::Ready;frame->camera={camera.x,camera.y,camera.z};
     auto* scene=World::s_m2Scene;if(!scene||!CMap::s_mapLight){frame->result=FrameResult::PendingGeometry;return frame;}
     C44Matrix vp=scene->m_view*projection;
@@ -63,8 +65,25 @@ std::shared_ptr<const GxShadow::Frame> CollectWorldShadowScene(const C3Vector& c
         C44Matrix placement=model->m_matrixF4*scene->m_viewInv;CAaBox box;
         CWorldMath::TransformAABox(placement,model->m_shared->m_boundingBox,box);if(!Intersects(box,*frame))continue;
         ++frame->models;
-        const auto count=model->m_optGeo?model->m_optGeo->m_batchCount:model->m_shared->m_skinData->m_batches.m_count;
+        const auto count=model->m_shared->m_skinData->m_batches.m_count;
         for(uint32_t i=0;i<count;++i){Mesh mesh;const auto result=BuildM2ShadowMesh(*model,*scene,i,mesh);
+            if(result!=FrameResult::Ready){
+                const auto& profile=*model->m_shared->m_skinData;
+                const auto& batch=profile.m_batches[i];
+                std::string reason;
+                switch(result){
+                case FrameResult::UnsupportedCoverage:reason=batch.m_textureCount!=1?"cutout has multiple coverage textures":"cutout uses unsupported coverage UV";break;
+                case FrameResult::PendingGeometry:reason="geometry not ready";break;
+                case FrameResult::PendingTexture:reason="coverage texture not ready";break;
+                case FrameResult::StalePose:reason="current pose unavailable";break;
+                case FrameResult::InvalidGeometry:reason="invalid geometry or material indices";break;
+                default:reason="collector result="+std::to_string(unsigned(result));break;
+                }
+                const std::string issue=std::string("asset=")+model->m_shared->m_fileName+" batch="+std::to_string(i)+
+                    " material="+std::to_string(batch.m_materialIndex)+" textures="+std::to_string(batch.m_textureCount)+
+                    " shader="+std::to_string(batch.m_shader)+" optimized="+std::to_string(model->m_optGeo!=nullptr)+" reason="+reason;
+                ++frame->modelIssues[issue];
+            }
             Failure(*frame,result);if(result==FrameResult::Ready){if(mesh.indices.empty())++frame->nonCasters;Append(*frame,std::move(mesh));}}
     }
     for(auto* placed=CMap::mapObjDefGroupList.Head();placed;placed=CMap::mapObjDefGroupList.Next(placed)){
@@ -88,5 +107,10 @@ std::shared_ptr<const GxShadow::Frame> CollectWorldShadowScene(const C3Vector& c
             if(valid)Append(*frame,std::move(mesh));else Failure(*frame,FrameResult::InvalidGeometry);
         }
     }
+    if(!frame->modelIssues.empty()){
+        uint64_t occurrences=0;for(const auto& issue:frame->modelIssues)occurrences+=issue.second;
+        frame->detail="Rejected M2 caster batches: "+std::to_string(frame->modelIssues.size())+" unique, "+std::to_string(occurrences)+" instances. Full asset/batch/reason list in client.log";
+    }
+    frame->collectionMilliseconds=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
     return frame;
 }

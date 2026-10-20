@@ -41,14 +41,15 @@ GxShadow::FrameResult BuildM2ShadowMesh(const CM2Model& model,const CM2Scene& sc
     if(model.m_fFlags&0x4000)return FrameResult::Ready;
     if(!(model.m_fFlags&1)||!model.m_shared||!model.m_shared->m_data||!model.m_shared->m_skinData||!model.m_shared->m_cache)return FrameResult::PendingGeometry;
     const auto& data=*model.m_shared->m_data;const auto& skin=*model.m_shared->m_skinData;
-    const bool optimized=model.m_optGeo!=nullptr;
-    const uint32_t batchCount=optimized?model.m_optGeo->m_batchCount:skin.m_batches.m_count;
+    // Optimisation only merges/reindexes these original enabled sections.
+    // Snapshot their authoritative profile instead of reading a draw-time cache.
+    const uint32_t batchCount=skin.m_batches.m_count;
     if(batchIndex>=batchCount)return FrameResult::InvalidGeometry;
-    const auto& batch=optimized?model.m_optGeo->m_batches[batchIndex]:skin.m_batches[batchIndex];
+    const auto& batch=skin.m_batches[batchIndex];
     if(M2Shadow::BatchExclusion(batch.m_shader,batch.m_flags,batch.m_materialLayer))return FrameResult::Ready;
-    const uint32_t sectionCount=optimized?model.m_optGeo->m_skinSectionCount:skin.m_skinSections.m_count;
+    const uint32_t sectionCount=skin.m_skinSections.m_count;
     if(batch.m_skinSectionIndex>=sectionCount||batch.m_materialIndex>=data.m_materials.m_count)return FrameResult::InvalidGeometry;
-    if(!optimized && (!model.m_skinSections||!model.m_skinSections[batch.m_skinSectionIndex]))return FrameResult::Ready;
+    if(!model.m_skinSections||!model.m_skinSections[batch.m_skinSectionIndex])return FrameResult::Ready;
     const auto& material=data.m_materials[batch.m_materialIndex];
     if(M2Shadow::MaterialExclusion(material.m_flags,material.m_blendMode))return FrameResult::Ready;
     if(model.m_scene!=&scene || model.m_frameStamp!=scene.m_frameStamp)return FrameResult::StalePose;
@@ -59,11 +60,8 @@ GxShadow::FrameResult BuildM2ShadowMesh(const CM2Model& model,const CM2Scene& sc
     if(!std::isfinite(opacity))return FrameResult::InvalidGeometry;
     const auto selected=Describe(M2Shadow::MaterialCoverage(material.m_flags,material.m_blendMode,opacity));
     if(!selected.casts)return FrameResult::Ready;
-    const auto& section=optimized?model.m_optGeo->m_skinSections[batch.m_skinSectionIndex]:skin.m_skinSections[batch.m_skinSectionIndex];
+    const auto& section=skin.m_skinSections[batch.m_skinSectionIndex];
     if(!section.m_indexCount)return FrameResult::Ready;
-    // Optimised topology lives in its original index buffer, not the profile.
-    // Until its CPU topology is exposed, never pretend it was collected.
-    if(optimized)return FrameResult::UnsupportedCoverage;
     if(!model.m_boneMatrices||section.m_boneInfluences>4||section.m_indexCount%3 ||
         uint32_t(section.m_vertexStart)+section.m_vertexCount>skin.m_vertices.m_count ||
         uint32_t(section.m_indexStart)+section.m_indexCount>skin.m_indices.m_count)return FrameResult::InvalidGeometry;

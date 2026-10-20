@@ -3,6 +3,9 @@
 #if !GX_DIRECTIONAL_SHADOWS || !GX_SHADER_VERTEX
 #error Terrain directional vertex source requires interface v2 vertex compilation
 #endif
+#ifndef GX_TERRAIN_SPECULAR
+#define GX_TERRAIN_SPECULAR 0
+#endif
 #include "shared/DirectionalLighting.slang"
 [[vk::binding(0,1)]] cbuffer TerrainRegisters { float4 terrainRegisters[256]; };
 struct main_Input {
@@ -16,7 +19,9 @@ struct main_Output {
     [[vk::location(2)]] float4 uv0:TEXCOORD0;
     [[vk::location(3)]] float4 uv1:TEXCOORD1;
     [[vk::location(4)]] float4 uv2:TEXCOORD2;
+#if GX_TERRAIN_LAYERS >= 3
     [[vk::location(5)]] float4 uv3:TEXCOORD3;
+#endif
 #if GX_TERRAIN_LAYERS == 4
     [[vk::location(6)]] float4 uv4:TEXCOORD4;
 #endif
@@ -52,9 +57,18 @@ main_Output main(main_Input input) {
 #endif
     output.classicLight=float4(min(output.unshadowedLight+output.worldSun,1)*.5,1);
     output.classicSpecular=0;
+#if GX_TERRAIN_SPECULAR
+    float3 towardEye=normalize(-eye.xyz);
+    float3 halfVector=normalize(towardEye+terrainRegisters[24].xyz);
+    float specular=pow(max(dot(halfVector,normal),0),terrainRegisters[27].w);
+    output.classicSpecular=float4(terrainRegisters[27].xyz*specular,1);
+#endif
     output.worldPosition=GxShadowWorldPosition(eye.xyz);
     output.uv0=TerrainUv(input.position,0);output.uv1=TerrainUv(input.position,1);
-    output.uv2=TerrainUv(input.position,2);output.uv3=TerrainUv(input.position,3);
+    output.uv2=TerrainUv(input.position,2);
+#if GX_TERRAIN_LAYERS >= 3
+    output.uv3=TerrainUv(input.position,3);
+#endif
 #if GX_TERRAIN_LAYERS == 4
     output.uv4=TerrainUv(input.position,4);
 #endif

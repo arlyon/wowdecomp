@@ -347,10 +347,10 @@ do
     refresh()
 end
 
--- A real world-query diagnostic, deliberately not advertised as finished RT lighting.
+-- The terrain effect and the diagnostic are distinct, mutually exclusive views.
 do
     local panel = CreateFrame("Frame", "NativeRayVideoPanel", VideoOptionsFramePanelContainer)
-    panel.name = "Ray Visibility (Development)"
+    panel.name = "Ray Shadows"
     panel.controls = {}
     panel:Hide()
     panel:SetAllPoints(VideoOptionsFramePanelContainer)
@@ -362,31 +362,50 @@ do
         item:SetText(text)
         return item
     end
-    label(-16, "World Ray-query Visibility", "GameFontNormalLarge")
-    label(-48, "Development view of actual world ray queries. Directional material lighting, GI and volumetric fog are NOT integrated yet.")
+    label(-16, "Ray-traced Terrain Shadows", "GameFontNormalLarge")
+    label(-48, "Trees, models and buildings cast sun/moon shadows onto the ground. Their own surfaces do not receive RT shadows yet. GI and volumetric fog are not implemented.")
+    local terrain = CreateFrame("CheckButton", "NativeTerrainRayShadowsCheck", panel, "UICheckButtonTemplate")
+    terrain:SetPoint("TOPLEFT", 16, -116)
+    label(-124, "       Terrain RT shadows (experimental)", "GameFontHighlight")
     local enabled = CreateFrame("CheckButton", "NativeRayVisibilityCheck", panel, "UICheckButtonTemplate")
-    enabled:SetPoint("TOPLEFT", 16, -116)
-    label(-124, "       Show world visibility mask", "GameFontHighlight")
+    enabled:SetPoint("TOPLEFT", 16, -158)
+    label(-166, "       Visibility mask (debug view only)", "GameFontHighlight")
     local strict = CreateFrame("CheckButton", "NativeRayStrictCheck", panel, "UICheckButtonTemplate")
-    strict:SetPoint("TOPLEFT", 16, -158)
-    label(-166, "       Refuse incomplete caster frames", "GameFontHighlight")
-    local status = label(-214, "")
-    label(-302, "White = visible to the directional light; dark = occluded; grey = outside the diagnostic region. Strict checks the current caster frame, not full corpus acceptance.")
-    label(-368, "Apply saves changes. Cancel restores the selection. Default: visibility Off, strict On.")
+    strict:SetPoint("TOPLEFT", 16, -200)
+    label(-208, "       Keep raster if inputs are incomplete", "GameFontHighlight")
+    local status = label(-246, "")
+    label(-354, "Apply saves changes; Cancel restores selections. Debug mask replaces normal colours. Default: shadows/mask Off, safety check On.")
     local originalOn, originalStrict, pendingOn, pendingStrict = 0, 1, 0, 1
+    local originalTerrain, pendingTerrain = 0, 0
     local function showStatus()
         local current = GetNativeShadowStatus()
-        status:SetText(current.supported and (tostring(current.status).."\nCaster triangles: "..tostring(current.triangles))
-            or "Ray queries unavailable on this renderer/device. Saved preferences are retained.")
-        if current.supported then enabled:Enable(); strict:Enable()
-        else enabled:Disable(); strict:Disable() end
+        local function safe(value)
+            return string.gsub(string.gsub(string.sub(tostring(value or ""),1,240),"[%c]"," "),"|","||")
+        end
+        local copy = safe(current.status)
+        if pendingTerrain ~= originalTerrain or pendingOn ~= originalOn or pendingStrict ~= originalStrict then
+            copy = "Selection not applied. Click Apply.\n"..copy
+        end
+        if pendingTerrain == 1 then
+            if GetCVar("nativeHDR") == "1" then copy = copy.."\nRequired: turn off float scene transport in Scene Colour and Apply."
+            elseif GetCVar("nativeAA") == "1" then copy = copy.."\nRequired: turn off experimental AA in Landscape & AA and Apply."
+            elseif tonumber(GetCVar("nativeSceneScale")) ~= 1 then copy = copy.."\nRequired: set scene scale to 100% in Landscape & AA and Apply."
+            elseif current.terrainRendered then copy = copy.."\nTerrain receiver draws: "..safe(current.receivers) end
+        end
+        if not current.supported then copy = "Unavailable on this renderer/device. Saved preferences are retained." end
+        status:SetText(copy)
+        if current.supported then terrain:Enable(); enabled:Enable(); strict:Enable()
+        else terrain:Disable(); enabled:Disable(); strict:Disable() end
     end
     local function show()
+        terrain:SetChecked(pendingTerrain == 1)
         enabled:SetChecked(pendingOn == 1)
         strict:SetChecked(pendingStrict == 1)
         showStatus()
     end
     local function refresh()
+        originalTerrain = tonumber(GetCVar("nativeTerrainRayShadows")) or 0
+        pendingTerrain = originalTerrain
         originalOn = tonumber(GetCVar("nativeRayTracing")) or 0
         originalStrict = tonumber(GetCVar("nativeRayStrict")) or 1
         pendingOn, pendingStrict = originalOn, originalStrict
@@ -394,14 +413,24 @@ do
     end
     local function okay()
         if not GetNativeShadowStatus().supported then refresh(); return end
+        SetCVar("nativeTerrainRayShadows", tostring(pendingTerrain))
         SetCVar("nativeRayTracing", tostring(pendingOn))
         SetCVar("nativeRayStrict", tostring(pendingStrict))
         refresh()
     end
-    local function cancel() pendingOn, pendingStrict = originalOn, originalStrict; show() end
-    local function defaults() pendingOn, pendingStrict = 0, 1; show(); VideoOptionsFrameApply:Enable() end
-    enabled:SetScript("OnClick", function(self) pendingOn = self:GetChecked() and 1 or 0; VideoOptionsFrameApply:Enable() end)
-    strict:SetScript("OnClick", function(self) pendingStrict = self:GetChecked() and 1 or 0; VideoOptionsFrameApply:Enable() end)
+    local function cancel() pendingTerrain, pendingOn, pendingStrict = originalTerrain, originalOn, originalStrict; show() end
+    local function defaults() pendingTerrain, pendingOn, pendingStrict = 0, 0, 1; show(); VideoOptionsFrameApply:Enable() end
+    terrain:SetScript("OnClick", function(self)
+        pendingTerrain = self:GetChecked() and 1 or 0
+        if pendingTerrain == 1 then pendingOn = 0 end
+        show(); VideoOptionsFrameApply:Enable()
+    end)
+    enabled:SetScript("OnClick", function(self)
+        pendingOn = self:GetChecked() and 1 or 0
+        if pendingOn == 1 then pendingTerrain = 0 end
+        show(); VideoOptionsFrameApply:Enable()
+    end)
+    strict:SetScript("OnClick", function(self) pendingStrict = self:GetChecked() and 1 or 0; showStatus(); VideoOptionsFrameApply:Enable() end)
     local elapsed = 0
     panel:SetScript("OnUpdate", function(self, delta) elapsed = elapsed + delta; if elapsed >= 1 then elapsed = 0; showStatus() end end)
     panel:SetScript("OnShow", show)
