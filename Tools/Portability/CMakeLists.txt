@@ -17,6 +17,21 @@ add_executable(CoordinateTest CoordinateTest.cpp "${WOWDECOMP_ROOT}/Engine/Sourc
 target_include_directories(CoordinateTest PRIVATE "${WOWDECOMP_ROOT}")
 add_test(NAME Coordinate COMMAND CoordinateTest)
 
+add_executable(NightDarknessTest NightDarknessTest.cpp)
+target_include_directories(NightDarknessTest PRIVATE "${WOWDECOMP_ROOT}")
+add_test(NAME NightDarkness COMMAND NightDarknessTest)
+add_executable(TimePreviewTest TimePreviewTest.cpp
+    "${WOWDECOMP_ROOT}/WoW/Source/Game/GameTime.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Common/WowTime.cpp")
+target_include_directories(TimePreviewTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_options(TimePreviewTest PRIVATE -ffunction-sections -fdata-sections)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_definitions(TimePreviewTest PRIVATE __stdcall=)
+endif ()
+target_link_options(TimePreviewTest PRIVATE -Wl,--gc-sections)
+target_link_libraries(TimePreviewTest PRIVATE Storm)
+add_test(NAME TimePreview COMMAND TimePreviewTest)
+
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Os" Os)
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Tempest" Tempest)
 # Production modules normally inherit the repository root as CMAKE_SOURCE_DIR.

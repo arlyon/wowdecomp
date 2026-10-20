@@ -1,4 +1,6 @@
 #include "WorldParam.h"
+#include "TimePreview.h"
+#include "NightDarkness.h"
 #include <cstdio>
 #include <new>
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
@@ -57,6 +59,8 @@ CVar* CWorldParam::cvar_baseMip;
 
 // STATIC: 0x00CD85A0
 CVar* CWorldParam::cvar_horizonFarClip;
+CVar* CWorldParam::cvar_localTimePreview;
+CVar* CWorldParam::cvar_nightDarkness;
 
 // STATIC: 0x00CD85A4
 CVar* CWorldParam::cvar_horizonNearClip;
@@ -217,6 +221,18 @@ bool CWorldParam::NearClipCallback(CVar* var, const char* oldValue, const char* 
 
 // VERIFY: 452fa715 auto
 // OFFSET: 0x0078D7C0
+bool CWorldParam::LocalTimePreviewCallback(CVar*, const char*, const char* value, void*) {
+    if (TimePreview::Parse(value)) return true;
+    ConsoleWrite("localTimePreview must be -1 (Server Time) or a finite hour from 0 to 24 (midnight).", DEFAULT_COLOR);
+    return false;
+}
+
+bool CWorldParam::NightDarknessCallback(CVar*, const char*, const char* value, void*) {
+    if (NightDarkness::Parse(value)) return true;
+    ConsoleWrite("nightDarkness must be a finite percentage from 0 (Classic) to 100.", DEFAULT_COLOR);
+    return false;
+}
+
 bool CWorldParam::HorizonFarClipScaleCallback(CVar* var, const char* oldValue, const char* value, void* arg) {
     float scale = SStrToFloat(value);
 
@@ -636,6 +652,8 @@ void CWorldParam::Initialize() {
     CWorldParam::cvar_waterLOD = CVar::Register("waterLOD", "Water geometry LOD", 1, "0", CWorldParam::WaterLodCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_baseMip = CVar::Register("baseMip", "base mipmap level", 1, "0", CWorldParam::BaseMipCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_horizonFarClip = CVar::Register("horizonFarclipScale", "Far clip plane scale for horizon", 1, "4.0", CWorldParam::HorizonFarClipScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+    CWorldParam::cvar_localTimePreview = CVar::Register("localTimePreview", "Visual time only; -1 Server Time, 0..24 frozen local hour; 24 aliases midnight", 1, "-1", CWorldParam::LocalTimePreviewCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+    CWorldParam::cvar_nightDarkness = CVar::Register("nightDarkness", "Outdoor night ambient reduction in percent; 0 preserves Classic lighting", 1, "0", CWorldParam::NightDarknessCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_horizonNearClip = CVar::Register("horizonNearclipScale", "Near clip plane scale for horizon", 1, "0.7", CWorldParam::HorizonNearClipScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_showFootprints = CVar::Register("showfootprints", "toggles rendering of footprints", 1, "1", CWorldParam::ShowFootprintsCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_bspCache = CVar::Register("bspcache", "BSP node caching", 1, "1", CWorldParam::BspCacheCallback, CATEGORY_GRAPHICS, false, nullptr, false);

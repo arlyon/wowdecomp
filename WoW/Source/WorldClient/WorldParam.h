@@ -21,6 +21,8 @@ class CWorldParam {
     static CVar* cvar_waterLOD;
     static CVar* cvar_baseMip;
     static CVar* cvar_horizonFarClip;
+    static CVar* cvar_localTimePreview;
+    static CVar* cvar_nightDarkness;
     static CVar* cvar_horizonNearClip;
     static CVar* cvar_showFootprints;
     static CVar* cvar_bspCache;
@@ -53,6 +55,8 @@ class CWorldParam {
     static bool GxTextureCacheSizeCallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static bool HardwareOcclusionCallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static bool HorizonFarClipScaleCallback(CVar* var, const char* oldValue, const char* value, void* arg);
+    static bool LocalTimePreviewCallback(CVar* var, const char* oldValue, const char* value, void* arg);
+    static bool NightDarknessCallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static bool HorizonNearClipScaleCallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static bool HWPCFCallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static void Initialize();

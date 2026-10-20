@@ -1,4 +1,6 @@
 #include "WoW/Source/WorldClient/DayNight__DNInfo.h"
+#include "TimePreview.h"
+#include "NightDarkness.h"
 #include "WoW/Source/WorldClient/CloudNoise.h"
 #include <cmath>
 #include <new>
@@ -1843,7 +1845,9 @@ void DayNight::RenderSky(CPortalView* view) {
         s_skyScene->AdvanceTime(elapsed);
         s_skySceneTimeMs += elapsed;
 
-        int32_t minutes = g_clientGameTime.GetHourAndMinutes();
+        uint32_t minutes = g_clientGameTime.GetHourAndMinutes();
+        float progression = info.m_dayProgression;
+        TimePreview::Apply(CWorldParam::cvar_localTimePreview ? CWorldParam::cvar_localTimePreview->m_floatValue : -1.f, progression, minutes);
 
         for (int32_t i = 0; i < 3; i++) {
             DayNight::SyncSkyAnimWithTime(info.m_blendSkybox[i], minutes);
@@ -2694,6 +2698,13 @@ void DayNight::SetColors() {
     }
 
     DayNight::SetLightColors();
+
+    // Rebuild authored lighting first, then scale outdoor ambient only.
+    const float darkness = CWorldParam::cvar_nightDarkness ? CWorldParam::cvar_nightDarkness->m_floatValue : 0.f;
+    const bool protectedLighting = liquidStatus || !info.m_showSky || info.m_overrideLightParamsId != UINT32_MAX;
+    const float ambientScale = NightDarkness::AmbientScale(info.m_dayProgression, darkness, protectedLighting);
+    info.m_light0.m_ambient = NightDarkness::Ambient(info.m_light0.m_ambient, ambientScale);
+    info.m_light1.m_ambient = NightDarkness::Ambient(info.m_light1.m_ambient, ambientScale);
 
     if (liquidStatus && liquid && liquid->m_maxDarkenDepth > 0.0f) {
         float maxDepth = -liquid->m_maxDarkenDepth;

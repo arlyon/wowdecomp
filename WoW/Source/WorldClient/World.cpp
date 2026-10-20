@@ -1,3 +1,4 @@
+#include "TimePreview.h"
 #if !defined(_WIN32)
 #include <cfloat>
 #endif
@@ -1405,6 +1406,17 @@ void DayNight::Update(int32_t reset, const C3Vector* cameraPos) {
 
     if (s_mapId < 530) {
         fogMode = 0;
+    }
+
+    // Override only the visual snapshot, before lighting/sky/fog consume it.
+    // The live gameplay clock and its tick accumulator remain unchanged.
+    const float preview = CWorldParam::cvar_localTimePreview ? CWorldParam::cvar_localTimePreview->m_floatValue : -1.f;
+    TimePreview::Apply(preview, info->m_dayProgression, info->m_timeOfDay);
+    static float previousPreview = -1.f;
+    const float normalizedPreview = preview == 24.f ? 0.f : preview;
+    if (previousPreview != normalizedPreview) {
+        reset = 1;
+        previousPreview = normalizedPreview;
     }
 
     DayNight::SetFogMode(fogMode);
