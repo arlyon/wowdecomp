@@ -41,6 +41,7 @@ std::shared_ptr<const GxShadow::Frame> CollectWorldShadowScene(const C3Vector& c
     C44Matrix vp=scene->m_view*projection;
     const float determinant=vp.Determinant();
     if(!std::isfinite(determinant)||std::abs(determinant)<1e-12f){frame->result=FrameResult::InvalidGeometry;return frame;}
+    std::memcpy(frame->viewInverse.data(),&scene->m_viewInv.a0,64);
     const auto inverse=vp.Inverse(determinant);std::memcpy(frame->inverseViewProjection.data(),&inverse.a0,64);
     const auto& direction=CMap::s_mapLight->m_light.m_dir;
     frame->lightDirection={-direction.x,-direction.y,-direction.z};
@@ -74,7 +75,7 @@ std::shared_ptr<const GxShadow::Frame> CollectWorldShadowScene(const C3Vector& c
         if(group->m_vertexListCount<0||!group->m_vertexList||group->m_indicesCount<0||!group->m_indices){Failure(*frame,FrameResult::InvalidGeometry);continue;}
         for(int b=0;b<group->m_batchListCount;++b){const auto& batch=group->m_batchList[b];
             if(batch.m_texture>=owner->m_materialsCount||batch.m_indexCount%3||uint64_t(batch.m_indexStart)+batch.m_indexCount>uint32_t(group->m_indicesCount)){Failure(*frame,FrameResult::InvalidGeometry);continue;}
-            auto& material=owner->m_materialList[batch.m_texture];Mesh mesh;mesh.material.twoSided=(material.m_flags&4)!=0;
+            auto& material=owner->m_materialList[batch.m_texture];Mesh mesh;mesh.kind=GeometryKind::Building;mesh.material.twoSided=(material.m_flags&4)!=0;
             if(material.m_blendMode==1){
                 auto* texture=material.Textures()[0];auto* native=texture?TextureGetGxTex(texture,0,nullptr):nullptr;
                 if(!native){Failure(*frame,FrameResult::PendingTexture);continue;}

@@ -1741,6 +1741,7 @@ void CGWorldFrame::OnWorldRender() {
         CWorldParam::cvar_nativeAA->Set(0, true, true, false, true);
         temporal = false;
     }
+    g_theGxDevicePtr->SceneConfigureTerrainShadows(CWorldParam::cvar_nativeTerrainRayShadows && CWorldParam::cvar_nativeTerrainRayShadows->m_intValue != 0);
     g_theGxDevicePtr->SceneConfigureShadows(CWorldParam::cvar_nativeRayTracing && CWorldParam::cvar_nativeRayTracing->m_intValue != 0,
         !CWorldParam::cvar_nativeRayStrict || CWorldParam::cvar_nativeRayStrict->m_intValue != 0);
     const bool separateWorld = g_theGxDevicePtr->SceneBeginWorld(temporal, reinterpret_cast<uintptr_t>(this->m_camera));
@@ -1808,8 +1809,9 @@ void CGWorldFrame::OnWorldRender() {
         // FFX resets the viewport. Preserve the world overlay's pre-effect coordinates.
         float left, right, bottom, top, nearDepth, farDepth;
         GxXformViewport(left, right, bottom, top, nearDepth, farDepth);
-        if (g_theGxDevicePtr->SceneShadowsRequested())
+        if (g_theGxDevicePtr->SceneShadowsRequested() && !g_theGxDevicePtr->SceneTerrainShadowsRequested())
             g_theGxDevicePtr->SceneSetShadowFrame(CollectWorldShadowScene(*World::GetCamPos(),shadowProjection));
+        g_theGxDevicePtr->SceneFinishTerrainShadows();
         if (!hdr) {
             g_theGxDevicePtr->ScenePauseWorldMotion();
             FFX::Finish();

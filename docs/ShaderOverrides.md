@@ -16,6 +16,8 @@ The default root is the configured CMake path `WOWDECOMP_VULKAN_OVERRIDE_DIR`
 <root>/vertex/vs_3_0/Terrain/17.slang
 <root>/pixel/ps_3_0/Terrain/17.slang
 <root>/shared/Lighting.slang
+<root>/directional/vertex/vs_3_0/Terrain/32.slang
+<root>/directional/pixel/ps_3_0/Terrain1/4.slang
 ```
 
 Names preserve the original Gx key's spelling. `Terrain:17` becomes name
@@ -24,6 +26,11 @@ The profile is taken from the actual loaded SM1–3 version token, including any
 original archive-profile fallback. Stage, profile and permutation are separate
 path components, not material hashes or permission lists. Anonymous synthetic
 programs without a Gx key retain explicitly anonymous compatibility rendering.
+Directional source is resolved explicitly in the `directional/` subtree through
+the same confined reader/compiler. Missing directional source blocks that effect;
+it never acquires RT support from the raster source or generated compatibility.
+Ordinary rendering does not select directional entries, preserving its existing
+AA/HDR source variants.
 
 Entry and include files share a pinned-directory reader. Every descendant
 component is opened without following symlinks; escaping paths, descendant
@@ -76,7 +83,8 @@ additional shared bindings at set 4:
 | 2 (both) | One `float4[7]` frame block, 112 bytes: four view-inverse rows, camera/region, world light/distance, bias/enabled/reserved |
 | 3 (pixel) | Runtime array of original combined 2D coverage samplers |
 
-The pixel variant must declare all four; vertex declares the frame block only.
+The pixel variant must declare all four and preserve a float4 Classic output at
+C2 for whole-frame fallback; vertex declares the frame block only.
 V1 rejects these resources. Reflection rejects incomplete bindings, fixed texture
 arrays and padded-but-incompatible coverage records. GPU wire types are explicit,
 not copies of CPU `CM2Lighting` or model objects.
@@ -85,8 +93,8 @@ not copies of CPU `CM2Lighting` or model objects.
 used by the world diagnostic and the new inline receiver source interface.
 `shared/DirectionalLighting.slang` composes ambient, local, emission and the
 visibility-modulated directional diffuse/specular inputs explicitly. This source
-interface and its GPU fixture are **not yet production material receiver wiring
-or complete corpus acceptance**.
+interface now drives the basic terrain receiver slice below. It is **not complete
+world receiver or corpus acceptance**.
 
 The pinned compiler omits `NonUniform` on loaded sampled-image handles even when
 it qualifies the divergent descriptor access-chain. A bounded original-device
@@ -123,6 +131,39 @@ cache exists (the GPU driver may maintain its own ordinary cache).
 Identical base SPIR-V from different source generations cannot alias an HDR
 source entry. Editing a source file and explicitly reloading cannot reuse the
 old derived pipelines.
+
+## Basic terrain directional receiver slice
+
+`nativeTerrainRayShadows=1` enables actual near-terrain receivers using the same
+loaded terrain/M2/WMO acceleration scene and original animation. It is separate
+from `nativeRayTracing=1`, which remains the visibility diagnostic. The basic
+slice currently requires native resolution (`nativeSceneScale=1`), AA Off
+(`nativeAA=0`) and float grading Off (`nativeHDR=0`); incompatible requests retain
+raster and report unavailable rather than changing saved settings.
+
+The first five directional entries cover the observed Goldshire near-terrain
+VS 32/48/112 and Terrain1 PS 4/6 pairs. Other required terrain sources are errors,
+not generated RT coverage. M2/WMO **cast** into this slice but their receivers
+are not yet implemented. The loaded receiver region is a 64-unit camera-centred
+box; rays extend 128 units and caster collection includes its loaded influence
+region. Unloaded geometry is not claimed.
+
+Preparation runs after original animation and before near-terrain rendering.
+Inline fragment queries apply only to explicit world-sun inputs. Ambient/local
+lighting and fog colour remain independent; directional static-shadow modulation
+is replaced rather than multiplied over the RT result. The encoded Classic C2
+companion is preserved through original rendering, and a late missing source or
+admission failure restores that whole frame before original FFX. Inline mode
+allocates no visibility-diagnostic image or compute pass. GPU buffers/AS/textures
+remain owned until the original submission fence.
+
+`TerrainDirectionalSliceGpu` renders actual Goldshire colour, compares full
+casters against explicit test-only model/building omission controls, saves the
+images, and checks off/on/off parity. Separate `TerrainDirectionalFallbackGpu`
+and `TerrainDirectionalPressureGpu` test late missing-source rollback and real
+admission pressure/recovery without changing intent; neither is positive shadow
+acceptance. Full receiver/corpus, other scenes, lifecycle and measured performance
+closeout remain separate PRD requirements.
 
 ## Offline inventory groundwork (not the RT coverage gate)
 

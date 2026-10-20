@@ -1,5 +1,6 @@
 #include <cfloat>
 #include "CWorldSceneRender.h"
+#include "WorldShadowScene.h"
 #include "WoW/Source/WorldClient/Map.h"
 #include "WoW/Source/WorldClient/World.h"
 #include "Engine/Source/Gx/Gx.h"
@@ -196,7 +197,11 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
     CShadowQuery::Update();
     CShaderEffect::UpdateProjMatrix();
     CWorldScene::ApplyFogState();
+    if(g_theGxDevicePtr->SceneTerrainShadowsRequested())
+        g_theGxDevicePtr->SceneSetShadowFrame(CollectWorldShadowScene(CWorldScene::s_activeWorldView,g_theGxDevicePtr->m_projNative));
+    g_theGxDevicePtr->SceneSetTerrainReceiver(true);
     CWorldScene::RenderChunks();
+    g_theGxDevicePtr->SceneSetTerrainReceiver(false);
     CWorldScene::RenderMapObjDefGroups();
     CWorldScene::RenderHorizon();
 

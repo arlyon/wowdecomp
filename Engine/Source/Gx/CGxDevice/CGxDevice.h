@@ -205,6 +205,10 @@ class CGxDevice {
     virtual bool SceneBeginWorld(bool = false, uint64_t = 0) { return false; }
     virtual void SceneEndWorld() {}
     virtual void SceneConfigureShadows(bool, bool) {}
+    virtual void SceneConfigureTerrainShadows(bool) {}
+    virtual bool SceneTerrainShadowsRequested() const { return false; }
+    virtual void SceneSetTerrainReceiver(bool) {}
+    virtual void SceneFinishTerrainShadows() {}
     virtual bool SceneShadowsRequested() const { return false; }
     virtual bool SceneShadowsSupported() const { return false; }
     virtual void SceneSetShadowFrame(std::shared_ptr<const GxShadow::Frame>) {}

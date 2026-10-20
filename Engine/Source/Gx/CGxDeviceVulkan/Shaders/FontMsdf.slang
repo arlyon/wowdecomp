@@ -65,7 +65,9 @@ float4 pixelMain(VertexOutput input) : SV_Target {
     output.colour = float4(colour, alpha);
     #if GX_HDR_OUTPUT
     output.classic = output.colour;
+    #if !GX_HDR_ENCODED
     output.colour.rgb = hdrDecodeLegacy(colour);
+    #endif
     #endif
     #if GX_FONT_TEMPORAL
     output.motion = float4(0, 0, -1, 1); // text/shadows are deliberately reactive, not motion-tracked

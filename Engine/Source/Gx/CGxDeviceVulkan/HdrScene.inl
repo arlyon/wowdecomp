@@ -12,7 +12,13 @@ const std::vector<uint32_t>& CGxDeviceVulkan::State::BoundaryPixel(const std::ve
     auto found=hdrPixels.find(code);
     if (found!=hdrPixels.end()) return found->second;
     // Authored fixed/font modules have explicit maintained output-boundary variants.
-    if(!decode) throw std::runtime_error("Linear output provider requires recovered float4 C0 ABI");
+    if(!decode) {
+        const char* companion=nullptr;
+        if(code==fixedPixel)companion="fixed-companion.frag.spv";
+        else if(code==msdfFontPixel)companion="font-msdf-companion.frag.spv";
+        if(!companion)throw std::runtime_error("Encoded companion unavailable for this authored provider");
+        return hdrPixels.emplace(code,ReadModule(companion)).first->second;
+    }
     const char* name=nullptr;
     if (code==fixedPixel) name="fixed-hdr.frag.spv";
     else if (code==msdfFontPixel) name="font-msdf-hdr.frag.spv";

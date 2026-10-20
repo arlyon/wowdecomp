@@ -9,6 +9,7 @@
 
 namespace GxVulkan {
 enum class ShaderStage { Vertex, Pixel };
+enum class MaintainedShaderVariant { Raster, Directional };
 struct ShaderIdentity {
     ShaderStage stage;
     std::string name, profile;
@@ -41,6 +42,7 @@ struct ShaderOverride {
 };
 // Only absence returns nullopt. Present invalid/unreadable files, symlinks,
 // escaping paths and excessive inputs are errors, never generation permission.
-std::optional<ShaderOverride> ResolveShaderOverride(const std::filesystem::path& root, const ShaderIdentity& identity);
+std::optional<ShaderOverride> ResolveShaderOverride(const std::filesystem::path& root, const ShaderIdentity& identity,
+    MaintainedShaderVariant variant = MaintainedShaderVariant::Raster);
 }
 #endif

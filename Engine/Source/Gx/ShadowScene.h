@@ -25,7 +25,9 @@ struct Material {
     std::array<bool,4> wrapU{},wrapV{};
     std::array<std::shared_ptr<const void>,4> textureOwners;
 };
+enum class GeometryKind { Terrain, Model, Building };
 struct Mesh {
+    GeometryKind kind=GeometryKind::Terrain;
     std::vector<Position> positions;
     std::vector<CoverageVertex> coverage;
     std::vector<uint32_t> indices;
@@ -35,11 +37,13 @@ struct Status {
     FrameResult result=FrameResult::Disabled;
     uint64_t terrain=0,models=0,buildings=0,triangles=0,unsupported=0;
     bool diagnosticRendered=false;
+    uint64_t terrainReceivers=0;
+    bool terrainRendered=false;
 };
 struct Frame {
     FrameResult result=FrameResult::Disabled;
     std::vector<Mesh> meshes;
-    std::array<float,16> inverseViewProjection{};
+    std::array<float,16> inverseViewProjection{},viewInverse{};
     std::array<float,2> viewportDepthRange{0.f,1.f};
     std::array<float,3> camera{},lightDirection{};
     float regionRadius=64,rayDistance=128;

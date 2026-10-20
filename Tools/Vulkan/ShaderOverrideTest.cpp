@@ -106,15 +106,17 @@ int main(){try {
         fs::copy_file(fs::path(WOWDECOMP_TEST_SHARED_SHADERS)/shared,root/"shared"/shared);
     const std::string directionalSource=registers+alpha+
         "#include \"shared/DirectionalLighting.slang\"\n"
-        "float4 main():SV_Target0{float v=1;\n"
+        "struct Result {float4 colour:SV_Target0;float4 classic:SV_Target2;};\nResult main(){float v=1;\n"
         "#if GX_DIRECTIONAL_SHADOWS\n v=GxWorldSunVisibility(float3(0,0,0));\n#endif\n"
-        "float3 c=GxComposeLighting(values[0].xyz,values[1].xyz,values[2].xyz,values[3].xyz,values[4].xyz,v);clip(1-threshold.x);return float4(c,1);}";
+        "float3 c=GxComposeLighting(values[0].xyz,values[1].xyz,values[2].xyz,values[3].xyz,values[4].xyz,v);clip(1-threshold.x);Result result;result.colour=float4(c,1);result.classic=values[5];return result;}";
     Write(file,directionalSource);auto directional=ResolveShaderOverride(root,id);
     const auto ordinary=compiler.CompileMaintained(*directional);
     Check(!ordinary.bindings.directionalVisibility&&!ordinary.bindings.shadowFrame,"raster source unexpectedly requires ray capabilities");
     const auto inlineProgram=compiler.CompileMaintained(*directional,MaintainedShaderVariant::Directional);
     Check(inlineProgram.bindings.directionalVisibility&&inlineProgram.bindings.shadowFrame,"explicit inline directional interface was not reflected");
     Reject([&]{compiler.CompileMaintained(*directional,static_cast<MaintainedShaderVariant>(99));});
+    Write(file,registers+alpha+"#include \"shared/DirectionalLighting.slang\"\nfloat4 main():SV_Target0{clip(1-threshold.x);return float4(GxWorldSunVisibility(float3(0,0,0)),0,0,1);}");
+    auto missingClassic=ResolveShaderOverride(root,id);Reject([&]{compiler.CompileMaintained(*missingClassic,MaintainedShaderVariant::Directional);});
     Write(file,registers+alpha+"float4 main():SV_Target0{clip(1-threshold.x);return values[0];}");
     auto missingDirectional=ResolveShaderOverride(root,id);
     Reject([&]{compiler.CompileMaintained(*missingDirectional,MaintainedShaderVariant::Directional);});

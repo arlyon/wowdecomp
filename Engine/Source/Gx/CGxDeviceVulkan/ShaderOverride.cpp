@@ -104,7 +104,7 @@ std::optional<std::string> ShaderSourceFiles::Read(const std::filesystem::path& 
     if(contents.find('\0')!=std::string::npos)throw std::runtime_error("Shader source contains NUL bytes: "+relative.generic_string());
     state->loaded.emplace(relative,contents);state->bytes+=size;return contents;
 }
-std::optional<ShaderOverride> ResolveShaderOverride(const std::filesystem::path& root,const ShaderIdentity& identity) {
+std::optional<ShaderOverride> ResolveShaderOverride(const std::filesystem::path& root,const ShaderIdentity& identity,MaintainedShaderVariant variant) {
     Component(identity.name);Component(identity.profile);
     const char* stage=nullptr;
     switch(identity.stage) {
@@ -113,7 +113,13 @@ std::optional<ShaderOverride> ResolveShaderOverride(const std::filesystem::path&
     }
     if(!stage)throw std::invalid_argument("Unsupported shader stage");
     auto files=std::make_shared<ShaderSourceFiles>(root);
-    const auto filename=std::filesystem::path(stage)/identity.profile/identity.name/(std::to_string(identity.permutation)+".slang");
+    std::filesystem::path prefix;
+    switch(variant){
+    case MaintainedShaderVariant::Raster:break;
+    case MaintainedShaderVariant::Directional:prefix="directional";break;
+    default:throw std::invalid_argument("Unsupported maintained shader variant");
+    }
+    const auto filename=prefix/stage/identity.profile/identity.name/(std::to_string(identity.permutation)+".slang");
     auto source=files->Read(filename);
     if(!source)return std::nullopt;
     return ShaderOverride{identity,files->Root()/filename,std::move(*source),std::move(files)};

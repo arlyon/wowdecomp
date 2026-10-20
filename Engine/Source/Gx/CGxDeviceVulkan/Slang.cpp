@@ -100,7 +100,7 @@ ShaderBindings MaintainedBindings(slang::ProgramLayout* layout,bool vertex,Maint
     RequireInterface(layout && layout->getEntryPointCount()==1,"one graphics entry point is required");
     ShaderBindings result;
     result.interfaceVersion=variant==MaintainedShaderVariant::Directional?2:1;
-    bool alpha=false,position=false,colour=false;
+    bool alpha=false,position=false,colour=false,classic=false;
     unsigned shadowBindings=0;
     std::set<std::pair<unsigned,unsigned>> descriptors;
     for(unsigned i=0;i<layout->getParameterCount();++i) {
@@ -174,13 +174,17 @@ ShaderBindings MaintainedBindings(slang::ProgramLayout* layout,bool vertex,Maint
                 RequireInterface(semantic && !std::strcmp(semantic,"SV_TARGET") && value->getSemanticIndex()<3 && FloatVector(type,4),
                     "pixel output must be float4 at maintained Gx colour slots 0..2");
                 colour|=value->getSemanticIndex()==0;
+                classic|=value->getSemanticIndex()==2;
             }
         }
     };
     output(entry->getResultVarLayout());
     if(vertex)RequireInterface(position && std::find(result.attributes.begin(),result.attributes.end(),0)!=result.attributes.end(),
         "position input and SV_Position output are required");
-    else RequireInterface(colour && alpha,"C0 output and the reserved alpha-test block are required");
+    else {
+        RequireInterface(colour && alpha,"C0 output and the reserved alpha-test block are required");
+        if(variant==MaintainedShaderVariant::Directional)RequireInterface(classic,"directional source must preserve the Classic C2 companion");
+    }
     return result;
 }
 void Check(SlangResult result, slang::IBlob* diagnostics, const char* operation) {

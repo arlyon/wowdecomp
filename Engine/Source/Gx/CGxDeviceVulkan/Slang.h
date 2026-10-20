@@ -5,13 +5,13 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "ShaderOverride.h"
 
 namespace GxVulkan {
 class ShaderSourceFiles;
 struct ShaderOverride;
 struct ShaderBindings;
 struct CompiledShader;
-enum class MaintainedShaderVariant { Raster, Directional };
 struct ShaderCompileContext {
     std::shared_ptr<ShaderSourceFiles> files;
     std::string filename = "gx-shader.slang";

@@ -24,6 +24,10 @@ public:
     bool SceneBeginWorld(bool temporal = false, uint64_t scene = 0) override;
     void SceneEndWorld() override;
     void SceneConfigureShadows(bool requested, bool strict) override;
+    void SceneConfigureTerrainShadows(bool requested) override;
+    bool SceneTerrainShadowsRequested() const override;
+    void SceneSetTerrainReceiver(bool enabled) override;
+    void SceneFinishTerrainShadows() override;
     bool SceneShadowsRequested() const override;
     bool SceneShadowsSupported() const override;
     void SceneSetShadowFrame(std::shared_ptr<const GxShadow::Frame> frame) override;
@@ -53,6 +57,7 @@ public:
     bool SceneRayQueryTestAccelerationBuild();
     bool SceneRayQueryTestReadback();
     bool SceneRayQueryTestDirectionalLighting();
+    void SceneShadowTestCasters(bool models,bool buildings);
     void SceneFarTestAdmissionLimits(uint64_t scene, uint64_t images, uint64_t far);
     void SceneFarTestFailAllocation(uint32_t ordinal);
     bool SceneFarTestNearCharge(bool images, uint64_t bytes);

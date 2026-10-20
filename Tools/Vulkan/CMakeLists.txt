@@ -295,6 +295,7 @@ if (WOWDECOMP_WORLD_ASSETS AND WOWDECOMP_VULKAN_CLIENT_BUILD AND TARGET Vulkan::
         "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp")
     target_include_directories(TerrainDistanceWorldTest PRIVATE "${WOWDECOMP_ROOT}" "${WOWDECOMP_ROOT}/ThirdParty/freetype/include")
     target_compile_definitions(TerrainDistanceWorldTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_POSIX=1 WOWDECOMP_VULKAN=1 WOWDECOMP_VULKAN_TESTING=1
+        WOWDECOMP_TEST_RECEIVER_SOURCE_ROOT="${WOWDECOMP_ROOT}/Shaders/Overrides"
         WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
     target_compile_options(TerrainDistanceWorldTest PRIVATE -ffunction-sections -fdata-sections)
     target_link_options(TerrainDistanceWorldTest PRIVATE -Wl,--gc-sections "LINKER:--wrap=connect"
@@ -307,7 +308,10 @@ if (WOWDECOMP_WORLD_ASSETS AND WOWDECOMP_VULKAN_CLIENT_BUILD AND TARGET Vulkan::
     add_test(NAME TerrainDistanceNorthrendGpu COMMAND TerrainDistanceWorldTest --northrend-distance)
     add_test(NAME RasterWorldFeaturesGpu COMMAND TerrainDistanceWorldTest --raster-features)
     add_test(NAME WorldRayVisibilityDiagnosticGpu COMMAND TerrainDistanceWorldTest --rt-visibility)
-    set_tests_properties(TerrainDistanceWorldGpu TerrainDistanceNorthrendGpu RasterWorldFeaturesGpu WorldRayVisibilityDiagnosticGpu PROPERTIES TIMEOUT 180
+    add_test(NAME TerrainDirectionalSliceGpu COMMAND TerrainDistanceWorldTest --terrain-ray-shadows)
+    add_test(NAME TerrainDirectionalFallbackGpu COMMAND TerrainDistanceWorldTest --terrain-ray-fallback)
+    add_test(NAME TerrainDirectionalPressureGpu COMMAND TerrainDistanceWorldTest --terrain-ray-pressure)
+    set_tests_properties(TerrainDistanceWorldGpu TerrainDistanceNorthrendGpu RasterWorldFeaturesGpu WorldRayVisibilityDiagnosticGpu TerrainDirectionalSliceGpu TerrainDirectionalFallbackGpu TerrainDirectionalPressureGpu PROPERTIES TIMEOUT 180
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terrain-world"
         ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~;WOWDECOMP_TEST_WORLD_ASSETS=${WOWDECOMP_WORLD_ASSETS}")
 else ()

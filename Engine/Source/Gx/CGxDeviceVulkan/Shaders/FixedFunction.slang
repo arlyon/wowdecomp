@@ -177,7 +177,9 @@ float4 pixelMain(VertexOutput input) : SV_Target
     output.colour = colour;
 #if GX_HDR_OUTPUT
     output.classic = colour;
+#if !GX_HDR_ENCODED
     output.colour.rgb = hdrDecodeLegacy(colour.rgb);
+#endif
 #endif
 #if GX_TEMPORAL
     output.motion = float4(0, 0, -1, saturate(temporalOptions.y));

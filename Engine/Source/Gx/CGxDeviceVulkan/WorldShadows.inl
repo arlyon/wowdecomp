@@ -1,14 +1,14 @@
 // Actual game-world visibility view. Uses the original raster depth and shared
 // current-pose AS; it does not darken ambient/local lighting as a shortcut.
-void CGxDeviceVulkan::State::RecordWorldShadowVisibility(){
+void CGxDeviceVulkan::State::RecordWorldShadowVisibility(bool inlineOnly){
     using namespace GxShadow;
-    if(!shadowRequested)return;
+    if(!shadowRequested&&!inlineOnly)return;
     shadowStatus={};
     if(!rayQueryCapabilities.Available()){shadowStatus.result=FrameResult::Unavailable;return;}
     if(!shadowSource){shadowStatus.result=FrameResult::PendingGeometry;return;}
     const auto& source=*shadowSource;
     shadowStatus={source.result,source.terrain,source.models,source.buildings,source.triangles,source.unsupported,false};
-    if(source.result!=FrameResult::Ready&&shadowStrict)return;
+    if(source.result!=FrameResult::Ready&&(shadowStrict||inlineOnly))return;
     if(source.meshes.empty())return;
     auto gpu=std::make_shared<ShadowGpuFrame>();gpu->device=device;gpu->source=shadowSource;
     gpu->releaseImage=[this](NativeImage& image){DestroyImage(image);};
@@ -36,6 +36,9 @@ void CGxDeviceVulkan::State::RecordWorldShadowVisibility(){
         };
         textureSlot(nullptr,false,false);
         for(const auto& mesh:source.meshes){
+#ifdef WOWDECOMP_VULKAN_TESTING
+            if((mesh.kind==GeometryKind::Model&&!shadowTestModels)||(mesh.kind==GeometryKind::Building&&!shadowTestBuildings))continue;
+#endif
             const auto& material=mesh.material;
             if(material.mode==CoverageMode::NonCaster)continue;
             if(material.mode!=CoverageMode::Opaque&&material.mode!=CoverageMode::Cutout&&material.mode!=CoverageMode::ForcedCutout)throw std::invalid_argument("Unknown world coverage");
@@ -63,9 +66,34 @@ void CGxDeviceVulkan::State::RecordWorldShadowVisibility(){
         data.rect[0]=renderRect.offset.x;data.rect[1]=renderRect.offset.y;data.rect[2]=renderRect.extent.width;data.rect[3]=renderRect.extent.height;
         data.size[0]=renderExtent.width;data.size[1]=renderExtent.height;
         const auto host=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        gpu->uniforms=GxVulkan::CreateBuffer(device,memoryProperties,sizeof(data),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,host,sceneAdmission.get());
+        GpuDirectionalFrame directional{};
+        std::memcpy(directional.values,source.viewInverse.data(),64);
+        for(unsigned i=0;i<3;++i){directional.values[4][i]=source.camera[i];directional.values[5][i]=source.lightDirection[i];}
+        directional.values[4][3]=source.regionRadius;directional.values[5][3]=source.rayDistance;
+        directional.values[6][0]=.015f;directional.values[6][1]=1;
+        gpu->uniforms=GxVulkan::CreateBuffer(device,memoryProperties,inlineOnly?sizeof(directional):sizeof(data),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,host,sceneAdmission.get());
         gpu->triangles=GxVulkan::CreateBuffer(device,memoryProperties,triangles.size()*sizeof(Triangle),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,host,sceneAdmission.get());
-        std::memcpy(gpu->uniforms.mapped,&data,sizeof(data));std::memcpy(gpu->triangles.mapped,triangles.data(),gpu->triangles.size);
+        std::memcpy(gpu->uniforms.mapped,inlineOnly?static_cast<const void*>(&directional):static_cast<const void*>(&data),gpu->uniforms.size);
+        std::memcpy(gpu->triangles.mapped,triangles.data(),gpu->triangles.size);
+        gpu->scene=std::make_unique<GxVulkan::AccelerationScene>(device,physical,memoryProperties,rayQueryCapabilities,sceneAdmission);
+        gpu->scene->Build(command,positions.data(),positions.size(),indices.data(),indices.size());
+        if(inlineOnly){
+            if(textureCount>shadowTextureCapacity)throw std::runtime_error("Terrain query texture capacity exceeded");
+            const VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1},{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,textureCount}};
+            VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pool.maxSets=1;pool.poolSizeCount=4;pool.pPoolSizes=sizes;
+            GX_VK(vkCreateDescriptorPool(device,&pool,nullptr,&gpu->pool));
+            VkDescriptorSetVariableDescriptorCountAllocateInfo count{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO};count.descriptorSetCount=1;count.pDescriptorCounts=&textureCount;
+            VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocate.pNext=&count;allocate.descriptorPool=gpu->pool;allocate.descriptorSetCount=1;allocate.pSetLayouts=&descriptorLayouts[4];
+            GX_VK(vkAllocateDescriptorSets(device,&allocate,&gpu->querySet));
+            const auto top=gpu->scene->TopLevel();VkWriteDescriptorSetAccelerationStructureKHR as{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};as.accelerationStructureCount=1;as.pAccelerationStructures=&top;
+            VkDescriptorBufferInfo buffers[]={{gpu->triangles.buffer,0,gpu->triangles.size},{gpu->uniforms.buffer,0,gpu->uniforms.size}};
+            const VkDescriptorType types[]={VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
+            VkWriteDescriptorSet writes[4]{};for(unsigned i=0;i<4;++i){auto& w=writes[i];w.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;w.dstSet=gpu->querySet;w.dstBinding=i;w.descriptorType=types[i];w.descriptorCount=i==3?textureCount:1;if(!i)w.pNext=&as;else if(i==3)w.pImageInfo=texturesInfo.data();else w.pBufferInfo=&buffers[i-1];}
+            vkUpdateDescriptorSets(device,4,writes,0,nullptr);
+            VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};ready.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;ready.dstAccessMask=VK_ACCESS_UNIFORM_READ_BIT|VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_VERTEX_SHADER_BIT|VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,1,&ready,0,nullptr,0,nullptr);
+            shadowCurrent=gpu;return;
+        }
         gpu->output=MakeImage(renderExtent.width,renderExtent.height,1,1,VK_FORMAT_R32G32B32A32_SFLOAT,VK_IMAGE_ASPECT_COLOR_BIT,
             VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT,UINT64_MAX,&imageAdmission);
         VkDescriptorSetLayoutBinding bindings[]={{0,VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
@@ -87,8 +115,6 @@ void CGxDeviceVulkan::State::RecordWorldShadowVisibility(){
         VkComputePipelineCreateInfo compute{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};compute.layout=gpu->layout;compute.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         compute.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;compute.stage.module=gpu->module;compute.stage.pName="main";
         GX_VK(vkCreateComputePipelines(device,VK_NULL_HANDLE,1,&compute,nullptr,&gpu->pipeline));
-        gpu->scene=std::make_unique<GxVulkan::AccelerationScene>(device,physical,memoryProperties,rayQueryCapabilities,sceneAdmission);
-        gpu->scene->Build(command,positions.data(),positions.size(),indices.data(),indices.size());
         Barrier(worldDepth.image,worldDepth.aspect,1,1,worldDepth.layout,VK_IMAGE_LAYOUT_GENERAL);worldDepth.layout=VK_IMAGE_LAYOUT_GENERAL;
         Barrier(gpu->output.image,gpu->output.aspect,1,1,gpu->output.layout,VK_IMAGE_LAYOUT_GENERAL);gpu->output.layout=VK_IMAGE_LAYOUT_GENERAL;
         const auto top=gpu->scene->TopLevel();VkWriteDescriptorSetAccelerationStructureKHR as{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};as.accelerationStructureCount=1;as.pAccelerationStructures=&top;

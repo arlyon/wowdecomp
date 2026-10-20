@@ -37,7 +37,7 @@ void PrepareM2ShadowPoses(CM2Scene& scene){
     }
 }
 GxShadow::FrameResult BuildM2ShadowMesh(const CM2Model& model,const CM2Scene& scene,uint32_t batchIndex,GxShadow::Mesh& out){
-    using namespace GxShadow;out={};
+    using namespace GxShadow;out={};out.kind=GeometryKind::Model;
     if(model.m_fFlags&0x4000)return FrameResult::Ready;
     if(!(model.m_fFlags&1)||!model.m_shared||!model.m_shared->m_data||!model.m_shared->m_skinData||!model.m_shared->m_cache)return FrameResult::PendingGeometry;
     const auto& data=*model.m_shared->m_data;const auto& skin=*model.m_shared->m_skinData;

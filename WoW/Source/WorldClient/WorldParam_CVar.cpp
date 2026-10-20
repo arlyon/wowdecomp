@@ -67,6 +67,7 @@ CVar* CWorldParam::cvar_horizonFarClip;
 CVar* CWorldParam::cvar_localTimePreview;
 CVar* CWorldParam::cvar_nightDarkness;
 CVar* CWorldParam::cvar_nativeRayTracing;
+CVar* CWorldParam::cvar_nativeTerrainRayShadows;
 CVar* CWorldParam::cvar_nativeRayStrict;
 CVar* CWorldParam::cvar_nativeAA;
 CVar* CWorldParam::cvar_nativeSceneScale;
@@ -731,6 +732,7 @@ void CWorldParam::Initialize() {
     CWorldParam::cvar_horizonFarClip = CVar::Register("horizonFarclipScale", "Far clip plane scale for horizon", 1, "4.0", CWorldParam::HorizonFarClipScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_localTimePreview = CVar::Register("localTimePreview", "Visual time only; -1 Server Time, 0..24 frozen local hour; 24 aliases midnight", 1, "-1", CWorldParam::LocalTimePreviewCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_nightDarkness = CVar::Register("nightDarkness", "Outdoor night ambient reduction in percent; 0 preserves Classic lighting", 1, "0", CWorldParam::NightDarknessCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+    cvar_nativeTerrainRayShadows = CVar::Register("nativeTerrainRayShadows", "Opt-in basic terrain receiver slice; not full world RT coverage", 1, "0", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
     cvar_nativeRayTracing = CVar::Register("nativeRayTracing", "Development RT world visibility view; directional material integration unfinished", 1, "0", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
     cvar_nativeRayStrict = CVar::Register("nativeRayStrict", "Refuse incomplete caster frames; disabling is diagnostic only, never full coverage", 1, "1", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_nativeAA = CVar::Register("nativeAA", "Experimental native temporal anti-aliasing; 0 Off, 1 TAA on supported Vulkan devices", 1, "0", CWorldParam::NativeAACallback, CATEGORY_GRAPHICS, false, nullptr, false);

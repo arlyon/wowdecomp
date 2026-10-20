@@ -136,6 +136,10 @@ struct NativeShader {
     std::string source, temporalSource;
     std::shared_ptr<GxVulkan::ShaderOverride> maintained;
     std::vector<uint32_t> hdrCode[2][2];
+    bool directionalAttempted=false;
+    std::string directionalError;
+    std::shared_ptr<GxVulkan::ShaderOverride> directionalSource;
+    GxVulkan::CompiledShader directional;
 };
 struct Pipeline {
     VkPipeline handle = VK_NULL_HANDLE;
@@ -145,6 +149,7 @@ struct ShadowGpuFrame {
     VkDescriptorSetLayout descriptors=VK_NULL_HANDLE;
     VkPipelineLayout layout=VK_NULL_HANDLE;
     VkDescriptorPool pool=VK_NULL_HANDLE;
+    VkDescriptorSet querySet=VK_NULL_HANDLE;
     VkPipeline pipeline=VK_NULL_HANDLE;
     VkShaderModule module=VK_NULL_HANDLE;
     NativeImage output;
@@ -204,11 +209,15 @@ struct CGxDeviceVulkan::State {
     VkPhysicalDeviceProperties properties{};
     GxVulkan::RayQueryCapabilities rayQueryCapabilities;
     bool shadowRequested=false,shadowStrict=true;
+    bool terrainShadowRequested=false,terrainShadowActive=false,terrainReceiver=false,terrainShadowFailed=false;
+#ifdef WOWDECOMP_VULKAN_TESTING
+    bool shadowTestModels=true,shadowTestBuildings=true;
+#endif
     std::shared_ptr<const GxShadow::Frame> shadowSource;
     GxShadow::Status shadowStatus;
     std::vector<std::shared_ptr<ShadowGpuFrame>> shadowRetired;
     std::shared_ptr<ShadowGpuFrame> shadowCurrent;
-    void RecordWorldShadowVisibility();
+    void RecordWorldShadowVisibility(bool inlineOnly=false);
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
@@ -228,7 +237,8 @@ struct CGxDeviceVulkan::State {
     // render-finished semaphore only after acquiring its swapchain image.
     std::vector<VkSemaphore> complete;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    std::array<VkDescriptorSetLayout, 4> descriptorLayouts{};
+    std::array<VkDescriptorSetLayout, 5> descriptorLayouts{};
+    uint32_t descriptorSetCount=4,shadowTextureCapacity=0;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     NativeBuffer upload;
     VkDeviceSize uploadOffset = 0;
@@ -669,7 +679,26 @@ void CGxDeviceVulkan::State::Initialize() {
     GX_VK(vkCreateFence(device, &fenceInfo, nullptr, &fence));
     VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     GX_VK(vkCreateSemaphore(device, &semaphore, nullptr, &acquired));
-    for (unsigned set = 0; set < descriptorLayouts.size(); ++set) {
+    descriptorSetCount=4;shadowTextureCapacity=0;
+    if(rayQueryCapabilities.Available() && properties.limits.maxBoundDescriptorSets>=5 &&
+        properties.limits.maxPerStageDescriptorSamplers>16 && properties.limits.maxPerStageResources>22 &&
+        properties.limits.maxDescriptorSetSamplers>20 && properties.limits.maxDescriptorSetSampledImages>20){
+        shadowTextureCapacity=std::min({128u,properties.limits.maxPerStageDescriptorSamplers-16,
+            properties.limits.maxPerStageResources-22,properties.limits.maxDescriptorSetSamplers-20,
+            properties.limits.maxDescriptorSetSampledImages-20});
+        descriptorSetCount=5;
+    }
+    for (unsigned set = 0; set < descriptorSetCount; ++set) {
+        if(set==4){
+            const VkDescriptorSetLayoutBinding bindings[]={{0,VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr},
+                {1,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr},
+                {2,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,nullptr},
+                {3,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,shadowTextureCapacity,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr}};
+            const VkDescriptorBindingFlags flags[]={0,0,0,VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT};
+            VkDescriptorSetLayoutBindingFlagsCreateInfo variable{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};variable.bindingCount=4;variable.pBindingFlags=flags;
+            VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};layout.pNext=&variable;layout.bindingCount=4;layout.pBindings=bindings;
+            GX_VK(vkCreateDescriptorSetLayout(device,&layout,nullptr,&descriptorLayouts[set]));continue;
+        }
         std::vector<VkDescriptorSetLayoutBinding> bindings;
         const bool uniform = set % 2;
         for (unsigned binding = 0; binding < (uniform ? 3u : set == 0 ? 4u : 16u); ++binding)
@@ -680,7 +709,7 @@ void CGxDeviceVulkan::State::Initialize() {
         GX_VK(vkCreateDescriptorSetLayout(device, &layout, nullptr, &descriptorLayouts[set]));
     }
     VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout.setLayoutCount = static_cast<uint32_t>(descriptorLayouts.size()); layout.pSetLayouts = descriptorLayouts.data();
+    layout.setLayoutCount = descriptorSetCount; layout.pSetLayouts = descriptorLayouts.data();
     GX_VK(vkCreatePipelineLayout(device, &layout, nullptr, &pipelineLayout));
     const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 98304}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 327680},
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16}, {VK_DESCRIPTOR_TYPE_SAMPLER, 16}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16}};
@@ -1203,6 +1232,29 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         if (vertexShader) v = load(vertexShader);
         if (pixelShader) p = load(pixelShader);
     }
+    bool terrainDraw=terrainShadowActive&&terrainReceiver&&!hdrAborted&&!terrainShadowFailed&&shadowCurrent&&shadowCurrent->querySet;
+    if(terrainDraw){
+        const auto prepare=[&](NativeShader* shader,CGxShader* original){
+            if(!shader||!original)throw std::runtime_error("Terrain receiver requires authored vertex and pixel programs");
+            if(!shader->directionalAttempted){
+                shader->directionalAttempted=true;
+                try{
+                    auto id=GxVulkan::IdentifyShader(original->m_target==GxSh_Vertex?GxVulkan::ShaderStage::Vertex:GxVulkan::ShaderStage::Pixel,original->m_key.m_str,original->m_code.Ptr(),original->m_code.Count());
+                    if(!id)throw std::runtime_error("Terrain receiver lacks shader identity");
+                    const char* configured=std::getenv("WOWDECOMP_SHADER_ROOT");
+                    auto selected=GxVulkan::ResolveShaderOverride(configured?configured:WOWDECOMP_VULKAN_OVERRIDE_DIR,*id,GxVulkan::MaintainedShaderVariant::Directional);
+                    if(!selected)throw std::runtime_error("Missing terrain directional source: "+id->profile+"/"+id->name+"/"+std::to_string(id->permutation));
+                    shader->directionalSource=std::make_shared<GxVulkan::ShaderOverride>(std::move(*selected));
+                    shader->directional=shaderCompiler.CompileMaintained(*shader->directionalSource,GxVulkan::MaintainedShaderVariant::Directional);
+                }catch(const std::exception& e){shader->directionalError=e.what();}
+            }
+            if(!shader->directionalError.empty())throw std::runtime_error(shader->directionalError);
+        };
+        try{prepare(v,vertexShader);prepare(p,pixelShader);++shadowStatus.terrainReceivers;}
+        catch(const std::exception& e){std::fprintf(stderr,"Terrain RT raster fallback: %s\n",e.what());terrainShadowFailed=true;shadowStatus.result=GxShadow::FrameResult::UnsupportedCoverage;++shadowStatus.unsupported;terrainDraw=false;}
+    }
+    const auto* vertexBindings=v?(terrainDraw?&v->directional.bindings:&v->bindings):nullptr;
+    const auto* pixelBindings=p?(terrainDraw?&p->directional.bindings:&p->bindings):nullptr;
     const bool temporal = MotionPass(), hdrDraw = HdrDraw();
     const auto temporalCode = [&](NativeShader* shader, CGxShader* source) -> const std::vector<uint32_t>& {
         if (shader->temporalCode.empty()) {
@@ -1236,16 +1288,16 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
             foglessVertex = &code;
         }
     }
-    const auto& vertexCode = foglessVertex ? *foglessVertex : msdfFont ? msdfFontVertex : fixedVertexStage ?
+    const auto& vertexCode = terrainDraw?v->directional.code:foglessVertex ? *foglessVertex : msdfFont ? msdfFontVertex : fixedVertexStage ?
         (temporal ? temporalFixedVertex : fixedVertex) : (temporal ? temporalCode(v, vertexShader) : v->code);
-    const auto& originalPixelCode = msdfFont ? (temporal ? temporalMsdfFontPixel : msdfFontPixel) : fixedPixelStage ?
+    const auto& originalPixelCode = terrainDraw?p->directional.code:msdfFont ? (temporal ? temporalMsdfFontPixel : msdfFontPixel) : fixedPixelStage ?
         (temporal ? temporalFixedPixel : fixedPixel) : (temporal ? temporalCode(p, pixelShader) : p->code);
     const std::vector<uint32_t>* selectedPixelCode = &originalPixelCode;
-    if (hdrDraw) {
+    if (hdrDraw&&!terrainDraw) {
         try {
             if (hdrBoundaryFailDraw && ++hdrDraws == hdrBoundaryFailDraw)
                 throw std::runtime_error("injected late output-boundary failure");
-            selectedPixelCode = &BoundaryPixel(originalPixelCode, !linearOutput, p, temporal);
+            selectedPixelCode = &BoundaryPixel(originalPixelCode, !linearOutput&&!terrainShadowActive, p, temporal);
         } catch (const std::exception& error) {
             AbortHdr(error.what()); Draw(batch, indexed); return;
         }
@@ -1256,7 +1308,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     else if (fixedVertexStage) {
         required = {GxVA_Position, GxVA_Normal, GxVA_Color0};
         for (int i = 0; i < 8; ++i) required.push_back(GxVA_TexCoord0 + i);
-    } else required = v->bindings.attributes;
+    } else required = vertexBindings->attributes;
     std::array<const CGxVertexAttrib*, GxVAs_Last> declarations{};
     std::array<CGxBuf*, GxVAs_Last> buffers{};
     if (gx.m_primVertexFormat < GxVertexBufferFormats_Last) {
@@ -1343,9 +1395,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
             sample(2, stage, enabledChain);
         }
     } else {
-        for (int slot : p->bindings.samplers) sample(2, slot);
+        for (int slot : pixelBindings->samplers) sample(2, slot);
     }
-    if (v) for (int slot : v->bindings.samplers) sample(0, slot);
+    if (v) for (int slot : vertexBindings->samplers) sample(0, slot);
     C44Matrix transform = gx.m_xforms[GxXform_World].m_mtx[gx.m_xforms[GxXform_World].m_level] *
         gx.m_xforms[GxXform_View].m_mtx[gx.m_xforms[GxXform_View].m_level] * gx.m_projNative;
     if (withdrawnFarTexture) return;
@@ -1408,8 +1460,8 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         pixelUniforms.insert(pixelUniforms.end(), {((fogColour >> 16) & 255) / 255.f,
             ((fogColour >> 8) & 255) / 255.f, (fogColour & 255) / 255.f, fog ? 1.f : 0.f});
     }
-    if (v) vertexUniforms = GxVulkan::ShaderUniforms(v->bindings, CGxDevice::s_shadowConstants[1].constants, 256);
-    if (p) pixelUniforms = GxVulkan::ShaderUniforms(p->bindings, CGxDevice::s_shadowConstants[0].constants, 256);
+    if (v) vertexUniforms = GxVulkan::ShaderUniforms(*vertexBindings, CGxDevice::s_shadowConstants[1].constants, 256);
+    if (p) pixelUniforms = GxVulkan::ShaderUniforms(*pixelBindings, CGxDevice::s_shadowConstants[0].constants, 256);
     if (vertexUniforms.empty()) vertexUniforms.resize(4);
     if (pixelUniforms.empty()) pixelUniforms.resize(4);
     std::vector<float> previousUniforms;
@@ -1512,10 +1564,10 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         write.dstSet = sets[set]; write.dstBinding = binding; write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; write.pImageInfo = &images[set == 0 ? 0 : 1][binding]; writes.push_back(write);
     };
-    if (v) for (int slot : v->bindings.samplers) writeSampler(0, slot);
+    if (v) for (int slot : vertexBindings->samplers) writeSampler(0, slot);
     if (msdfFont) writeSampler(2, 0);
     else if (fixedPixelStage) for (unsigned stage = 0; stage < 8; ++stage) writeSampler(2, stage);
-    else for (int slot : p->bindings.samplers) writeSampler(2, slot);
+    else for (int slot : pixelBindings->samplers) writeSampler(2, slot);
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     std::pair<VkBuffer, VkDeviceSize> residentIndex{};
     if (indexed && batch.m_primType != GxPrim_TriangleFan) {
@@ -1532,8 +1584,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     const auto primitive = batch.m_primType == GxPrim_TriangleFan ? GxPrim_Triangles : batch.m_primType;
     std::vector<uint64_t> key{fixedVertexStage ? 0 : v->id, fixedPixelStage ? 0 : p->id, reinterpret_cast<uint64_t>(currentPass),
         blend, depthTest, depthWrite, cull, colourMask, depthFunction, static_cast<uint64_t>(primitive)};
+    key.push_back(terrainDraw?1:0);
     key.push_back(msdfFont ? 1 : 0); // Authored fonts cannot alias fixed/legacy pipelines.
-    key.push_back(hdrDraw && !linearOutput ? 1 : 0); // Encoded and explicit-linear providers have distinct output boundaries.
+    key.push_back(hdrDraw && !linearOutput && !terrainShadowActive ? 1 : 0); // Encoded and explicit-linear providers have distinct output boundaries.
     for (const auto& binding : bindings) { key.push_back(binding.binding); key.push_back(binding.stride); }
     key.push_back(UINT64_MAX);
     for (const auto& attribute : attributes) {
@@ -1616,6 +1669,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     }
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, found->second.handle);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 4, sets.data(), 0, nullptr);
+    if(terrainDraw)vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout,4,1,&shadowCurrent->querySet,0,nullptr);
     vkCmdBindVertexBuffers(command, 0, static_cast<uint32_t>(vertexBuffers.size()), vertexBuffers.data(), offsets.data());
     VkViewport viewport{};
     viewport.x = gx.m_viewport.m_x.m_l * targetExtent.width;
@@ -2063,7 +2117,7 @@ bool CGxDeviceVulkan::SceneReadHdrPixel(uint32_t x, uint32_t y, std::array<float
     s.DestroyBuffer(buffer); return true;
 }
 bool CGxDeviceVulkan::SceneHdrSupported() const { return m_native && m_native->device && m_native->hdrCapable && m_native->properties.limits.maxColorAttachments>=3 && m_native->hdrAttachmentLimit>=3; }
-bool CGxDeviceVulkan::SceneHdrActive() const { return m_native && m_native->hdrActive && !m_native->hdrAborted && m_native->worldActive; }
+bool CGxDeviceVulkan::SceneHdrActive() const { return m_native && m_native->hdrRequested && m_native->hdrActive && !m_native->hdrAborted && m_native->worldActive; }
 bool CGxDeviceVulkan::SceneSetHdr(bool enabled, float ev) {
     if (!std::isfinite(ev) || ev < -8 || ev > 8 || (enabled && !SceneHdrSupported())) return false;
     auto& s=*m_native;
@@ -2113,18 +2167,31 @@ void CGxDeviceVulkan::SceneConfigureShadows(bool requested,bool strict) {
 }
 bool CGxDeviceVulkan::SceneShadowsSupported() const {return m_native->rayQueryCapabilities.Available();}
 bool CGxDeviceVulkan::SceneShadowsRequested() const {
-    return m_native->shadowRequested && m_native->rayQueryCapabilities.Available() && m_native->worldActive;
+    return (m_native->shadowRequested || m_native->terrainShadowActive) && m_native->rayQueryCapabilities.Available() && m_native->worldActive;
 }
 void CGxDeviceVulkan::SceneSetShadowFrame(std::shared_ptr<const GxShadow::Frame> frame){
     if(SceneShadowsRequested()){
-        m_native->shadowSource=std::move(frame);m_native->EndPass();m_native->RecordWorldShadowVisibility();
+        m_native->shadowSource=std::move(frame);m_native->EndPass();m_native->RecordWorldShadowVisibility(m_native->terrainShadowActive);
+        if(m_native->terrainShadowActive && !m_native->shadowCurrent)m_native->terrainShadowFailed=true;
     }
 }
 GxShadow::Status CGxDeviceVulkan::SceneShadowStatus() const {return m_native->shadowStatus;}
+void CGxDeviceVulkan::SceneConfigureTerrainShadows(bool requested){m_native->terrainShadowRequested=requested;}
+bool CGxDeviceVulkan::SceneTerrainShadowsRequested() const {return m_native->terrainShadowActive&&m_native->worldActive;}
+void CGxDeviceVulkan::SceneSetTerrainReceiver(bool enabled){m_native->terrainReceiver=enabled;}
+void CGxDeviceVulkan::SceneFinishTerrainShadows(){
+    auto& s=*m_native;if(!s.terrainShadowActive)return;
+    s.EndPass();
+    if(s.terrainShadowFailed || !s.shadowStatus.terrainReceivers){
+        s.Barrier(s.hdrClassic.image,s.hdrClassic.aspect,1,1,s.hdrClassic.layout,VK_IMAGE_LAYOUT_GENERAL);s.hdrClassic.layout=VK_IMAGE_LAYOUT_GENERAL;
+        s.Barrier(s.worldColour.image,s.worldColour.aspect,1,1,s.worldColour.layout,VK_IMAGE_LAYOUT_GENERAL);s.worldColour.layout=VK_IMAGE_LAYOUT_GENERAL;
+        GxVulkan::BlitWorldImage(s.command,s.hdrClassic.image,s.worldColour.image,VK_IMAGE_ASPECT_COLOR_BIT,s.renderRect,s.renderRect,VK_FILTER_NEAREST);
+    }else s.shadowStatus.terrainRendered=true;
+}
 bool CGxDeviceVulkan::SceneBeginWorld(bool temporal, uint64_t scene) {
     auto& state = *m_native;
     if (temporal && !SceneTemporalSupported()) return false;
-    if ((!temporal && !state.worldTargetEnabled && !state.hdrRequested && !(state.shadowRequested && state.rayQueryCapabilities.Available()) && state.sceneScale == 1.f) || !m_context || !state.BeginFrame()) return false;
+    if ((!temporal && !state.worldTargetEnabled && !state.hdrRequested && !((state.shadowRequested||state.terrainShadowRequested) && state.rayQueryCapabilities.Available()) && state.sceneScale == 1.f) || !m_context || !state.BeginFrame()) return false;
     state.shadowSource.reset();state.shadowCurrent.reset();
     if(state.shadowRequested){state.shadowStatus={};state.shadowStatus.result=GxShadow::FrameResult::PendingGeometry;}
     // One world history producer per acquired frame. Readback splits do not
@@ -2143,10 +2210,14 @@ bool CGxDeviceVulkan::SceneBeginWorld(bool temporal, uint64_t scene) {
     state.renderRect = GxVulkan::WorldViewportRect(state.renderExtent,
         m_viewport.m_x.m_l, m_viewport.m_x.m_h, m_viewport.m_y.m_l, m_viewport.m_y.m_h);
     state.hdrAborted = false; state.hdrDraws = 0;
-    state.hdrActive = state.hdrRequested && SceneHdrSupported();
+    state.terrainShadowActive=state.terrainShadowRequested && state.shadowTextureCapacity && SceneHdrSupported() && !state.hdrRequested && !temporal && state.sceneScale==1.f;
+    state.terrainShadowFailed=false;state.terrainReceiver=false;
+    if(state.terrainShadowRequested&&!state.terrainShadowActive)state.shadowStatus.result=GxShadow::FrameResult::Unavailable;
+    state.hdrActive = (state.hdrRequested||state.terrainShadowActive) && SceneHdrSupported();
     if (state.hdrActive && !state.PrepareHdrImages(temporal)) {
         GxLog("HDR attachment set refused; using Classic rendering for this frame");
-        state.hdrActive = false; state.ResetTemporal();
+        if(state.terrainShadowActive)state.shadowStatus.result=GxShadow::FrameResult::AllocationFailed;
+        state.hdrActive = false;state.terrainShadowActive=false; state.ResetTemporal();
     }
     if (!state.hdrActive && (state.worldColour.width != state.renderExtent.width || state.worldColour.height != state.renderExtent.height ||
         state.worldColour.format != state.surfaceFormat)) {
@@ -2234,7 +2305,10 @@ bool CGxDeviceVulkan::SceneBeginWorld(bool temporal, uint64_t scene) {
             GxVulkan::BlitWorldImage(state.command, state.swapImages[state.imageIndex], state.hdrClassic.image, VK_IMAGE_ASPECT_COLOR_BIT, full, internal);
             GxVulkan::BlitWorldImage(state.command, state.depth.image, state.worldDepth.image, VK_IMAGE_ASPECT_DEPTH_BIT, full, internal);
         }
-        try { state.HdrTransfer(state.hdrBackdrop, state.worldColour.view, state.WorldFormat(), state.renderExtent, 0, false); }
+        try {
+            if(state.terrainShadowActive)GxVulkan::BlitWorldImage(state.command,state.hdrBackdrop.image,state.worldColour.image,VK_IMAGE_ASPECT_COLOR_BIT,full,full,VK_FILTER_NEAREST);
+            else state.HdrTransfer(state.hdrBackdrop, state.worldColour.view, state.WorldFormat(), state.renderExtent, 0, false);
+        }
         catch (const std::exception& error) { state.AbortHdr(error.what()); }
     } else if (state.sceneScale == 1.f) {
         GxVulkan::CopyWorldImage(state.command, state.swapImages[state.imageIndex], state.worldColour.image,
@@ -2257,7 +2331,7 @@ void CGxDeviceVulkan::SceneEndWorld() {
     state.EndPass();
     // FFX owns its colour snapshot and may overwrite raster depth. Query before
     // FFX, publish the diagnostic afterwards rather than postprocess the mask.
-    if(state.shadowCurrent){
+    if(state.shadowCurrent&&state.shadowCurrent->output.image){
         state.Barrier(state.worldColour.image,state.worldColour.aspect,1,1,state.worldColour.layout,VK_IMAGE_LAYOUT_GENERAL);
         state.worldColour.layout=VK_IMAGE_LAYOUT_GENERAL;
         GxVulkan::BlitWorldImage(state.command,state.shadowCurrent->output.image,state.worldColour.image,VK_IMAGE_ASPECT_COLOR_BIT,state.renderRect,state.renderRect,VK_FILTER_NEAREST);
@@ -2265,6 +2339,7 @@ void CGxDeviceVulkan::SceneEndWorld() {
     try {
         if (state.hdrAborted) state.PublishClassic();
         else if (state.temporalActive || state.sceneScale != 1.f) state.ResolveWorld();
+        else if (state.terrainShadowActive) GxVulkan::BlitWorldImage(state.command,state.worldColour.image,state.swapImages[state.imageIndex],VK_IMAGE_ASPECT_COLOR_BIT,state.renderRect,state.worldRect,VK_FILTER_NEAREST);
         else if (state.hdrActive) state.ToneWorld(state.worldColour);
         else GxVulkan::CopyWorldImage(state.command, state.worldColour.image, state.swapImages[state.imageIndex],
             VK_IMAGE_ASPECT_COLOR_BIT, state.worldRect);
@@ -2277,8 +2352,9 @@ void CGxDeviceVulkan::SceneEndWorld() {
         GxVulkan::CopyWorldImage(state.command, state.worldDepth.image, state.depth.image,
             VK_IMAGE_ASPECT_DEPTH_BIT, state.worldRect);
     else state.PublishWorldDepth(state.depth.image);
+    if(state.terrainShadowActive&&state.hdrAborted){state.shadowStatus.terrainRendered=false;state.shadowStatus.result=GxShadow::FrameResult::AllocationFailed;}
 #ifdef WOWDECOMP_VULKAN_TESTING
-    state.completedWorldTest={uint32_t(state.hdrActive && !state.hdrAborted),uint32_t(state.temporalActive),
+    state.completedWorldTest={uint32_t(state.hdrRequested && state.hdrActive && !state.hdrAborted),uint32_t(state.temporalActive),
         state.renderRect.extent.width,state.renderRect.extent.height};
 #endif
     state.worldActive = state.temporalActive = state.hdrActive = false;
@@ -2286,6 +2362,7 @@ void CGxDeviceVulkan::SceneEndWorld() {
 }
 #ifdef WOWDECOMP_VULKAN_TESTING
 std::array<uint32_t,4> CGxDeviceVulkan::SceneWorldTestCompletedFrame() const { return m_native->completedWorldTest; }
+void CGxDeviceVulkan::SceneShadowTestCasters(bool models,bool buildings){m_native->shadowTestModels=models;m_native->shadowTestBuildings=buildings;}
 #include "DirectionalLightingTest.inl"
 bool CGxDeviceVulkan::SceneRayQueryTestReadback() {
     auto& state = *m_native;
@@ -2433,7 +2510,7 @@ void CGxDeviceVulkan::SceneClear(uint32_t mask, CImVector colour) {
             auto classic = clear;
             classic.colorAttachment = 2;
             attachments.push_back(classic);
-            for (unsigned i = 0; i < 3; ++i) {
+            for (unsigned i = 0; !state.terrainShadowActive && i < 3; ++i) {
                 const float encoded = clear.clearValue.color.float32[i];
                 clear.clearValue.color.float32[i] = encoded <= .04045f ? encoded / 12.92f : std::pow((encoded + .055f) / 1.055f, 2.4f);
             }
