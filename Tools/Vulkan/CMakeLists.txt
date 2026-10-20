@@ -6,7 +6,8 @@ get_filename_component(WOWDECOMP_ROOT "../.." ABSOLUTE BASE_DIR "${CMAKE_CURRENT
 include("${WOWDECOMP_ROOT}/cmake/MojoShader.cmake")
 add_library(GxVulkanShaders STATIC
     "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shader.cpp"
-    "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/TemporalShader.cpp")
+    "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/TemporalShader.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/ShaderOverride.cpp")
 target_include_directories(GxVulkanShaders PUBLIC "${WOWDECOMP_ROOT}")
 target_link_libraries(GxVulkanShaders PUBLIC GxMojoShader)
 add_executable(VulkanShaderTest ShaderTest.cpp)
@@ -27,6 +28,9 @@ else ()
     message(STATUS "SPIRV-Tools development files not found; module validation unavailable")
 endif ()
 enable_testing()
+add_executable(ShaderOverrideTest ShaderOverrideTest.cpp)
+target_link_libraries(ShaderOverrideTest PRIVATE GxVulkanShaders)
+add_test(NAME ShaderOverride COMMAND ShaderOverrideTest)
 add_test(NAME VulkanShader COMMAND VulkanShaderTest)
 set_tests_properties(VulkanShader PROPERTIES TIMEOUT 20)
 foreach (name TemporalHistory TemporalBackend HdrToneMapping HdrLut HdrLutJob LandscapeSettings)
@@ -54,8 +58,10 @@ if (WOWDECOMP_SLANGC)
     target_link_libraries(HdrOutputBoundaryTest PRIVATE GxVulkanShaders)
     add_test(NAME HdrOutputBoundary COMMAND HdrOutputBoundaryTest)
     target_compile_definitions(VulkanShaderTest PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1)
+    target_compile_definitions(ShaderOverrideTest PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1)
     target_compile_definitions(VulkanShaderCorpus PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1)
     include("${WOWDECOMP_ROOT}/cmake/SlangShaders.cmake")
+    target_compile_definitions(GxVulkanShaders PUBLIC WOWDECOMP_VULKAN_OVERRIDE_DIR="${WOWDECOMP_VULKAN_OVERRIDE_DIR}")
     add_dependencies(VulkanShaderTest GxSlangShaders)
     target_compile_definitions(VulkanShaderTest PRIVATE
         WOWDECOMP_SLANG_TEST_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
@@ -136,6 +142,17 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
     add_dependencies(HdrLiveTest GxSlangShaders)
     add_test(NAME HdrLiveGpu COMMAND HdrLiveTest)
     set_tests_properties(HdrLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    add_executable(ShaderOverrideLiveTest ShaderOverrideLiveTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp")
+    target_include_directories(ShaderOverrideLiveTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(ShaderOverrideLiveTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1 WOWDECOMP_VULKAN_TESTING=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_link_libraries(ShaderOverrideLiveTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    add_dependencies(ShaderOverrideLiveTest GxSlangShaders)
+    add_test(NAME ShaderOverrideLiveGpu COMMAND ShaderOverrideLiveTest)
+    set_tests_properties(ShaderOverrideLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
 
     add_executable(FarResourcesLiveTest FarResourcesLiveTest.cpp
         "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp"

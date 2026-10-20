@@ -35,7 +35,7 @@ std::string TemporalVertex(std::string source) {
     current.replace(0, entry.length(), "main_Output gx_currentVertex(" + entry[1].str() + ")");
     previous.replace(0, entry.length(), "main_Output gx_previousVertex(" + entry[1].str() + ")");
     std::string previousConstants;
-    const std::regex buffer(R"(\[\[vk::binding\(0, 1\)\]\] cbuffer ([A-Za-z_]\w*)\s*\{([\s\S]*?)\};)");
+    const std::regex buffer(R"(\[\[vk::binding\(\s*0\s*,\s*1\s*\)\]\]\s*cbuffer\s+([A-Za-z_]\w*)\s*\{([\s\S]*?)\};)");
     std::smatch constants;
     if (std::regex_search(source, constants, buffer)) {
         previousConstants = "[[vk::binding(1, 1)]] cbuffer gx_PreviousUniforms\n{" + constants[2].str() + "};\n";
@@ -91,6 +91,9 @@ std::string TemporalPixel(std::string source) {
         "    }\n    ");
     return "[[vk::binding(2, 3)]] cbuffer GxTemporalOptions { float4 gx_temporalOptions; };\n" + source;
 }
+}
+std::string TemporalShaderSource(std::string source, bool vertex) {
+    return vertex ? TemporalVertex(std::move(source)) : TemporalPixel(std::move(source));
 }
 RecoveredShader RecoverFoglessSlangShader(const void* bytecode, size_t size, bool temporal) {
     auto recovered = RecoverSlangShader(bytecode, size);

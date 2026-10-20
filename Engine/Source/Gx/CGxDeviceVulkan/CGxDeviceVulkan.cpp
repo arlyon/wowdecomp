@@ -3,6 +3,7 @@
 #include "PresentMode.h"
 #include "Shader.h"
 #include "Slang.h"
+#include "ShaderOverride.h"
 #include "ResidentBuffer.h"
 #include "WorldTarget.h"
 #include "TemporalHistory.h"
@@ -32,6 +33,10 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#ifndef WOWDECOMP_VULKAN_OVERRIDE_DIR
+#define WOWDECOMP_VULKAN_OVERRIDE_DIR "Shaders/Overrides"
+#endif
 
 namespace {
 void VkCheck(VkResult result, const char* operation) {
@@ -120,11 +125,14 @@ struct FarEntry {
     uint64_t lastUse = 0;
 };
 struct NativeShader {
-    uint64_t id;
-    GxVulkan::Shader reflection;
+    uint64_t id = 0;
+    GxVulkan::ShaderBindings bindings;
     std::vector<uint32_t> code, temporalCode;
     std::vector<uint32_t> foglessCode[2];
     bool inputFog = false, outputFog = false;
+    std::string source, temporalSource;
+    std::shared_ptr<GxVulkan::ShaderOverride> maintained;
+    std::vector<uint32_t> hdrCode[2][2];
 };
 struct Pipeline {
     VkPipeline handle = VK_NULL_HANDLE;
@@ -228,7 +236,6 @@ struct CGxDeviceVulkan::State {
     VkPipelineLayout hdrLayout{};
     VkSampler hdrSampler{};
     std::map<VkFormat, std::pair<VkRenderPass, VkPipeline>> hdrTransfers;
-    std::map<std::vector<uint32_t>, std::string> pixelSources;
     std::map<std::vector<uint32_t>, std::vector<uint32_t>> hdrPixels, hdrLinearPixels;
     VkRenderPass hdrResolvePass{};
     VkPipeline hdrResolvePipeline{}, hdrUpscalePipeline{};
@@ -237,12 +244,24 @@ struct CGxDeviceVulkan::State {
         return hdrActive && worldActive && !hdrAborted &&
             !gx.m_textureTarget[GxBuffers_Color].m_texture && !gx.m_textureTarget[GxBuffers_Depth].m_texture;
     }
-    std::vector<uint32_t> Compile(const std::string& source, bool vertex) {
-        auto code = shaderCompiler.Compile(source, vertex);
-        if (!vertex) pixelSources[code] = source;
+    std::vector<uint32_t> Compile(const std::string& source, bool vertex,
+        const std::shared_ptr<GxVulkan::ShaderOverride>& maintained = {}, GxVulkan::ShaderBindings* bindings = nullptr) {
+        if (!maintained) return shaderCompiler.Compile(source, vertex);
+        auto selected = *maintained;
+        selected.source = source;
+        auto compiled = shaderCompiler.CompileMaintained(selected);
+        if (bindings) *bindings = std::move(compiled.bindings);
+        return std::move(compiled.code);
+    }
+    std::vector<uint32_t> CompileTemporal(const std::string& source, bool vertex, const NativeShader& shader) {
+        GxVulkan::ShaderBindings layout;
+        auto code = Compile(source, vertex, shader.maintained, &layout);
+        if (shader.maintained && (!layout.motionParameters ||
+            (vertex && !shader.bindings.registers.empty() && !layout.previousRegisters)))
+            throw std::runtime_error("Maintained temporal source ABI did not expose previous registers/motion parameters");
         return code;
     }
-    const std::vector<uint32_t>& BoundaryPixel(const std::vector<uint32_t>& code, bool decode);
+    const std::vector<uint32_t>& BoundaryPixel(const std::vector<uint32_t>& code, bool decode, NativeShader* shader, bool temporal);
     bool PrepareHdrImages(bool temporal);
     void HdrTransfer(NativeImage& source, VkImageView target, VkFormat format, VkExtent2D output, uint32_t operation, bool sceneRect);
     void ToneWorld(NativeImage& source) { HdrTransfer(source, swapViews[imageIndex], surfaceFormat, extent, 1, true); }
@@ -1046,17 +1065,6 @@ void CGxDeviceVulkan::State::UploadTexture(CGxTex* texture, NativeImage& image) 
 }
 
 namespace {
-int InputLocation(MOJOSHADER_usage usage, int index) {
-    if (index == 0) {
-        if (usage == MOJOSHADER_USAGE_POSITION) return GxVA_Position;
-        if (usage == MOJOSHADER_USAGE_BLENDWEIGHT) return GxVA_BlendWeight;
-        if (usage == MOJOSHADER_USAGE_BLENDINDICES) return GxVA_BlendIndices;
-        if (usage == MOJOSHADER_USAGE_NORMAL) return GxVA_Normal;
-    }
-    if (usage == MOJOSHADER_USAGE_COLOR && index >= 0 && index < 2) return GxVA_Color0 + index;
-    if (usage == MOJOSHADER_USAGE_TEXCOORD && index >= 0 && index < 8) return GxVA_TexCoord0 + index;
-    throw std::runtime_error("Unsupported Gx shader vertex semantic");
-}
 }
 
 std::pair<VkBuffer, VkDeviceSize> CGxDeviceVulkan::State::Geometry(CGxBuf* buffer) {
@@ -1112,10 +1120,10 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     const bool temporal = MotionPass(), hdrDraw = HdrDraw();
     const auto temporalCode = [&](NativeShader* shader, CGxShader* source) -> const std::vector<uint32_t>& {
         if (shader->temporalCode.empty()) {
-            auto recovered = GxVulkan::RecoverTemporalSlangShader(source->m_code.Ptr(), source->m_code.Count());
+            shader->temporalSource = GxVulkan::TemporalShaderSource(shader->source, source->m_target == GxSh_Vertex);
             if (source->m_target == GxSh_Vertex)
-                recovered.source = GxVulkan::TemporalViewportSource(std::move(recovered.source));
-            shader->temporalCode = Compile(recovered.source, source->m_target == GxSh_Vertex);
+                shader->temporalSource = GxVulkan::TemporalViewportSource(std::move(shader->temporalSource));
+            shader->temporalCode = CompileTemporal(shader->temporalSource, source->m_target == GxSh_Vertex, *shader);
         }
         return shader->temporalCode;
     };
@@ -1135,9 +1143,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         if (v->outputFog) {
             auto& code = v->foglessCode[temporal ? 1 : 0];
             if (code.empty()) {
-                auto recovered = GxVulkan::RecoverFoglessSlangShader(vertexShader->m_code.Ptr(), vertexShader->m_code.Count(), temporal);
-                if (temporal) recovered.source = GxVulkan::TemporalViewportSource(std::move(recovered.source));
-                code = Compile(recovered.source, true);
+                auto source = GxVulkan::PruneVertexFogOutput(v->source);
+                if (temporal) source = GxVulkan::TemporalViewportSource(GxVulkan::TemporalShaderSource(std::move(source), true));
+                code = temporal ? CompileTemporal(source, true, *v) : Compile(source, true, v->maintained);
             }
             foglessVertex = &code;
         }
@@ -1151,7 +1159,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         try {
             if (hdrBoundaryFailDraw && ++hdrDraws == hdrBoundaryFailDraw)
                 throw std::runtime_error("injected late output-boundary failure");
-            selectedPixelCode = &BoundaryPixel(originalPixelCode, !linearOutput);
+            selectedPixelCode = &BoundaryPixel(originalPixelCode, !linearOutput, p, temporal);
         } catch (const std::exception& error) {
             AbortHdr(error.what()); Draw(batch, indexed); return;
         }
@@ -1162,8 +1170,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     else if (fixedVertexStage) {
         required = {GxVA_Position, GxVA_Normal, GxVA_Color0};
         for (int i = 0; i < 8; ++i) required.push_back(GxVA_TexCoord0 + i);
-    } else for (int i = 0; i < v->reflection->attribute_count; ++i)
-        required.push_back(InputLocation(v->reflection->attributes[i].usage, v->reflection->attributes[i].index));
+    } else required = v->bindings.attributes;
     std::array<const CGxVertexAttrib*, GxVAs_Last> declarations{};
     std::array<CGxBuf*, GxVAs_Last> buffers{};
     if (gx.m_primVertexFormat < GxVertexBufferFormats_Last) {
@@ -1250,9 +1257,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
             sample(2, stage, enabledChain);
         }
     } else {
-        for (int i = 0; i < p->reflection->sampler_count; ++i) sample(2, p->reflection->samplers[i].index);
+        for (int slot : p->bindings.samplers) sample(2, slot);
     }
-    if (v) for (int i = 0; i < v->reflection->sampler_count; ++i) sample(0, v->reflection->samplers[i].index);
+    if (v) for (int slot : v->bindings.samplers) sample(0, slot);
     C44Matrix transform = gx.m_xforms[GxXform_World].m_mtx[gx.m_xforms[GxXform_World].m_level] *
         gx.m_xforms[GxXform_View].m_mtx[gx.m_xforms[GxXform_View].m_level] * gx.m_projNative;
     if (withdrawnFarTexture) return;
@@ -1315,8 +1322,8 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         pixelUniforms.insert(pixelUniforms.end(), {((fogColour >> 16) & 255) / 255.f,
             ((fogColour >> 8) & 255) / 255.f, (fogColour & 255) / 255.f, fog ? 1.f : 0.f});
     }
-    if (v) vertexUniforms = GxVulkan::ShaderUniforms(*v->reflection, CGxDevice::s_shadowConstants[1].constants, 256);
-    if (p) pixelUniforms = GxVulkan::ShaderUniforms(*p->reflection, CGxDevice::s_shadowConstants[0].constants, 256);
+    if (v) vertexUniforms = GxVulkan::ShaderUniforms(v->bindings, CGxDevice::s_shadowConstants[1].constants, 256);
+    if (p) pixelUniforms = GxVulkan::ShaderUniforms(p->bindings, CGxDevice::s_shadowConstants[0].constants, 256);
     if (vertexUniforms.empty()) vertexUniforms.resize(4);
     if (pixelUniforms.empty()) pixelUniforms.resize(4);
     std::vector<float> previousUniforms;
@@ -1333,7 +1340,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         pose.valid = !msdfFont && motionOwner && stableVertices && blend <= GxBlend_AlphaKey &&
             enabled(GxRs_DepthTest, GxMasterEnable_DepthTest) &&
             enabled(GxRs_DepthWrite, GxMasterEnable_DepthWrite) &&
-            (!v || !v->reflection->sampler_count);
+            (!v || v->bindings.samplers.empty());
         const auto identifyBuffer = [&](CGxBuf* buffer) {
             identity.push_back(reinterpret_cast<uint64_t>(buffer));
             if (!buffer) return;
@@ -1419,10 +1426,10 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         write.dstSet = sets[set]; write.dstBinding = binding; write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; write.pImageInfo = &images[set == 0 ? 0 : 1][binding]; writes.push_back(write);
     };
-    if (v) for (int i = 0; i < v->reflection->sampler_count; ++i) writeSampler(0, v->reflection->samplers[i].index);
+    if (v) for (int slot : v->bindings.samplers) writeSampler(0, slot);
     if (msdfFont) writeSampler(2, 0);
     else if (fixedPixelStage) for (unsigned stage = 0; stage < 8; ++stage) writeSampler(2, stage);
-    else for (int i = 0; i < p->reflection->sampler_count; ++i) writeSampler(2, p->reflection->samplers[i].index);
+    else for (int slot : p->bindings.samplers) writeSampler(2, slot);
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     std::pair<VkBuffer, VkDeviceSize> residentIndex{};
     if (indexed && batch.m_primType != GxPrim_TriangleFan) {
@@ -2326,18 +2333,44 @@ void CGxDeviceVulkan::NativeMsdfFontBegin(uint32_t outlinePixels) {
 void CGxDeviceVulkan::NativeMsdfFontEnd() { m_native->msdfFontActive = false; }
 
 void CGxDeviceVulkan::IShaderCreate(CGxShader* shader) {
-    shader->m_loaded = 1; shader->m_valid = 0;
+    shader->m_loaded = 1; shader->m_valid = 0; shader->m_apiSpecific = nullptr;
+    std::string origin = "generated compatibility: ";
+    origin += shader->m_key.m_str ? shader->m_key.m_str : "anonymous program";
     try {
-        auto recovered = GxVulkan::RecoverSlangShader(shader->m_code.Ptr(), shader->m_code.Count());
-        auto code = m_native->Compile(recovered.source, shader->m_target == GxSh_Vertex);
-        m_native->shaders.insert_or_assign(shader, NativeShader{m_native->nextShader++, std::move(recovered.reflection), std::move(code)});
+        if (shader->m_target != GxSh_Vertex && shader->m_target != GxSh_Pixel)
+            throw std::runtime_error("Native shader loader supports only vertex/pixel stages");
+        const bool vertex = shader->m_target == GxSh_Vertex;
+        const auto identity = GxVulkan::IdentifyShader(vertex ? GxVulkan::ShaderStage::Vertex : GxVulkan::ShaderStage::Pixel,
+            shader->m_key.m_str, shader->m_code.Ptr(), shader->m_code.Count());
+        std::optional<GxVulkan::ShaderOverride> selected;
+        if (identity) {
+            const char* configured = std::getenv("WOWDECOMP_SHADER_ROOT");
+            const std::string label = identity->profile + "/" + identity->name + "/" + std::to_string(identity->permutation);
+            origin = "override resolution: " + label;
+            selected = GxVulkan::ResolveShaderOverride(configured ? configured : WOWDECOMP_VULKAN_OVERRIDE_DIR, *identity);
+            if (!selected) origin = "generated compatibility: " + label;
+        }
+        NativeShader created;
+        created.id = m_native->nextShader++;
+        if (selected) {
+            origin = "maintained override: " + selected->filename.generic_string();
+            created.maintained = std::make_shared<GxVulkan::ShaderOverride>(std::move(*selected));
+            created.source = created.maintained->source;
+            created.code = m_native->Compile(created.source, vertex, created.maintained, &created.bindings);
+        } else {
+            auto recovered = GxVulkan::RecoverSlangShader(shader->m_code.Ptr(), shader->m_code.Count());
+            created.source = std::move(recovered.source);
+            created.bindings = GxVulkan::LegacyShaderBindings(*recovered.reflection);
+            created.code = m_native->Compile(created.source, vertex);
+        }
+        m_native->shaders.insert_or_assign(shader, std::move(created));
         auto& native = m_native->shaders.at(shader);
         native.inputFog = shader->m_target == GxSh_Pixel && GxVulkan::ShaderUsesInputLocation(native.code, 10);
         native.outputFog = shader->m_target == GxSh_Vertex && GxVulkan::ShaderUsesOutputLocation(native.code, 10);
         shader->m_apiSpecific = &native; shader->m_valid = 1;
     } catch (const std::exception& error) {
-        CGxDevice::Log("Vulkan/Slang shader: %s", error.what());
-        std::fprintf(stderr, "Vulkan/Slang shader: %s\n", error.what());
+        CGxDevice::Log("Vulkan/Slang shader [%s]: %s", origin.c_str(), error.what());
+        std::fprintf(stderr, "Vulkan/Slang shader [%s]: %s\n", origin.c_str(), error.what());
     }
 }
 void CGxDeviceVulkan::IShaderReload(CGxShader* shader, const char* path, const char* name) {

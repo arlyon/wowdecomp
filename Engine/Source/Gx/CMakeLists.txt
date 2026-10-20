@@ -51,7 +51,8 @@ if (WOWDECOMP_VULKAN)
     include("${WOWDECOMP_ROOT}/cmake/SlangShaders.cmake")
     target_link_libraries(Gx PRIVATE Vulkan::Vulkan GxMojoShader GxSlangCompiler)
     target_compile_definitions(Gx PUBLIC WOWDECOMP_VULKAN=1)
-    target_compile_definitions(Gx PRIVATE WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_compile_definitions(Gx PRIVATE WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}"
+        WOWDECOMP_VULKAN_OVERRIDE_DIR="${WOWDECOMP_VULKAN_OVERRIDE_DIR}")
     add_dependencies(Gx GxSlangShaders)
 endif ()
 

@@ -156,6 +156,16 @@ int main() {
         registers[0] = 0.25f; registers[1] = 0.5f; registers[2] = 0.75f; registers[3] = 1.0f;
         const auto uniforms = ShaderUniforms(*p, registers.data(), 256);
         Check(uniforms == std::vector<float>(registers.begin(), registers.begin() + 4), "Uniform packing changed register values");
+        Check(ShaderUniforms(LegacyShaderBindings(*p),registers.data(),256)==uniforms,"Common bindings changed sparse legacy packing");
+        Check(LegacyShaderBindings(*v).attributes==std::vector<int>{0},"Common bindings lost vertex locations");
+        ShaderBindings maintained;maintained.registers={{0,256}};
+        Check(ShaderUniforms(maintained,registers.data(),256)==std::vector<float>(registers.begin(),registers.end()),
+            "Explicit maintained register interface requires frontend metadata");
+        maintained.literals={{1,{1,2,3,4}}};
+        Check(ShaderUniforms(maintained,registers.data(),256)[7]==4,"Common literal precedence changed");
+        maintained.registers={{-1,1}};Reject([&]{ShaderUniforms(maintained,registers.data(),256);});
+        maintained.registers={{0,0}};Reject([&]{ShaderUniforms(maintained,registers.data(),256);});
+        maintained.registers={{255,2}};Reject([&]{ShaderUniforms(maintained,registers.data(),256);});
         auto relative = TranslateShader(relativeVertex, sizeof(relativeVertex));
         Check(relative->uniform_count > 0, "Relative registers lost their uniform storage");
         const auto array = ShaderUniforms(*relative, registers.data(), 256);

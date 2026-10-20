@@ -1,4 +1,5 @@
 #include "Shader.h"
+#include "Engine/Source/Gx/CGxDevice/Types.h"
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -298,30 +299,62 @@ std::string ShaderOutputBoundary(std::string source, bool decode) {
     return source;
 }
 
-std::vector<float> ShaderUniforms(const MOJOSHADER_parseData& shader,
-    const float* registers, size_t registerCount) {
-    std::vector<float> result;
-    for (int i = 0; i < shader.uniform_count; ++i) {
-        const auto& uniform = shader.uniforms[i];
-        if (uniform.constant) continue; // Literal arrays are embedded in the generated shader.
-        const size_t count = static_cast<size_t>(std::max(uniform.array_count, 1));
-        if (uniform.type != MOJOSHADER_UNIFORM_FLOAT)
-            throw std::runtime_error("Unsupported integer/bool application shader constants");
-        if (!registers || uniform.index < 0 || static_cast<size_t>(uniform.index) > registerCount ||
-            count > registerCount - static_cast<size_t>(uniform.index))
-            throw std::out_of_range("Shader uniform exceeds the Gx register file");
-        const size_t packedOffset = result.size();
-        result.insert(result.end(), registers + uniform.index * 4, registers + (uniform.index + count) * 4);
-        // Relative arrays can span DEF instructions. D3D's immutable constants
-        // override the application's register file even through dynamic indexing.
-        for (int c = 0; c < shader.constant_count; ++c) {
-            const auto& constant = shader.constants[c];
-            if (constant.type == MOJOSHADER_UNIFORM_FLOAT && constant.index >= uniform.index &&
-                static_cast<size_t>(constant.index - uniform.index) < count)
-                std::copy_n(constant.value.f, 4, result.begin() + packedOffset + (constant.index - uniform.index) * 4);
+ShaderBindings LegacyShaderBindings(const MOJOSHADER_parseData& shader) {
+    ShaderBindings result;
+    if (shader.shader_type == MOJOSHADER_TYPE_VERTEX) {
+        for (int i = 0; i < shader.attribute_count; ++i) {
+            const auto& a = shader.attributes[i];
+            int location = -1;
+            if (a.index == 0) {
+                if (a.usage == MOJOSHADER_USAGE_POSITION) location = GxVA_Position;
+                if (a.usage == MOJOSHADER_USAGE_BLENDWEIGHT) location = GxVA_BlendWeight;
+                if (a.usage == MOJOSHADER_USAGE_BLENDINDICES) location = GxVA_BlendIndices;
+                if (a.usage == MOJOSHADER_USAGE_NORMAL) location = GxVA_Normal;
+            }
+            if (a.usage == MOJOSHADER_USAGE_COLOR && a.index >= 0 && a.index < 2) location = GxVA_Color0 + a.index;
+            if (a.usage == MOJOSHADER_USAGE_TEXCOORD && a.index >= 0 && a.index < 8) location = GxVA_TexCoord0 + a.index;
+            if (location < 0) throw std::runtime_error("Unsupported Gx shader vertex semantic");
+            result.attributes.push_back(location);
         }
     }
+    for (int i = 0; i < shader.sampler_count; ++i) {
+        const int slot = shader.samplers[i].index;
+        if (slot < 0 || slot >= 16) throw std::runtime_error("Shader sampler exceeds the Gx binding interface");
+        result.samplers.push_back(slot);
+    }
+    for (int i = 0; i < shader.uniform_count; ++i) {
+        const auto& uniform = shader.uniforms[i];
+        if (uniform.constant) continue;
+        if (uniform.type != MOJOSHADER_UNIFORM_FLOAT)
+            throw std::runtime_error("Unsupported integer/bool application shader constants");
+        result.registers.push_back({uniform.index, static_cast<size_t>(std::max(uniform.array_count, 1))});
+    }
+    for (int i = 0; i < shader.constant_count; ++i) {
+        const auto& c = shader.constants[i];
+        if (c.type == MOJOSHADER_UNIFORM_FLOAT)
+            result.literals.push_back({c.index, {c.value.f[0],c.value.f[1],c.value.f[2],c.value.f[3]}});
+    }
     return result;
+}
+std::vector<float> ShaderUniforms(const ShaderBindings& bindings,
+    const float* registers, size_t registerCount) {
+    std::vector<float> result;
+    for (const auto& range : bindings.registers) {
+        if (!registers || range.first < 0 || static_cast<size_t>(range.first) > registerCount ||
+            !range.count || range.count > registerCount - static_cast<size_t>(range.first))
+            throw std::out_of_range("Shader uniform exceeds the Gx register file");
+        const size_t packedOffset = result.size();
+        result.insert(result.end(), registers + range.first * 4, registers + (range.first + range.count) * 4);
+        // Relative arrays preserve D3D's immutable DEF values over application registers.
+        for (const auto& literal : bindings.literals)
+            if (literal.index >= range.first && static_cast<size_t>(literal.index - range.first) < range.count)
+                std::copy(literal.value.begin(), literal.value.end(), result.begin() + packedOffset + (literal.index - range.first) * 4);
+    }
+    return result;
+}
+std::vector<float> ShaderUniforms(const MOJOSHADER_parseData& shader,
+    const float* registers, size_t registerCount) {
+    return ShaderUniforms(LegacyShaderBindings(shader), registers, registerCount);
 }
 
 }

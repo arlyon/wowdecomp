@@ -1,12 +1,16 @@
 // Engineering scene-output adapter. Legacy shading remains display-encoded art;
 // only its final RGB crosses into the linear floating-point scene transport.
-const std::vector<uint32_t>& CGxDeviceVulkan::State::BoundaryPixel(const std::vector<uint32_t>& code, bool decode) {
+const std::vector<uint32_t>& CGxDeviceVulkan::State::BoundaryPixel(const std::vector<uint32_t>& code, bool decode, NativeShader* shader, bool temporal) {
+    if (shader) {
+        // Generation-owned variants cannot alias a different override merely
+        // because its base SPIR-V happens to contain identical instructions.
+        auto& cached=shader->hdrCode[temporal?1:0][decode?1:0];
+        if(cached.empty())cached=Compile(GxVulkan::ShaderOutputBoundary(temporal?shader->temporalSource:shader->source,decode),false,shader->maintained);
+        return cached;
+    }
     auto& hdrPixels=decode ? this->hdrPixels : hdrLinearPixels;
     auto found=hdrPixels.find(code);
     if (found!=hdrPixels.end()) return found->second;
-    const auto source=pixelSources.find(code);
-    if (source!=pixelSources.end())
-        return hdrPixels.emplace(code,shaderCompiler.Compile(GxVulkan::ShaderOutputBoundary(source->second,decode),false)).first->second;
     // Authored fixed/font modules have explicit maintained output-boundary variants.
     if(!decode) throw std::runtime_error("Linear output provider requires recovered float4 C0 ABI");
     const char* name=nullptr;

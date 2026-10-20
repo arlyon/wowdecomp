@@ -1,6 +1,7 @@
 #ifndef ENGINE_SOURCE_GX_CGXDEVICEVULKAN_SHADER_H
 #define ENGINE_SOURCE_GX_CGXDEVICEVULKAN_SHADER_H
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -44,6 +45,8 @@ RecoveredShader RecoverFoglessSlangShader(const void* bytecode, size_t size, boo
 // Caller must match the same instance/geometry across frames. Unsnapshotted CPU
 // deformation or vertex textures require invalid history, not reused constants.
 RecoveredShader RecoverTemporalSlangShader(const void* bytecode, size_t size);
+// Source-origin-neutral adaptation; never reselects/re-recovers a program.
+std::string TemporalShaderSource(std::string source, bool vertex);
 
 struct ShaderPair {
     std::vector<uint32_t> vertex;
@@ -56,7 +59,27 @@ ShaderPair LinkShaders(const MOJOSHADER_parseData& vertex,
     const MOJOSHADER_parseData& pixel,
     const std::vector<MOJOSHADER_vertexAttribute>& attributes);
 
-// Pack the sparse legacy register file into the frontend's uniform block order.
+// A single backend binding/packing description, independent of source origin.
+// Compatibility translation supplies sparse ranges; maintained source can
+// explicitly expose the complete legacy float register file at the same binding.
+struct ShaderRegisterRange { int first = 0; size_t count = 0; };
+struct ShaderRegisterLiteral { int index = 0; std::array<float,4> value{}; };
+struct ShaderBindings {
+    std::vector<int> attributes;
+    std::vector<int> samplers;
+    std::vector<ShaderRegisterRange> registers;
+    std::vector<ShaderRegisterLiteral> literals;
+    bool previousRegisters = false, motionParameters = false;
+};
+struct CompiledShader {
+    std::vector<uint32_t> code;
+    ShaderBindings bindings;
+};
+ShaderBindings LegacyShaderBindings(const MOJOSHADER_parseData& shader);
+std::vector<float> ShaderUniforms(const ShaderBindings& bindings,
+    const float* registers, size_t registerCount);
+
+// Compatibility adapter; both source origins use the packing implementation above.
 std::vector<float> ShaderUniforms(const MOJOSHADER_parseData& shader,
     const float* registers, size_t registerCount);
 
