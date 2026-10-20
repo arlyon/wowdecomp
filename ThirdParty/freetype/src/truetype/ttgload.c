@@ -868,7 +868,7 @@
 
       /* Now, read each subglyph independently. */
       {
-        FT_Int        n, num_base_points, num_new_points;
+        FT_Int        n, num_base_points, num_base_contours, num_new_points;
         FT_SubGlyph*  subglyph = 0;
 
         FT_UInt num_subglyphs  = gloader->current.num_subglyphs;
@@ -893,6 +893,7 @@
           pp2 = loader->pp2;
 
           num_base_points = gloader->base.outline.n_points;
+          num_base_contours = gloader->base.outline.n_contours;
 
           error = load_truetype_glyph( loader, subglyph->index );
           if ( error )
@@ -914,6 +915,13 @@
           num_points = gloader->base.outline.n_points;
 
           num_new_points = num_points - num_base_points;
+
+          /* wowdecomp local fix: recursion leaves zone at the last simple */
+          /* descendant, not necessarily at this entire component.  Rebase */
+          /* after recursion (and possible reallocations) before copying or */
+          /* translating num_new_points, including nested composites.      */
+          tt_prepare_zone( &loader->zone, &gloader->base,
+                           num_base_points, num_base_contours );
 
           /* now perform the transform required for this subglyph */
 
