@@ -1,4 +1,5 @@
 #include <cmath>
+#include "Engine/Source/Gxu/GxuFontMsdf.h"
 #include <cstddef>
 #include <cstdint>
 #include "Engine/Source/Gxu/GxuFontMiscClasses.h"
@@ -75,6 +76,10 @@ GLYPHBITMAPDATA::~GLYPHBITMAPDATA() {
     this->m_data = nullptr;
 }
 
+uint32_t GLYPHBITMAPDATA::AtlasWidth() const {
+    return m_glyphCellWidth + (m_isMsdf ? 2 * GxuMsdf::Border : 0);
+}
+
 // VERIFY: d966ef03 manual
 // OFFSET: 0x006C4380
 void CHARCODEDESC::GenerateTextureCoords(uint32_t rowNumber, uint32_t cellHeight) {
@@ -86,7 +91,7 @@ void CHARCODEDESC::GenerateTextureCoords(uint32_t rowNumber, uint32_t cellHeight
     coords.minX = left * (1.0 / 256.0);
     coords.maxY = (top + cellHeight) * (1.0 / 256.0);
 
-    float right = left + this->m_bitmapData.m_glyphCellWidth;
+    float right = left + this->m_bitmapData.AtlasWidth();
     coords.maxX = (1.0 / 256.0) * right;
 
     this->m_bitmapData.m_textureCoords = coords;
@@ -299,6 +304,9 @@ void BATCHEDRENDERFONTDESC::RenderBatch() {
         this->m_face->m_textureCache[i].UpdateDirty();
     }
 
+    if (this->m_face->m_isMsdf)
+        g_theGxDevicePtr->NativeMsdfFontBegin((this->m_face->m_fontFlags & 8) ? 2 : ((this->m_face->m_fontFlags & 1) ? 1 : 0));
+
     CGxBuf* buf = GxBufStream(GxPoolTarget_Vertex, sizeof(CGxVertexPCT), 2048);
     CGxVertexPCT* verts = reinterpret_cast<CGxVertexPCT*>(GxBufLock(buf));
     int32_t space = 2048;
@@ -350,6 +358,7 @@ void BATCHEDRENDERFONTDESC::RenderBatch() {
     }
 
     GxBufUnlock(buf, 0);
+    if (this->m_face->m_isMsdf) g_theGxDevicePtr->NativeMsdfFontEnd();
 }
 
 // VERIFY: cb7c9536 manual
@@ -376,18 +385,12 @@ TEXTLINETEXTURE* TEXTLINETEXTURE::NewTextLineTexture() {
 
 // VERIFY: be22d63b manual
 // OFFSET: 0x006C4F80
-void TEXTURECACHEROW::EvictGlyph(CHARCODEDESC* desc) {
-    uint32_t needed = desc->m_bitmapData.m_glyphCellWidth;
+void TEXTURECACHEROW::EvictGlyph(CHARCODEDESC* desc, uint32_t requiredWidth) {
+    // Make room for the incoming glyph, which can be wider than the victim.
+    const uint32_t needed = requiredWidth;
+    uint32_t freed = desc->GapToPrevious();
 
-    CHARCODEDESC* glyph = this->m_glyphlist.Head();
-
-    while (glyph && glyph != desc) {
-        glyph = this->m_glyphlist.Next(glyph);
-    }
-
-    uint32_t freed = 0;
-
-    while (freed < needed) {
+    while (desc && freed < needed) {
         CHARCODEDESC* next = this->m_glyphlist.Next(desc);
         uint32_t gap = next ? next->m_glyphStartPixel - desc->m_glyphEndPixel - 1 : 255 - desc->m_glyphEndPixel;
         freed += desc->m_glyphEndPixel - desc->m_glyphStartPixel + 1 + gap;
@@ -396,8 +399,10 @@ void TEXTURECACHEROW::EvictGlyph(CHARCODEDESC* desc) {
 
         if (!desc) {
             for (CHARCODEDESC* last = this->m_glyphlist.Tail(); last && freed < needed; ) {
+                CHARCODEDESC* previous = this->m_glyphlist.Prev(last);
                 freed += last->m_glyphEndPixel - last->m_glyphStartPixel + 1 + last->GapToPrevious();
-                last = this->m_glyphlist.DeleteNode(last);
+                this->m_glyphlist.DeleteNode(last);
+                last = previous;
             }
 
             break;
@@ -405,9 +410,9 @@ void TEXTURECACHEROW::EvictGlyph(CHARCODEDESC* desc) {
     }
 
     CHARCODEDESC* head = this->m_glyphlist.Head();
-    this->m_widestFreeSlot = head ? head->GapToPrevious() : 0;
+    this->m_widestFreeSlot = head ? head->GapToPrevious() : 256;
 
-    for (glyph = this->m_glyphlist.Head(); glyph; glyph = this->m_glyphlist.Next(glyph)) {
+    for (CHARCODEDESC* glyph = this->m_glyphlist.Head(); glyph; glyph = this->m_glyphlist.Next(glyph)) {
         CHARCODEDESC* next = this->m_glyphlist.Next(glyph);
         uint32_t gap = next ? next->m_glyphStartPixel - glyph->m_glyphEndPixel - 1 : 255 - glyph->m_glyphEndPixel;
 
@@ -420,7 +425,9 @@ void TEXTURECACHEROW::EvictGlyph(CHARCODEDESC* desc) {
 // VERIFY: 2ccd62da manual
 // OFFSET: 0x006C5120
 CHARCODEDESC* TEXTURECACHEROW::CreateNewDesc(GLYPHBITMAPDATA* data, uint32_t rowNumber, uint32_t cellHeight) {
-    uint32_t width = data->m_glyphCellWidth;
+    uint32_t width = data->AtlasWidth();
+
+    if (!width || width > 256 || !cellHeight || rowNumber >= 256 / cellHeight) return nullptr;
 
     if (this->m_widestFreeSlot < width) {
         return nullptr;
@@ -544,7 +551,11 @@ void CGxStringBatch::RenderBatch() {
         }
     }
 
-    if (vertexShader && vertexShader->Valid() && g_fontPixelShader && g_fontPixelShader->Valid()) {
+    bool needsClassicShader = false;
+    for (BATCHEDRENDERFONTDESC* desc = this->m_fontBatch.m_fulllist.Head(); desc; desc = this->m_fontBatch.m_fulllist.Next(desc))
+        needsClassicShader = needsClassicShader || !desc->m_face->m_isMsdf;
+
+    if (needsClassicShader && vertexShader && vertexShader->Valid() && g_fontPixelShader && g_fontPixelShader->Valid()) {
         C44Matrix viewProj;
         GxRsSet(GxRs_VertexShader, vertexShader);
         GxRsSet(GxRs_PixelShader, g_fontPixelShader);

@@ -37,6 +37,9 @@ struct CGxFont : public TSLinkedNode<CGxFont> {
     /* 018C */ TEXTURECACHE m_textureCache[8];
     /* 024C */ uint32_t m_pixelSize;
 
+    bool m_isMsdf = false;
+    uint32_t AtlasCellHeight() const;
+
     CGxFont();
     ~CGxFont();
     int32_t CheckStringGlyphs(const char* string);

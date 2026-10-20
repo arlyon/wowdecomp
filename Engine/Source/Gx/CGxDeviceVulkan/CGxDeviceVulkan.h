@@ -40,6 +40,9 @@ public:
     void DeviceSetRenderTarget(EGxBuffer buffer, CGxTex* texture, uint32_t plane) override;
     void DeviceReadPixels(CiRect& rect, TSGrowableArray<CImVector>& pixels) override;
     void DeviceReadDepths(CiRect& rect, TSGrowableArray<float>& depths) override;
+    bool NativeMsdfFontsSupported() const override;
+    void NativeMsdfFontBegin(uint32_t outlinePixels) override;
+    void NativeMsdfFontEnd() override;
     void IShaderCreate(CGxShader* shader) override;
     void IShaderReload(CGxShader* shader, const char* path, const char* name) override;
     void ShaderDestroy(CGxShader*& shader) override;

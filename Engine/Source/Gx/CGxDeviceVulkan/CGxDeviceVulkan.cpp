@@ -139,6 +139,9 @@ struct CGxDeviceVulkan::State {
     uint64_t nextShader = 1;
     GxVulkan::SlangCompiler shaderCompiler;
     std::vector<uint32_t> fixedVertex, fixedPixel;
+    bool msdfFontActive = false;
+    uint32_t msdfOutlinePixels = 0;
+    std::vector<uint32_t> msdfFontVertex, msdfFontPixel;
     std::map<std::vector<uint64_t>, Pipeline> pipelines;
     std::map<std::pair<VkFormat, VkFormat>, VkRenderPass> renderPasses;
     std::vector<VkFramebuffer> framebuffers;
@@ -334,6 +337,8 @@ void CGxDeviceVulkan::State::Initialize() {
     upload = MakeBuffer(64 * 1024 * 1024, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     fixedVertex = ReadModule("fixed.vert.spv"); fixedPixel = ReadModule("fixed.frag.spv");
+    msdfFontVertex = ReadModule("font-msdf.vert.spv");
+    msdfFontPixel = ReadModule("font-msdf.frag.spv");
     RecreateSwapchain();
     GxReportDeviceSelection("vulkan", std::move(adapterDescriptors), selected);
     CGxDevice::Log("Native Vulkan: %s, API %u.%u; direct Vulkan submission (no DXVK)", properties.deviceName,
@@ -725,6 +730,8 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     gx.IRsSync(0);
     auto* vertexShader = static_cast<CGxShader*>(gx.m_appRenderStates[GxRs_VertexShader].m_value.m_data.p);
     auto* pixelShader = static_cast<CGxShader*>(gx.m_appRenderStates[GxRs_PixelShader].m_value.m_data.p);
+    const bool msdfFont = msdfFontActive;
+    if (msdfFont) { vertexShader = nullptr; pixelShader = nullptr; }
     const bool fixedVertexStage = !vertexShader;
     const bool fixedPixelStage = !pixelShader;
     NativeShader *v = nullptr, *p = nullptr;
@@ -738,10 +745,11 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         if (vertexShader) v = load(vertexShader);
         if (pixelShader) p = load(pixelShader);
     }
-    const auto& vertexCode = fixedVertexStage ? fixedVertex : v->code;
-    const auto& pixelCode = fixedPixelStage ? fixedPixel : p->code;
+    const auto& vertexCode = msdfFont ? msdfFontVertex : fixedVertexStage ? fixedVertex : v->code;
+    const auto& pixelCode = msdfFont ? msdfFontPixel : fixedPixelStage ? fixedPixel : p->code;
     std::vector<int> required;
-    if (fixedVertexStage) {
+    if (msdfFont) required = {GxVA_Position, GxVA_Color0, GxVA_TexCoord0};
+    else if (fixedVertexStage) {
         required = {GxVA_Position, GxVA_Normal, GxVA_Color0};
         for (int i = 0; i < 8; ++i) required.push_back(GxVA_TexCoord0 + i);
     } else for (int i = 0; i < v->reflection->attribute_count; ++i)
@@ -813,7 +821,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         }
     };
     std::array<bool, 8> fixedStageEnabled{};
-    if (fixedPixelStage) {
+    if (msdfFont) {
+        sample(2, 0);
+    } else if (fixedPixelStage) {
         bool enabledChain = true;
         for (unsigned stage = 0; stage < fixedStageEnabled.size(); ++stage) {
             auto* texture = static_cast<CGxTex*>(gx.m_appRenderStates[GxRs_Texture0 + stage].m_value.m_data.p);
@@ -830,7 +840,12 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     C44Matrix transform = gx.m_xforms[GxXform_World].m_mtx[gx.m_xforms[GxXform_World].m_level] *
         gx.m_xforms[GxXform_View].m_mtx[gx.m_xforms[GxXform_View].m_level] * gx.m_projNative;
     std::vector<float> vertexUniforms, pixelUniforms;
-    if (fixedVertexStage || fixedPixelStage) {
+    if (msdfFont) {
+        const auto* matrix = reinterpret_cast<const float*>(&transform);
+        vertexUniforms.assign(matrix, matrix + 16);
+        pixelUniforms = {gx.m_appRenderStates[GxRs_AlphaRef].m_value.m_data.u[0] / 255.0f,
+            float(msdfOutlinePixels), 8.0f, 256.0f};
+    } else if (fixedVertexStage || fixedPixelStage) {
         const auto& world = gx.m_xforms[GxXform_World].m_mtx[gx.m_xforms[GxXform_World].m_level];
         const auto& view = gx.m_xforms[GxXform_View].m_mtx[gx.m_xforms[GxXform_View].m_level];
         const C44Matrix worldView = world * view;
@@ -908,7 +923,8 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; write.pImageInfo = &images[set == 0 ? 0 : 1][binding]; writes.push_back(write);
     };
     if (v) for (int i = 0; i < v->reflection->sampler_count; ++i) writeSampler(0, v->reflection->samplers[i].index);
-    if (fixedPixelStage) for (unsigned stage = 0; stage < 8; ++stage) writeSampler(2, stage);
+    if (msdfFont) writeSampler(2, 0);
+    else if (fixedPixelStage) for (unsigned stage = 0; stage < 8; ++stage) writeSampler(2, stage);
     else for (int i = 0; i < p->reflection->sampler_count; ++i) writeSampler(2, p->reflection->samplers[i].index);
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     std::pair<VkBuffer, VkDeviceSize> residentIndex{};
@@ -926,6 +942,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     const auto primitive = batch.m_primType == GxPrim_TriangleFan ? GxPrim_Triangles : batch.m_primType;
     std::vector<uint64_t> key{fixedVertexStage ? 0 : v->id, fixedPixelStage ? 0 : p->id, reinterpret_cast<uint64_t>(currentPass),
         blend, depthTest, depthWrite, cull, colourMask, depthFunction, static_cast<uint64_t>(primitive)};
+    key.push_back(msdfFont ? 1 : 0); // Authored fonts cannot alias fixed/legacy pipelines.
     for (const auto& binding : bindings) { key.push_back(binding.binding); key.push_back(binding.stride); }
     key.push_back(UINT64_MAX);
     for (const auto& attribute : attributes) {
@@ -1381,6 +1398,15 @@ void CGxDeviceVulkan::TexDestroy(CGxTex* texture) {
     texture->m_apiSpecificData = nullptr;
     CGxDevice::TexDestroy(texture);
 }
+bool CGxDeviceVulkan::NativeMsdfFontsSupported() const {
+    return m_native && m_native->device && !m_native->msdfFontVertex.empty() && !m_native->msdfFontPixel.empty();
+}
+void CGxDeviceVulkan::NativeMsdfFontBegin(uint32_t outlinePixels) {
+    m_native->msdfOutlinePixels = std::min(outlinePixels, 2u);
+    m_native->msdfFontActive = true;
+}
+void CGxDeviceVulkan::NativeMsdfFontEnd() { m_native->msdfFontActive = false; }
+
 void CGxDeviceVulkan::IShaderCreate(CGxShader* shader) {
     shader->m_loaded = 1; shader->m_valid = 0;
     try {

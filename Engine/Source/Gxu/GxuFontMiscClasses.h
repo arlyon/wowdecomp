@@ -30,6 +30,9 @@ struct GLYPHBITMAPDATA {
     /* 0024 */ uint32_t m_yStart;
     /* 0028 */ CRect m_textureCoords;
 
+    bool m_isMsdf = false;
+    uint32_t AtlasWidth() const;
+
     GLYPHBITMAPDATA();
     ~GLYPHBITMAPDATA();
     void CopyFrom(GLYPHBITMAPDATA* source);
@@ -97,7 +100,7 @@ struct TEXTURECACHEROW {
 
     TEXTURECACHEROW();
     CHARCODEDESC* CreateNewDesc(GLYPHBITMAPDATA* data, uint32_t rowNumber, uint32_t cellHeight);
-    void EvictGlyph(CHARCODEDESC* desc);
+    void EvictGlyph(CHARCODEDESC* desc, uint32_t requiredWidth);
 };
 
 struct TEXTURECACHE {

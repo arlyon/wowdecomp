@@ -227,6 +227,10 @@ class CGxDevice {
     virtual bool QueryEnd(CGxQuery* query) = 0;
     virtual bool QueryGetParam(CGxQuery* query, EGxQueryParam param, uint32_t& data) = 0;
     virtual bool QueryGetData(CGxQuery* query, uint32_t& data) = 0;
+    // Explicit authored-font scope, not a legacy shader identity.
+    virtual bool NativeMsdfFontsSupported() const { return false; }
+    virtual void NativeMsdfFontBegin(uint32_t outlinePixels) {}
+    virtual void NativeMsdfFontEnd() {}
     virtual void ShaderCreate(CGxShader** shaders, EGxShTarget target, const char* path, const char* name, uint32_t permutations);
     virtual void ShaderDestroy(CGxShader*& shader);
     virtual void ShaderConstantsSet(EGxShTarget target, uint32_t index, const float* constants, uint32_t count);

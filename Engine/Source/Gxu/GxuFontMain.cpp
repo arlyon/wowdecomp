@@ -23,6 +23,20 @@
 #include "Engine/Source/Tempest/CMath.h"
 #include "Engine/Source/Tempest/CRect.h"
 
+extern TSList<CGxFont, TSGetLink<CGxFont> > g_fonts;
+static bool s_msdfEnabled = true;
+
+bool GxuFontMsdfSupported() {
+    return g_theGxDevicePtr && g_theGxDevicePtr->NativeMsdfFontsSupported();
+}
+bool GxuFontMsdfEnabled() { return s_msdfEnabled; }
+void GxuFontSetMsdfEnabled(bool enabled) {
+    if (s_msdfEnabled == enabled) return;
+    s_msdfEnabled = enabled;
+    for (CGxFont* font = g_fonts.Head(); font; font = g_fonts.Next(font))
+        font->HandleScreenSizeChange();
+}
+
 // STATIC: 0x00A31560
 const int32_t g_quotedCodeLengths[NUM_QUOTEDCODES] = { 0, 10, 2, 2, 2, 2, 2, 2, 2 };
 
