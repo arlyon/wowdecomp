@@ -61,23 +61,25 @@ int main(int argc, char** argv) {
     try {
         const bool rayCapability = argc == 2 && std::strcmp(argv[1], "--ray-query-capability") == 0;
         const bool accelerationBuild = argc == 2 && std::strcmp(argv[1], "--acceleration-build") == 0;
-        Check(argc == 1 || rayCapability || accelerationBuild, "unknown fixture mode");
+        const bool accelerationQuery = argc == 2 && std::strcmp(argv[1], "--acceleration-query") == 0;
+        Check(argc == 1 || rayCapability || accelerationBuild || accelerationQuery, "unknown fixture mode");
         Check(SDL_Init(SDL_INIT_VIDEO)==0,SDL_GetError());
         auto owner=std::make_unique<CGxDeviceVulkan>();auto& gx=*owner;
         g_theGxDevicePtr=&gx;CGxDevice& api=gx;
-        if (!rayCapability && !accelerationBuild) {
+        if (!rayCapability && !accelerationBuild && !accelerationQuery) {
             gx.SceneFarTestAdmissionLimits(256*MiB,192*MiB,32*MiB);
             GxFar::SetFarCpuPressureForTesting(32*MiB);
             Check(gx.CGxDevice::SceneCreateFarResources(Request()).result==GxFarResourceResult::Unsupported,"non-native default manufactured FAR support");
         }
         CGxFormat format;format.m_window=1;format.m_maximize=0;format.m_size={320,240};
         Check(gx.DeviceCreate(static_cast<GxWindowProc>(nullptr),format)!=0,"device creation failed");gx.m_cursorVisible=0;
-        if (rayCapability || accelerationBuild) {
-            Check(accelerationBuild ? gx.SceneRayQueryTestAccelerationBuild() : gx.SceneRayQueryTestDeviceAddress(),
+        if (rayCapability || accelerationBuild || accelerationQuery) {
+            Check(accelerationQuery ? gx.SceneRayQueryTestReadback() : (accelerationBuild ? gx.SceneRayQueryTestAccelerationBuild() : gx.SceneRayQueryTestDeviceAddress()),
                 "required native acceleration capability/build/fence/admission unavailable or invalid");
             gx.DeviceDestroy(); Check(gx.SceneHdrTestValidationClean(), "Vulkan capability diagnostics emitted");
             g_theGxDevicePtr = nullptr; owner.reset(); SDL_Quit();
-            std::cout << (accelerationBuild ? "PASS original native acceleration build, pressure unwind, immutable snapshot and fence retirement; NOT shadow coverage\n" :
+            if (accelerationQuery) std::cout << "PASS original native AS query readback: hit/miss, both faces, t-min self exclusion and finite t-max; NOT material/world coverage\n";
+            else std::cout << (accelerationBuild ? "PASS original native acceleration build, pressure unwind, immutable snapshot and fence retirement; NOT shadow coverage\n" :
                 "PASS original native device optional ray-query feature chain and physically admitted device-address buffer; NOT shadow readiness\n");
             return 0;
         }

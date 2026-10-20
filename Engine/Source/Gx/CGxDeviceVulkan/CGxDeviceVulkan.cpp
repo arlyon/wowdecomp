@@ -2226,6 +2226,95 @@ void CGxDeviceVulkan::SceneEndWorld() {
 }
 #ifdef WOWDECOMP_VULKAN_TESTING
 std::array<uint32_t,4> CGxDeviceVulkan::SceneWorldTestCompletedFrame() const { return m_native->completedWorldTest; }
+bool CGxDeviceVulkan::SceneRayQueryTestReadback() {
+    auto& state = *m_native;
+    if (!state.device || !state.rayQueryCapabilities.Available() || !state.BeginFrame()) return false;
+    state.EndPass();
+    const auto before = state.sceneAdmission->Used();
+    struct Ray { float originMin[4], directionMax[4]; };
+    struct Result { uint32_t hit, primitive; float distance; uint32_t padding; };
+    static_assert(sizeof(Ray) == 32 && sizeof(Result) == 16, "Acceleration probe ABI");
+    const Ray rays[] = {
+        {{.2f,.2f,1,.001f},{0,0,-1,10}}, {{2,2,1,.001f},{0,0,-1,10}},
+        {{.2f,.2f,-1,.001f},{0,0,-1,10}}, {{.2f,.2f,.005f,.01f},{0,0,-1,10}},
+        {{.2f,.2f,1,.001f},{0,0,1,10}}, {{.2f,.2f,1,.001f},{0,0,-1,.5f}},
+        {{.2f,.2f,-1,.001f},{0,0,1,10}}
+    };
+    constexpr size_t count = sizeof(rays)/sizeof(rays[0]);
+    GxVulkan::Buffer input, output;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkShaderModule module = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    std::unique_ptr<GxVulkan::AccelerationScene> scene;
+    const auto cleanup = [&] {
+        if (pipeline) vkDestroyPipeline(state.device,pipeline,nullptr);
+        if (module) vkDestroyShaderModule(state.device,module,nullptr);
+        if (layout) vkDestroyPipelineLayout(state.device,layout,nullptr);
+        if (pool) vkDestroyDescriptorPool(state.device,pool,nullptr);
+        if (setLayout) vkDestroyDescriptorSetLayout(state.device,setLayout,nullptr);
+        GxVulkan::DestroyBuffer(state.device,input); GxVulkan::DestroyBuffer(state.device,output);
+        scene.reset();
+    };
+    bool passed = false;
+    try {
+        const auto memory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        input = GxVulkan::CreateBuffer(state.device,state.memoryProperties,sizeof(rays),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,memory,state.sceneAdmission.get());
+        output = GxVulkan::CreateBuffer(state.device,state.memoryProperties,count*sizeof(Result),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,memory,state.sceneAdmission.get());
+        std::memcpy(input.mapped,rays,sizeof(rays)); std::memset(output.mapped,0xcd,output.size);
+        VkDescriptorSetLayoutBinding bindings[] = {{0,VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+            {1,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+            {2,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr}};
+        VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; setInfo.bindingCount=3; setInfo.pBindings=bindings;
+        GX_VK(vkCreateDescriptorSetLayout(state.device,&setInfo,nullptr,&setLayout));
+        VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; layoutInfo.setLayoutCount=1; layoutInfo.pSetLayouts=&setLayout;
+        GX_VK(vkCreatePipelineLayout(state.device,&layoutInfo,nullptr,&layout));
+        VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,2}};
+        VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; poolInfo.maxSets=1; poolInfo.poolSizeCount=2; poolInfo.pPoolSizes=sizes;
+        GX_VK(vkCreateDescriptorPool(state.device,&poolInfo,nullptr,&pool));
+        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; allocate.descriptorPool=pool; allocate.descriptorSetCount=1; allocate.pSetLayouts=&setLayout;
+        VkDescriptorSet set=VK_NULL_HANDLE; GX_VK(vkAllocateDescriptorSets(state.device,&allocate,&set));
+        const auto code=ReadModule("acceleration-probe.comp.spv");
+        VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; moduleInfo.codeSize=code.size()*4; moduleInfo.pCode=code.data();
+        GX_VK(vkCreateShaderModule(state.device,&moduleInfo,nullptr,&module));
+        VkComputePipelineCreateInfo compute{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO}; compute.layout=layout;
+        compute.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}; compute.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;
+        compute.stage.module=module; compute.stage.pName="main";
+        GX_VK(vkCreateComputePipelines(state.device,VK_NULL_HANDLE,1,&compute,nullptr,&pipeline));
+        scene=std::make_unique<GxVulkan::AccelerationScene>(state.device,state.physical,state.memoryProperties,state.rayQueryCapabilities,state.sceneAdmission);
+        const GxVulkan::ShadowPosition vertices[]={{{0,0,0}},{{1,0,0}},{{0,1,0}}}; const uint32_t indices[]={0,1,2};
+        scene->Build(state.command,vertices,3,indices,3);
+        const auto top=scene->TopLevel();
+        VkWriteDescriptorSetAccelerationStructureKHR acceleration{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR}; acceleration.accelerationStructureCount=1; acceleration.pAccelerationStructures=&top;
+        VkDescriptorBufferInfo buffers[]={{input.buffer,0,input.size},{output.buffer,0,output.size}};
+        VkWriteDescriptorSet writes[3]{};
+        for(unsigned i=0;i<3;++i) { writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[i].dstSet=set; writes[i].dstBinding=i; writes[i].descriptorCount=1;
+            writes[i].descriptorType=i?VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            if(i) writes[i].pBufferInfo=&buffers[i-1]; else writes[i].pNext=&acceleration; }
+        vkUpdateDescriptorSets(state.device,3,writes,0,nullptr);
+        VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; host.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT; host.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(state.command,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&host,0,nullptr,0,nullptr);
+        vkCmdBindPipeline(state.command,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);
+        vkCmdBindDescriptorSets(state.command,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&set,0,nullptr);
+        vkCmdDispatch(state.command,1,1,1);
+        host.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT; host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(state.command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&host,0,nullptr,0,nullptr);
+        state.Submit(false,true);
+        passed=true;
+        for(size_t i=0;i<count;++i) {
+            Result result{}; std::memcpy(&result,output.mapped+i*sizeof(Result),sizeof(Result));
+            const bool expected=i==0 || i==6;
+            passed=passed && result.hit==uint32_t(expected) && (!expected || (result.primitive==0 && std::fabs(result.distance-1.f)<.00001f));
+        }
+        cleanup();
+    } catch (...) {
+        vkDeviceWaitIdle(state.device);
+        if (state.recording) { vkResetCommandPool(state.device,state.commandPool,0); state.recording=false; state.inPass=false; }
+        cleanup(); throw;
+    }
+    return passed && state.sceneAdmission->Used()==before;
+}
 bool CGxDeviceVulkan::SceneRayQueryTestAccelerationBuild() {
     auto& state = *m_native;
     if (!state.device || !state.rayQueryCapabilities.Available() || !state.BeginFrame()) return false;

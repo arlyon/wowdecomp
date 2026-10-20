@@ -163,10 +163,18 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
         WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
     target_link_libraries(FarResourcesLiveTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
         Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
-    add_dependencies(FarResourcesLiveTest GxSlangShaders)
+    set(accelerationProbe "${WOWDECOMP_VULKAN_SHADER_DIR}/acceleration-probe.comp.spv")
+    add_custom_command(OUTPUT "${accelerationProbe}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${WOWDECOMP_VULKAN_SHADER_DIR}"
+        COMMAND "${WOWDECOMP_SLANGC}" "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/AccelerationProbe.slang"
+            -entry computeMain -stage compute -target spirv -profile spirv_1_5 -matrix-layout-row-major -o "${accelerationProbe}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/AccelerationProbe.slang" "${WOWDECOMP_SLANGC}" VERBATIM)
+    add_custom_target(GxAccelerationProbe DEPENDS "${accelerationProbe}")
+    add_dependencies(FarResourcesLiveTest GxSlangShaders GxAccelerationProbe)
     add_test(NAME FarResourcesLiveGpu COMMAND FarResourcesLiveTest)
     add_test(NAME RayQueryCapabilityGpu COMMAND FarResourcesLiveTest --ray-query-capability)
     add_test(NAME AccelerationBuildGpu COMMAND FarResourcesLiveTest --acceleration-build)
+    add_test(NAME AccelerationQueryGpu COMMAND FarResourcesLiveTest --acceleration-query)
     set_tests_properties(FarResourcesLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
 
     set(farTerrainArchives ${ffxArchives})
