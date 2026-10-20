@@ -13,6 +13,15 @@ wowdecomp_configure_platform()
 find_package(Threads REQUIRED)
 enable_testing()
 
+add_executable(ShadowContractsTest ShadowContractsTest.cpp)
+target_include_directories(ShadowContractsTest PRIVATE "${WOWDECOMP_ROOT}")
+add_test(NAME ShadowContracts COMMAND ShadowContractsTest)
+add_test(NAME ShadowContractsClosedCompile COMMAND "${CMAKE_COMMAND}"
+    "-DCOMPILER=${CMAKE_CXX_COMPILER}" "-DROOT=${WOWDECOMP_ROOT}"
+    "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/ShadowContractsCompile.cpp"
+    "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/shadow-contract-compile"
+    -P "${WOWDECOMP_ROOT}/cmake/CheckShadowContracts.cmake")
+
 add_executable(CoordinateTest CoordinateTest.cpp "${WOWDECOMP_ROOT}/Engine/Source/Base/Coordinate.cpp")
 target_include_directories(CoordinateTest PRIVATE "${WOWDECOMP_ROOT}")
 add_test(NAME Coordinate COMMAND CoordinateTest)

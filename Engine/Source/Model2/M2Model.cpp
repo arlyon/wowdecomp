@@ -1,3 +1,4 @@
+#include "ShadowSelection.h"
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -2156,6 +2157,16 @@ void CM2Model::SetEmittersEnabled(int32_t enabled) {
             this->m_modelCallTail = &call->m_next;
         }
     }
+}
+
+float CM2Model::GetBatchOpacity(const M2Batch* batch) const {
+    const auto* data = this->m_shared->m_data;
+    float alpha = this->m_alpha;
+    if (batch->m_colorIndex < data->m_colors.m_count)
+        alpha *= this->m_colors[batch->m_colorIndex].m_alphaTrack.m_currentValue;
+    if (batch->m_textureCount)
+        alpha *= this->m_textureWeights[data->m_textureWeightCombos[batch->m_textureWeightComboIndex]].m_currentValue;
+    return alpha;
 }
 
 // VERIFY: 962d124c manual
@@ -7724,30 +7735,12 @@ void CM2Model::GatherModelBatchesShadowMap(CModelBatchList& untextured, CModelBa
             }
         }
 
-        if (batch->m_shader == 0x8000 || (batch->m_flags & 4) || batch->m_materialLayer) {
-            continue;
-        }
-
-        M2Data* data = this->m_shared->m_data;
-        M2Material* material = &data->m_materials[batch->m_materialIndex];
-
-        if ((material->m_flags & 0x40) || (!(material->m_flags & 0x80) && material->m_blendMode > 1)) {
-            continue;
-        }
-
-        float alpha = this->m_alpha;
-
-        if (batch->m_colorIndex < data->m_colors.m_count) {
-            alpha *= this->m_colors[batch->m_colorIndex].m_alphaTrack.m_currentValue;
-        }
-
-        if (batch->m_textureCount) {
-            alpha *= this->m_textureWeights[data->m_textureWeightCombos[batch->m_textureWeightComboIndex]].m_currentValue;
-        }
-
-        if (alpha >= 0.55000001f) {
-            (material->m_blendMode ? textured : untextured).Add(this, i);
-        }
+        if (M2Shadow::BatchExclusion(batch->m_shader, batch->m_flags, batch->m_materialLayer)) continue;
+        const M2Material& material = this->m_shared->m_data->m_materials[batch->m_materialIndex];
+        if (M2Shadow::MaterialExclusion(material.m_flags, material.m_blendMode)) continue;
+        const auto coverage = M2Shadow::MaterialCoverage(material.m_flags, material.m_blendMode, this->GetBatchOpacity(batch));
+        const auto selection = GxShadow::Describe(coverage);
+        if (selection.casts) (selection.needsCoverageTexture ? textured : untextured).Add(this, i);
     }
 
     for (CM2Model* child = this->m_attachList; child; child = child->m_attachNext) {

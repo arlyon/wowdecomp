@@ -321,6 +321,7 @@ class CM2Model {
     void FreeExternalResources();
     CCamera* GetCameraById(uint32_t id);
     uint32_t GetNumCombinableDoodadBatches();
+    float GetBatchOpacity(const M2Batch* batch) const;
     uint32_t GetNumGeometryBatches();
     uint32_t GetNumPrimitives();
     int32_t HasCamera(uint32_t id);
