@@ -215,7 +215,7 @@ ShaderPair LinkShaders(const MOJOSHADER_parseData& vertex,
     return result;
 }
 
-bool ShaderUsesInputLocation(const std::vector<uint32_t>& code,uint32_t location) {
+static bool ShaderUsesLocation(const std::vector<uint32_t>& code,uint32_t location,uint32_t storageClass) {
     if(code.size()<5 || code[0]!=0x07230203u) throw std::runtime_error("Invalid SPIR-V interface header");
     std::vector<uint32_t> inputs,decorated;
     for(size_t i=5;i<code.size();) {
@@ -225,7 +225,7 @@ bool ShaderUsesInputLocation(const std::vector<uint32_t>& code,uint32_t location
         // here. Unknown interface provenance must retain the export, not turn
         // an unfamiliar module into a false absence certificate.
         if(op==73 || op==74 || op==75 || op==332 || op==5632 || op==5633) return true;
-        if(op==59 && words>=4 && code[i+3]==1) inputs.push_back(code[i+2]); // OpVariable Input
+        if(op==59 && words>=4 && code[i+3]==storageClass) inputs.push_back(code[i+2]); // OpVariable
         if(op==71 && words>=4 && code[i+2]==30 && code[i+3]==location) decorated.push_back(code[i+1]);
         // Do not guess the storage class of an unfamiliar interface block.
         if(op==72 && words>=5 && code[i+3]==30 && code[i+4]==location) return true;
@@ -234,11 +234,18 @@ bool ShaderUsesInputLocation(const std::vector<uint32_t>& code,uint32_t location
     for(auto id:inputs) if(std::find(decorated.begin(),decorated.end(),id)!=decorated.end()) return true;
     return false;
 }
+bool ShaderUsesInputLocation(const std::vector<uint32_t>& code,uint32_t location) { return ShaderUsesLocation(code,location,1); }
+bool ShaderUsesOutputLocation(const std::vector<uint32_t>& code,uint32_t location) { return ShaderUsesLocation(code,location,3); }
 std::string PruneVertexFogOutput(std::string source) {
     const std::regex field(R"(\[\[vk::location\(10\)\]\]\s*float\s+(\w+)\s*:\s*FOG\s*;)");
     std::smatch match;
     if(!std::regex_search(source,match,field)) throw std::runtime_error("Unrecognised unused vertex FOG ABI");
     const auto name=match[1].str();source=std::regex_replace(source,field,"");
+    if(name=="m_gx_fog") {
+        // Our generated zero-filled compatibility padding has no bytecode alias.
+        if(source.find("output."+name)!=std::string::npos) throw std::runtime_error("Unexpected padded FOG reference");
+        return source;
+    }
     if(name.rfind("m_",0)!=0) throw std::runtime_error("Unrecognised vertex FOG field name");
     const auto alias="#define "+name.substr(2)+" output."+name;
     const auto offset=source.find(alias);

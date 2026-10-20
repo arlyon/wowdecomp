@@ -263,12 +263,12 @@ if (WOWDECOMP_WORLD_ASSETS AND WOWDECOMP_VULKAN_CLIENT_BUILD AND TARGET Vulkan::
         "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/libXvidDecoder.so" Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
     add_dependencies(TerrainDistanceWorldTest GxSlangShaders)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terrain-world")
-    add_test(NAME TerrainDistanceWorldGpu COMMAND TerrainDistanceWorldTest)
-    add_test(NAME TerrainDistanceNorthrendGpu COMMAND TerrainDistanceWorldTest)
-    set_tests_properties(TerrainDistanceWorldGpu TerrainDistanceNorthrendGpu PROPERTIES TIMEOUT 180
+    add_test(NAME TerrainDistanceWorldGpu COMMAND TerrainDistanceWorldTest --elwynn-distance)
+    add_test(NAME TerrainDistanceNorthrendGpu COMMAND TerrainDistanceWorldTest --northrend-distance)
+    add_test(NAME RasterWorldFeaturesGpu COMMAND TerrainDistanceWorldTest --raster-features)
+    set_tests_properties(TerrainDistanceWorldGpu TerrainDistanceNorthrendGpu RasterWorldFeaturesGpu PROPERTIES TIMEOUT 180
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terrain-world"
         ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~;WOWDECOMP_TEST_WORLD_ASSETS=${WOWDECOMP_WORLD_ASSETS}")
-    set_property(TEST TerrainDistanceNorthrendGpu APPEND PROPERTY ENVIRONMENT "WOWDECOMP_TEST_TERRAIN_NORTHREND=1")
 else ()
     message(STATUS "Synchronous production world acceptance unverified: configure WOWDECOMP_WORLD_ASSETS and native client archives")
 endif ()

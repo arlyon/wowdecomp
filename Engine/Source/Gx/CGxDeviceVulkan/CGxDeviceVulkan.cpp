@@ -195,6 +195,9 @@ struct CGxDeviceVulkan::State {
     float hdrEV = 0.f;
     NativeImage hdrBackdrop, hdrClassic;
     bool hdrAborted = false;
+#ifdef WOWDECOMP_VULKAN_TESTING
+    std::array<uint32_t,4> completedWorldTest{};
+#endif
     uint32_t hdrAttachmentLimit = UINT32_MAX, hdrBoundaryFailDraw = 0, hdrDraws = 0;
     VkDeviceSize hdrImageBudget = 512ull * 1024 * 1024;
     void AbortHdr(const char* reason) {
@@ -2155,10 +2158,20 @@ void CGxDeviceVulkan::SceneEndWorld() {
         GxVulkan::CopyWorldImage(state.command, state.worldDepth.image, state.depth.image,
             VK_IMAGE_ASPECT_DEPTH_BIT, state.worldRect);
     else state.PublishWorldDepth(state.depth.image);
+#ifdef WOWDECOMP_VULKAN_TESTING
+    state.completedWorldTest={uint32_t(state.hdrActive && !state.hdrAborted),uint32_t(state.temporalActive),
+        state.renderRect.extent.width,state.renderRect.extent.height};
+#endif
     state.worldActive = state.temporalActive = state.hdrActive = false;
     state.motionOwner = nullptr; state.stableVertices = false;
 }
+#ifdef WOWDECOMP_VULKAN_TESTING
+std::array<uint32_t,4> CGxDeviceVulkan::SceneWorldTestCompletedFrame() const { return m_native->completedWorldTest; }
+#endif
 void CGxDeviceVulkan::SceneClear(uint32_t mask, CImVector colour) {
+#ifdef WOWDECOMP_VULKAN_TESTING
+    m_native->completedWorldTest={};
+#endif
     auto& state = *m_native;
     if (!m_context || !state.BeginFrame()) return;
     state.BeginPass();
@@ -2320,9 +2333,7 @@ void CGxDeviceVulkan::IShaderCreate(CGxShader* shader) {
         m_native->shaders.insert_or_assign(shader, NativeShader{m_native->nextShader++, std::move(recovered.reflection), std::move(code)});
         auto& native = m_native->shaders.at(shader);
         native.inputFog = shader->m_target == GxSh_Pixel && GxVulkan::ShaderUsesInputLocation(native.code, 10);
-        if (shader->m_target == GxSh_Vertex)
-            for (int i = 0; i < native.reflection->output_count; ++i)
-                native.outputFog |= native.reflection->outputs[i].usage == MOJOSHADER_USAGE_FOG;
+        native.outputFog = shader->m_target == GxSh_Vertex && GxVulkan::ShaderUsesOutputLocation(native.code, 10);
         shader->m_apiSpecific = &native; shader->m_valid = 1;
     } catch (const std::exception& error) {
         CGxDevice::Log("Vulkan/Slang shader: %s", error.what());

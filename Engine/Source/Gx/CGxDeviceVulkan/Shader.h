@@ -32,6 +32,7 @@ std::string RecoverSlangSource(const void* bytecode, size_t size);
 std::string ShaderOutputBoundary(std::string source, bool decode = true);
 // Pair linking may omit an unused scalar FOG export, without changing arithmetic.
 bool ShaderUsesInputLocation(const std::vector<uint32_t>& code, uint32_t location);
+bool ShaderUsesOutputLocation(const std::vector<uint32_t>& code, uint32_t location);
 std::string PruneVertexFogOutput(std::string source);
 RecoveredShader RecoverFoglessSlangShader(const void* bytecode, size_t size, bool temporal);
 // Optional motion variant: previous packed vertex registers at set1/binding1,

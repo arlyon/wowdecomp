@@ -68,6 +68,8 @@ int main() {
         Check(GxVulkan::ShaderUsesInputLocation(alternate,26),"Unknown decoration encoding certified absence");
         auto outputFog=inputFog;outputFog.back()=3;
         Check(!GxVulkan::ShaderUsesInputLocation(outputFog,10),"Output mistaken for fragment input");
+        Check(GxVulkan::ShaderUsesOutputLocation(outputFog,10),"Actual output interface missed");
+        Check(!GxVulkan::ShaderUsesOutputLocation(inputFog,10),"Input mistaken for output");
         auto malformed=inputFog;malformed.pop_back();
         Reject([&]{GxVulkan::ShaderUsesInputLocation(malformed,10);});
         const std::string fogSource="struct main_Output { [[vk::location(10)]] float m_oFog : FOG; };\n"
@@ -75,6 +77,9 @@ int main() {
         const auto fogless=GxVulkan::PruneVertexFogOutput(fogSource);
         Check(fogless.find("location(10)")==std::string::npos && fogless.find("float gx_unusedFog;")!=std::string::npos &&
             fogless.find("oFog = 1;")!=std::string::npos,"Unused FOG pruning changed arithmetic or retained export");
+        const std::string padding="struct main_Output { [[vk::location(10)]] float m_gx_fog : FOG; };\n";
+        Check(GxVulkan::PruneVertexFogOutput(padding).find("m_gx_fog")==std::string::npos,"Unused generated FOG padding retained");
+        Reject([&]{GxVulkan::PruneVertexFogOutput(padding+"output.m_gx_fog = 1;");});
         Reject([&]{GxVulkan::PruneVertexFogOutput("unexpected ABI");});
         Reject([&]{GxVulkan::PruneVertexFogOutput(fogSource+"\noutput.m_oFog = 2;");});
         using namespace GxVulkan;

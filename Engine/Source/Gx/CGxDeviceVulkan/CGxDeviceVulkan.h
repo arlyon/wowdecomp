@@ -31,6 +31,8 @@ public:
     std::array<uint64_t,4> SceneHdrTestLutState() const;
     std::array<uint64_t,8> SceneHdrTestLutMemory() const;
     bool SceneHdrTestValidationClean() const;
+    // Completed world boundary: HDR published, AA resolved, render width/height.
+    std::array<uint32_t,4> SceneWorldTestCompletedFrame() const;
     void SceneHdrTestLimits(uint32_t slots, uint64_t budget, uint32_t draw);
 #endif
     bool SceneHdrSupported() const override;
