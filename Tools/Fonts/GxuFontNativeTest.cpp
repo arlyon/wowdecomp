@@ -101,6 +101,16 @@ int main(int argc, char** argv) {
             Require(ReadCoverage(device) > coverage, "production shadow geometry uses native font shader");
             device.ScenePresent();
             GxuFontRemoveShadow(string);
+            if (device.SceneTemporalSupported()) {
+                for (int frame = 0; frame < 2; ++frame) {
+                    device.SceneClear(3, CImVector(32,48,64,255));
+                    Require(device.SceneBeginWorld(true, 17 + fontFlags), "begin temporal font scope");
+                    GxuFontRenderBatch(batch);
+                    device.SceneEndWorld();
+                    Require(ReadCoverage(device) == coverage, "reactive MSDF text changed temporal/native coverage");
+                    device.ScenePresent();
+                }
+            }
             if (fontFlags == 8) {
                 unsigned cached = 0;
                 FT_Face ft = FontFaceGetFace(face->m_fontFaceHandle);

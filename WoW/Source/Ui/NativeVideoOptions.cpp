@@ -1,9 +1,19 @@
 #include "NativeVideoOptions.h"
 #include "Engine/Source/Gx/DeviceSelection.h"
+#include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+#include "Engine/Source/Gx/Gx.h"
 #include "Engine/Source/FrameScript/FrameScript.h"
 #include "NativeVideoOptionsSource.h"
 
 namespace {
+int NativeTemporalSupported(lua_State* state) {
+    lua_pushboolean(state, g_theGxDevicePtr && g_theGxDevicePtr->SceneTemporalSupported());
+    return 1;
+}
+int NativeSceneScaleSupported(lua_State* state) {
+    lua_pushboolean(state, g_theGxDevicePtr && g_theGxDevicePtr->SceneRenderScaleSupported());
+    return 1;
+}
 int NativeGraphicsDevices(lua_State* state) {
     const auto& selection = GxGetDeviceSelection();
     const auto text = [&](const char* key, const std::string& value) {
@@ -43,5 +53,7 @@ int NativeGraphicsDevices(lua_State* state) {
 void InstallNativeVideoOptions() {
     // Run only after the original FrameXML has passed its normal signature check.
     FrameScript_RegisterFunction("GetNativeGraphicsDevices", NativeGraphicsDevices);
+    FrameScript_RegisterFunction("IsNativeTemporalAASupported", NativeTemporalSupported);
+    FrameScript_RegisterFunction("IsNativeSceneScalingSupported", NativeSceneScaleSupported);
     FrameScript_Execute(nativeVideoOptionsSource, "NativeVideoOptions", nullptr);
 }

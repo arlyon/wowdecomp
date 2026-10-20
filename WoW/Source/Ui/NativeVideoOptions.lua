@@ -150,6 +150,91 @@ do
     VideoOptionsPanel_OnLoad(devices, okay, cancel, defaults, refresh)
 end
 
+-- The UI remains at native resolution, independently of the 3D scene.
+do
+    local panel = CreateFrame("Frame", "NativeLandscapeVideoPanel", VideoOptionsFramePanelContainer)
+    panel.name = "Scene & AA"
+    panel.controls = {}
+    panel:Hide()
+    panel:SetAllPoints(VideoOptionsFramePanelContainer)
+    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("Scene Resolution & Anti-Aliasing")
+    local description = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    description:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -12)
+    description:SetWidth(330)
+    description:SetJustifyH("LEFT")
+    description:SetText("Scene resolution affects only the 3D world. UI and text stay native. Temporal AA is experimental and off by default; shimmer and cost remain under evaluation.")
+    local scale = CreateFrame("Slider", "NativeSceneScaleSlider", panel, "OptionsSliderTemplate")
+    scale:SetPoint("TOPLEFT", 24, -128)
+    scale:SetWidth(290)
+    scale:SetMinMaxValues(50, 100)
+    scale:SetValueStep(5)
+    _G.NativeSceneScaleSliderText:SetText("3D Scene Resolution")
+    _G.NativeSceneScaleSliderLow:SetText("50%")
+    _G.NativeSceneScaleSliderHigh:SetText("Native")
+    scale.tooltipText = "50% to 100% world resolution, without changing the UI. Independent of temporal AA."
+    local scaleText = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    scaleText:SetPoint("TOP", scale, "BOTTOM", 0, -16)
+    local temporal = CreateFrame("CheckButton", "NativeTemporalAACheck", panel, "UICheckButtonTemplate")
+    temporal:SetPoint("TOPLEFT", 16, -210)
+    temporal.tooltipText = "Experimental temporal anti-aliasing. Defaults off. Unsupported devices retain the existing raster path."
+    local label = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    label:SetPoint("LEFT", temporal, "RIGHT", 2, 0)
+    label:SetText("Temporal Anti-Aliasing (Experimental)")
+    local note = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    note:SetPoint("TOPLEFT", 24, -266)
+    note:SetWidth(320)
+    note:SetJustifyH("LEFT")
+    local originalScale, pendingScale, originalAA, pendingAA = 1, 1, 0, 0
+    local updating = false
+    local function show()
+        updating = true
+        local scaling, aa = IsNativeSceneScalingSupported(), IsNativeTemporalAASupported()
+        scale:SetValue(pendingScale * 100)
+        scaleText:SetText(scaling and string.format("%.0f%% scene resolution; native UI", pendingScale * 100) or "Scene scaling unavailable on this renderer")
+        if scaling then scale:Enable() else scale:Disable() end
+        temporal:SetChecked(aa and pendingAA == 1)
+        if aa then temporal:Enable() else temporal:Disable() end
+        note:SetText(aa and "Experimental quality/performance. Apply or Okay saves; Cancel restores; no reload needed." or "Temporal AA unavailable on this renderer. Existing raster rendering is retained.")
+        updating = false
+    end
+    local function refresh()
+        originalScale = tonumber(GetCVar("nativeSceneScale")) or 1
+        originalAA = tonumber(GetCVar("nativeAA")) or 0
+        pendingScale, pendingAA = originalScale, originalAA
+        show()
+    end
+    local function okay()
+        SetCVar("nativeSceneScale", tostring(IsNativeSceneScalingSupported() and pendingScale or 1))
+        SetCVar("nativeAA", tostring(IsNativeTemporalAASupported() and pendingAA or 0))
+        refresh()
+    end
+    local function cancel()
+        pendingScale, pendingAA = originalScale, originalAA
+        show()
+    end
+    local function defaults()
+        pendingScale, pendingAA = 1, 0
+        show()
+        VideoOptionsFrameApply:Enable()
+    end
+    scale:SetScript("OnValueChanged", function(self, value)
+        if updating or not IsNativeSceneScalingSupported() then return end
+        pendingScale = math.max(50, math.min(100, math.floor(value / 5 + 0.5) * 5)) / 100
+        show()
+        VideoOptionsFrameApply:Enable()
+    end)
+    temporal:SetScript("OnClick", function(self)
+        if not IsNativeTemporalAASupported() then show(); return end
+        pendingAA = self:GetChecked() and 1 or 0
+        VideoOptionsFrameApply:Enable()
+    end)
+    panel:SetScript("OnShow", show)
+    VideoOptionsPanel_OnLoad(panel, okay, cancel, defaults, refresh)
+    refresh()
+end
+
 -- Visual lighting controls do not change server/gameplay time.
 do
     local lighting = CreateFrame("Frame", "NativeNightLightingPanel", VideoOptionsFramePanelContainer)

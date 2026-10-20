@@ -460,6 +460,9 @@ void CM2SceneRender::DrawBatch() {
     int32_t sharedVertices = this->m_curModel->m_shared->m_data->m_bones.m_count == 1 && (this->m_cache->m_flags & 0x40);
     this->SetBatchVertices(sharedVertices);
     CShaderEffect::SetShaders(this->m_curElement->m_vertexPermute, this->m_curElement->m_pixelPermute);
+    // Shared mesh buffers are not instance identities. CPU-skinned streams cannot
+    // reconstruct the previous pose from shader constants alone.
+    g_theGxDevicePtr->SceneSetMotionOwner(this->m_curModel, CShaderEffect::s_enableShaders || sharedVertices);
 
     CGxBatch batch;
     batch.m_primType = GxPrim_Triangles;
@@ -489,6 +492,7 @@ void CM2SceneRender::DrawBatch() {
         batch.m_maxIndex = this->m_curSkinSection->m_vertexCount - 1;
         g_theGxDevicePtr->Draw(&batch, 1);
     }
+    g_theGxDevicePtr->SceneSetMotionOwner(nullptr, false);
 }
 
 // VERIFY: eebe62d2 manual

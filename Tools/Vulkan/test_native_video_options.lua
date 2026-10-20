@@ -1,7 +1,11 @@
 -- Exercise the production settings script in the client's bundled Lua runtime.
-local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1"}, 0, 0
+local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1"}, 0, 0
 local methods = {}
 for _, key in ipairs({"SetAllPoints","SetWidth","SetJustifyH","SetMinMaxValues","SetValueStep"}) do methods[key] = function() end end
+function methods:Enable() self.enabled=true end
+function methods:Disable() self.enabled=false end
+function methods:SetChecked(value) self.checked=value end
+function methods:GetChecked() return self.checked end
 function methods:GetValue() return self.value end
 function methods:SetValue(value)
     local changed = self.value ~= value
@@ -40,6 +44,9 @@ local menu={}
 function UIDropDownMenu_AddButton(info) table.insert(menu,info) end
 VideoOptionsFramePanelContainer={}
 VideoOptionsFrameApply={Enable=function() end}
+local scaleSupported, aaSupported = true, true
+function IsNativeSceneScalingSupported() return scaleSupported end
+function IsNativeTemporalAASupported() return aaSupported end
 function GetCVar(name) assert(saved[name],"Unexpected feature CVar: "..name);return saved[name] end
 function SetCVar(name,value) assert(saved[name]);saved[name]=value;writes=writes+1 end
 function VideoOptionsPanel_OnLoad(panel,okay,cancel,defaults,refresh)
@@ -67,7 +74,7 @@ display.okay=apply;display.cancel=apply
 display.default=function() error("Legacy resolution defaults invoked") end
 function VideoOptionsPanel_Default(self) for _,v in ipairs(self.controls) do v:SetValue(v.defaultValue) end end
 loadProduction()()
-assert(categories==2 and writes==0 and modeWrites==0,"Installation changed settings or installed unavailable features")
+assert(categories==3 and writes==0 and modeWrites==0,"Installation changed settings or installed unavailable features")
 assert(resolution.hidden and refresh.hidden and resolution.newValue==nil and refresh.newValue==nil)
 assert(#display.controls==5 and display.controls[1]==samples and display.controls[2]==ui and display.controls[3]==vsync and display.controls[4]==window and display.controls[5]==gamma)
 assert(samples.point[2]==display and vsync.point[2]==samples and ui.point[2]==display)
@@ -95,8 +102,8 @@ snapshot.backendOverride="vulkan";snapshot.adapterOverride=identity;snapshot.loa
 renderer.refresh()
 local status=renderer.fontStrings[#renderer.fontStrings].text
 assert(status:find("WOWDECOMP_GX_BACKEND",1,true) and status:find("Loader-filtered",1,true) and status:find("Recovery",1,true))
-loadProduction()();assert(categories==2,"Duplicate installation")
-assert(not NativeLandscapeVideoPanel and not NativeHdrVideoPanel and not NativeRayTracedShadowsCheck,"Unimplemented graphics features exposed")
+loadProduction()();assert(categories==3,"Duplicate installation")
+assert(not NativeHdrVideoPanel and not NativeRayTracedShadowsCheck,"Unimplemented graphics features exposed")
 local lighting=frames.NativeNightLightingPanel
 local darkness=frames.NativeNightDarknessSlider
 local clock=frames.NativeLocalTimePreviewSlider
@@ -114,3 +121,21 @@ lighting.default();lighting.okay();assert(saved.nightDarkness=="0" and saved.loc
 darkness:SetValue(500);clock:SetValue(100);lighting.okay();assert(saved.nightDarkness=="100" and saved.localTimePreview=="24")
 darkness:SetValue(-20);clock:SetValue(-20);lighting.okay();assert(saved.nightDarkness=="0" and saved.localTimePreview=="-1")
 saved.localTimePreview="12.5";lighting.refresh();assert(clock:GetValue()==12.5,"External fractional preview lost")
+local scene=frames.NativeLandscapeVideoPanel
+local scale=frames.NativeSceneScaleSlider
+local aa=frames.NativeTemporalAACheck
+assert(scale:GetValue()==100 and not aa:GetChecked(),"Scene scale or AA default changed")
+oldWrites=writes;scale:SetValue(75);aa:SetChecked(true);aa.scripts.OnClick(aa);scene.scripts.OnShow()
+assert(writes==oldWrites and scale:GetValue()==75 and aa:GetChecked(),"Scene settings applied early or lost staging")
+scene.cancel();assert(scale:GetValue()==100 and not aa:GetChecked() and writes==oldWrites)
+scale:SetValue(75);aa:SetChecked(true);aa.scripts.OnClick(aa);scene.okay()
+assert(saved.nativeSceneScale=="0.75" and saved.nativeAA=="1")
+oldWrites=writes;scene.default();assert(writes==oldWrites and saved.nativeAA=="1","Scene defaults persisted early")
+scene.cancel();assert(scale:GetValue()==75 and aa:GetChecked())
+scene.default();scene.okay();assert(saved.nativeSceneScale=="1" and saved.nativeAA=="0")
+scale:SetValue(0);scene.okay();assert(saved.nativeSceneScale=="0.5")
+scale:SetValue(1000);scene.okay();assert(saved.nativeSceneScale=="1")
+saved.nativeAA="1";saved.nativeSceneScale="0.5";scaleSupported=false;aaSupported=false
+scene.refresh();assert(not scale.enabled and not aa.enabled and not aa:GetChecked(),"Unavailable scene features enabled")
+scale:SetValue(75);aa:SetChecked(true);aa.scripts.OnClick(aa);scene.okay()
+assert(saved.nativeAA=="0" and saved.nativeSceneScale=="1","Unsupported scene features persisted")

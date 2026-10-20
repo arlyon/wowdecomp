@@ -199,6 +199,16 @@ class CGxDevice {
     virtual void LogCrashInfo(char* buffer, uint32_t size);
     virtual void ScenePresent();
     virtual void SceneClear(uint32_t mask, CImVector color);
+    // Optional world-only target scope; unsupported backends keep their existing path.
+    virtual bool SceneBeginWorld(bool = false, uint64_t = 0) { return false; }
+    virtual void SceneEndWorld() {}
+    virtual bool SceneTemporalSupported() const { return false; }
+    virtual bool SceneRenderScaleSupported() const { return false; }
+    virtual bool SceneSetRenderScale(float scale) { return scale == 1.0f; }
+    virtual void ScenePauseWorldMotion() {}
+    virtual void SceneInvalidateHistory() {}
+    virtual void SceneSetMotionOwner(const void*, bool) {}
+    virtual void SceneForgetMotionOwner(const void*) {}
     virtual void XformSetProjection(const C44Matrix& matrix);
     virtual void XformSetView(const C44Matrix& matrix);
     virtual void Draw(CGxBatch* batch, int32_t count);

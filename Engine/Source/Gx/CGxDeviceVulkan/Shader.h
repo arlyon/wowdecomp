@@ -27,6 +27,15 @@ struct RecoveredShader {
 };
 RecoveredShader RecoverSlangShader(const void* bytecode, size_t size);
 std::string RecoverSlangSource(const void* bytecode, size_t size);
+// Optional motion variant: previous packed vertex registers at set1/binding1,
+// clip-space jitter at set1/binding2; pixel options at set3/binding2 are
+// (previous-pose validity, reactivity, previous viewport minDepth/maxDepth).
+// Motion target: xy=current-minus-previous top-down UV, z=previous device depth
+// ([0,1], -1 invalid), w=reactivity. Clear uncovered motion pixels to z=-1.
+// Preserves the raster colour/alpha-test ABI and writes motion/validity to target1.
+// Caller must match the same instance/geometry across frames. Unsnapshotted CPU
+// deformation or vertex textures require invalid history, not reused constants.
+RecoveredShader RecoverTemporalSlangShader(const void* bytecode, size_t size);
 
 struct ShaderPair {
     std::vector<uint32_t> vertex;

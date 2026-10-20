@@ -1,4 +1,6 @@
 #include "MapObjDef.h"
+#include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+#include "Engine/Source/Gx/Gx.h"
 #include "WoW/Source/LiquidSystem/Liquid.h"
 #include "WoW/Source/WorldClient/Map.h"
 #include "WoW/Source/WorldClient/MapLight.h"
@@ -476,6 +478,7 @@ void CMapObjDef::SetDoodadsEnabled(CMapObjDef* mapObjDef, int32_t enable, uint16
 // VERIFY: 3c60fcab manual
 // OFFSET: [0x007B3BE0, 0x007B3F00]
 CMapObjDefGroup::~CMapObjDefGroup() {
+    if (g_theGxDevicePtr) g_theGxDevicePtr->SceneForgetMotionOwner(this);
     if (this->m_liquidInstance) {
         this->m_liquidInstance->Release();
         this->m_liquidInstance = nullptr;

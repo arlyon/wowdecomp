@@ -6571,6 +6571,7 @@ void CM2Model::ProcessCallbacksRecursive() {
 // VERIFY: d96ccadd manual
 // OFFSET: 0x00832640
 CM2Model::~CM2Model() {
+    if (g_theGxDevicePtr) g_theGxDevicePtr->SceneForgetMotionOwner(this);
     CM2Model* model30 = this->m_model30;
 
     if (model30 && model30->m_refCount-- == 1) {

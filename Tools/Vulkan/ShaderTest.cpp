@@ -80,6 +80,26 @@ int main() {
         Validate(compiler.Compile(RecoverSlangSource(vertex, sizeof(vertex)), true));
         Validate(compiler.Compile(recoveredRelative, true));
         Validate(compiler.Compile(colourPointSource, true));
+        for (const auto& program : {std::vector<uint32_t>(std::begin(vertex),std::end(vertex)),
+             std::vector<uint32_t>(std::begin(relativeVertex),std::end(relativeVertex)),
+             std::vector<uint32_t>(std::begin(colourPointVertex),std::end(colourPointVertex))}) {
+            const auto temporal = RecoverTemporalSlangShader(program.data(),program.size()*4);
+            Check(temporal.source.find("gx_previousVertex") != std::string::npos,"Temporal shader omitted previous pose evaluation");
+            Validate(compiler.Compile(temporal.source,true));
+        }
+        const auto motionPixel = RecoverTemporalSlangShader(pixel,sizeof(pixel));
+        Check(motionPixel.source.find("clip(output.m_oC0.a - gxAlphaTest.x)") != std::string::npos,
+            "Temporal shader lost alpha-test discard");
+        Validate(compiler.Compile(motionPixel.source,false));
+        Check(RecoverSlangSource(pixel,sizeof(pixel))==recovered,"Temporal recovery mutated ordinary raster source");
+        constexpr uint32_t extraTarget[] = {0xFFFF0200,0x02000001,0x800F0800,0xA0E40000,
+            0x02000001,0x800F0801,0xA0E40000,0x0000FFFF};
+        Validate(compiler.Compile(RecoverSlangSource(extraTarget,sizeof(extraTarget)),false));
+        Reject([&] { RecoverTemporalSlangShader(extraTarget,sizeof(extraTarget)); });
+        constexpr uint32_t occupiedVarying[] = {0xFFFF0300,0x0200001F,0x80080005,0x900F0000,
+            0x02000001,0x800F0800,0x90E40000,0x0000FFFF};
+        Validate(compiler.Compile(RecoverSlangSource(occupiedVarying,sizeof(occupiedVarying)),false));
+        Reject([&] { RecoverTemporalSlangShader(occupiedVarying,sizeof(occupiedVarying)); });
         Reject([&] { compiler.Compile("this is not a shader", true); });
 #endif
 #if defined(WOWDECOMP_SLANG_TEST_DIR)
@@ -124,6 +144,11 @@ int main() {
 #if defined(WOWDECOMP_TEST_SLANG_COMPILER)
         const auto literalSource = RecoverSlangShader(withConstant.data(), withConstant.size() * 4);
         Validate(compiler.Compile(literalSource.source, true));
+        const auto temporalLiteral = RecoverTemporalSlangShader(withConstant.data(),withConstant.size()*4);
+        Validate(compiler.Compile(temporalLiteral.source,true));
+        Check(ShaderUniforms(*temporalLiteral.reflection,registers.data(),256)==
+            ShaderUniforms(*literalSource.reflection,registers.data(),256),
+            "Temporal variant changed packed registers or literal precedence");
         const auto hlslUniforms = ShaderUniforms(*literalSource.reflection, registers.data(), 256);
         Check(hlslUniforms[4] == 1 && hlslUniforms[5] == 2 && hlslUniforms[6] == 3 && hlslUniforms[7] == 4,
             "Generated Slang uniform packing lost immutable constants");

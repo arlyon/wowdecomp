@@ -5,7 +5,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 get_filename_component(WOWDECOMP_ROOT "../.." ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 include("${WOWDECOMP_ROOT}/cmake/MojoShader.cmake")
 add_library(GxVulkanShaders STATIC
-    "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shader.cpp")
+    "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shader.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/TemporalShader.cpp")
 target_include_directories(GxVulkanShaders PUBLIC "${WOWDECOMP_ROOT}")
 target_link_libraries(GxVulkanShaders PUBLIC GxMojoShader)
 add_executable(VulkanShaderTest ShaderTest.cpp)
@@ -28,6 +29,12 @@ endif ()
 enable_testing()
 add_test(NAME VulkanShader COMMAND VulkanShaderTest)
 set_tests_properties(VulkanShader PROPERTIES TIMEOUT 20)
+foreach (name TemporalHistory TemporalBackend)
+    add_executable(${name}Test ${name}Test.cpp)
+    target_include_directories(${name}Test PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_options(${name}Test PRIVATE -UNDEBUG)
+    add_test(NAME ${name} COMMAND ${name}Test)
+endforeach ()
 if (WOWDECOMP_SLANGC)
     include("${WOWDECOMP_ROOT}/cmake/SlangCompiler.cmake")
     target_sources(GxVulkanShaders PRIVATE "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Slang.cpp")
@@ -48,7 +55,21 @@ if (WOWDECOMP_SLANGC)
         add_dependencies(FixedFunctionTest GxSlangShaders)
         add_test(NAME FixedFunctionGpu COMMAND FixedFunctionTest)
         add_test(NAME BufferResidencyGpu COMMAND FixedFunctionTest --residency)
-        set_tests_properties(FixedFunctionGpu BufferResidencyGpu PROPERTIES TIMEOUT 30
+        add_test(NAME WorldTargetGpu COMMAND FixedFunctionTest --world-target)
+        add_test(NAME TemporalBackendGpu COMMAND FixedFunctionTest --temporal-backend)
+        add_test(NAME TemporalShaderGpu COMMAND FixedFunctionTest --temporal)
+        foreach (name TemporalResolve TemporalUpscale)
+            add_executable(${name}Test ${name}Test.cpp)
+            target_include_directories(${name}Test PRIVATE "${WOWDECOMP_ROOT}")
+            target_link_libraries(${name}Test PRIVATE Vulkan::Vulkan)
+            target_compile_definitions(${name}Test PRIVATE
+                WOWDECOMP_TEMPORAL_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+            add_dependencies(${name}Test GxSlangShaders)
+            add_test(NAME ${name}Gpu COMMAND ${name}Test)
+            set_tests_properties(${name}Gpu PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+                ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+        endforeach ()
+        set_tests_properties(FixedFunctionGpu BufferResidencyGpu WorldTargetGpu TemporalBackendGpu TemporalShaderGpu PROPERTIES TIMEOUT 30
             ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
     endif ()
 endif ()
@@ -73,6 +94,21 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
         Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
     add_dependencies(FfxAlignmentTest GxSlangShaders)
     add_test(NAME FfxAlignmentGpu COMMAND FfxAlignmentTest)
+    add_executable(TemporalLiveTest TemporalLiveTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp")
+    target_include_directories(TemporalLiveTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(TemporalLiveTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_link_libraries(TemporalLiveTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
+    add_dependencies(TemporalLiveTest GxSlangShaders)
+    add_test(NAME TemporalLiveGpu COMMAND TemporalLiveTest)
+    add_test(NAME TemporalLiveEngineeringGpu COMMAND TemporalLiveTest)
+    add_test(NAME TemporalUpscaleLiveGpu COMMAND TemporalLiveTest --upscale)
+    set_tests_properties(TemporalLiveGpu TemporalUpscaleLiveGpu PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+    set_tests_properties(TemporalLiveEngineeringGpu PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~;WOWDECOMP_VULKAN_WORLD_TARGET=1")
     set_tests_properties(FfxAlignmentGpu PROPERTIES TIMEOUT 90 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
 
     add_executable(WindowStartupTest WindowStartupTest.cpp WindowConsoleHost.cpp
@@ -117,6 +153,18 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
     add_dependencies(WindowSettingsTest GxSlangShaders)
     add_test(NAME WindowSettingsGpu COMMAND WindowSettingsTest)
     set_tests_properties(WindowSettingsGpu PROPERTIES TIMEOUT 60 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    add_executable(NativeSceneSettingsTest NativeSceneSettingsTest.cpp WindowConsoleHost.cpp
+        "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/WorldParam_CVar.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/ConsoleBase/ConsoleVar.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/ConsoleBase/ConsoleCommand.cpp")
+    target_include_directories(NativeSceneSettingsTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(NativeSceneSettingsTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1)
+    target_compile_options(NativeSceneSettingsTest PRIVATE -ffunction-sections -fdata-sections -UNDEBUG)
+    target_link_options(NativeSceneSettingsTest PRIVATE -Wl,--gc-sections)
+    target_link_libraries(NativeSceneSettingsTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
+    add_test(NAME NativeSceneSettings COMMAND NativeSceneSettingsTest)
 
     add_executable(NativeVideoOptionsTest NativeVideoOptionsTest.cpp)
     target_include_directories(NativeVideoOptionsTest PRIVATE "${WOWDECOMP_ROOT}")

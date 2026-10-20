@@ -17,6 +17,8 @@
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Gx/CGxTexFlags.h"
 #include "Engine/Source/Gx/Gx.h"
+#include "WoW/Source/WorldClient/WorldParam.h"
+#include "Engine/Source/ConsoleBase/ConsoleVar.h"
 #include "Engine/Source/Gxu/Gxu.h"
 #include "Engine/Source/Model2/M2Scene.h"
 #include "Engine/Source/Os/Time.h"
@@ -1721,6 +1723,19 @@ void CGWorldFrame::OnWorldRender() {
         this->m_namePlateFlags &= ~0x2;
     }
 
+    const float sceneScale = CWorldParam::cvar_nativeSceneScale ? CWorldParam::cvar_nativeSceneScale->m_floatValue : 1.f;
+    if (!g_theGxDevicePtr->SceneSetRenderScale(sceneScale) && sceneScale != 1.f) {
+        CGxDevice::Log("Independent scene scaling is unavailable; restoring native scene resolution.");
+        CWorldParam::cvar_nativeSceneScale->Set(1, true, true, false, true);
+        g_theGxDevicePtr->SceneSetRenderScale(1.f);
+    }
+    bool temporal = CWorldParam::cvar_nativeAA && CWorldParam::cvar_nativeAA->m_intValue != 0;
+    if (temporal && !g_theGxDevicePtr->SceneTemporalSupported()) {
+        CGxDevice::Log("Temporal AA is unavailable on this graphics device; using raster rendering.");
+        CWorldParam::cvar_nativeAA->Set(0, true, true, false, true);
+        temporal = false;
+    }
+    const bool separateWorld = g_theGxDevicePtr->SceneBeginWorld(temporal, reinterpret_cast<uintptr_t>(this->m_camera));
     CShaderEffect::UpdateProjMatrix();
     CWorld::Render(this->m_camera->m_position, this->m_elapsedSec);
     CMap::RenderFootprints();
@@ -1738,6 +1753,7 @@ void CGWorldFrame::OnWorldRender() {
     CM2Scene* scene = World::s_m2Scene;
 
     if (!scene) {
+        if (separateWorld) g_theGxDevicePtr->SceneEndWorld();
         return;
     }
 
@@ -1779,6 +1795,15 @@ void CGWorldFrame::OnWorldRender() {
     GxuSortDrawList(GxuCat_1, GxuSort_B2F, *World::GetCamPos());
     GxuFlushDrawList(GxuCat_1, *World::GetCamPos());
     DayNight::RenderGlares();
+    if (separateWorld) {
+        // FFX resets the viewport. Preserve the world overlay's pre-effect coordinates.
+        float left, right, bottom, top, nearDepth, farDepth;
+        GxXformViewport(left, right, bottom, top, nearDepth, farDepth);
+        g_theGxDevicePtr->ScenePauseWorldMotion();
+        FFX::Finish();
+        g_theGxDevicePtr->SceneEndWorld();
+        GxXformSetViewport(left, right, bottom, top, nearDepth, farDepth);
+    }
     PlayerNameUpdateLate();
 
     if (CWorld::enables & 0x20000000) {
@@ -1789,7 +1814,7 @@ void CGWorldFrame::OnWorldRender() {
     SmartScreenRectClearGrid(1);
     CGChatBubbleFrame::OnWorldRender(this);
     GxXformSetViewport(minX, maxX, minY, maxY, minZ, maxZ);
-    FFX::Finish();
+    if (!separateWorld) FFX::Finish();
     CVehiclePassenger_C::PostRenderUpdateAll();
 }
 

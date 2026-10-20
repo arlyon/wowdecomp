@@ -2,7 +2,11 @@
 #include "Engine/Source/Gx/CGxDeviceVulkan/Shader.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/Slang.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/ResidentBuffer.h"
+#include "Engine/Source/Gx/CGxDeviceVulkan/WorldTarget.h"
+#include "Engine/Source/Gx/CGxDeviceVulkan/TemporalBackend.h"
+#include <limits>
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +38,7 @@ struct Fixture {
     std::vector<GxVulkan::Buffer> retired;
     uint64_t residentFrame = 0, residentDrawUploads = 0;
     Buffer vertices{}, vertexUniform{}, pixelUniform{}, alphaUniform{}, staging{}, readback{}; Image target{};
+    Buffer previousUniform{}, jitterUniform{}, motionOptions{}, motionReadback{}; Image motionTarget{};
     ~Fixture() {
         if (device) {
             vkDeviceWaitIdle(device);
@@ -69,10 +74,11 @@ struct Fixture {
         Vk(vkAllocateMemory(device, &allocate, nullptr, &result.memory)); Vk(vkBindBufferMemory(device, result.handle, result.memory, 0));
         Vk(vkMapMemory(device, result.memory, 0, size, 0, &result.mapped)); return result;
     }
-    Image MakeImage(uint32_t size, VkImageUsageFlags usage) {
+    Image MakeImage(uint32_t size, VkImageUsageFlags usage,
+        VkFormat format = VK_FORMAT_R8G8B8A8_UNORM, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
         images.emplace_back(); auto& result = images.back();
         VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; info.imageType = VK_IMAGE_TYPE_2D;
-        info.format = VK_FORMAT_R8G8B8A8_UNORM; info.extent = {size, size, 1}; info.mipLevels = info.arrayLayers = 1;
+        info.format = format; info.extent = {size, size, 1}; info.mipLevels = info.arrayLayers = 1;
         info.samples = VK_SAMPLE_COUNT_1_BIT; info.tiling = VK_IMAGE_TILING_OPTIMAL; info.usage = usage;
         Vk(vkCreateImage(device, &info, nullptr, &result.handle));
         VkMemoryRequirements requirements; vkGetImageMemoryRequirements(device, result.handle, &requirements);
@@ -80,7 +86,7 @@ struct Fixture {
         allocate.memoryTypeIndex = Memory(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         Vk(vkAllocateMemory(device, &allocate, nullptr, &result.memory)); Vk(vkBindImageMemory(device, result.handle, result.memory, 0));
         VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO}; view.image = result.handle; view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view.format = info.format; view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        view.format = info.format; view.subresourceRange = {aspect, 0, 1, 0, 1};
         Vk(vkCreateImageView(device, &view, nullptr, &result.view)); return result;
     }
     void Begin() {
@@ -91,11 +97,12 @@ struct Fixture {
         Vk(vkEndCommandBuffer(command)); VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
         Vk(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE)); Vk(vkQueueWaitIdle(queue));
     }
-    void Barrier(VkImage image, VkImageLayout oldLayout, VkImageLayout next, VkAccessFlags src, VkAccessFlags dst, VkPipelineStageFlags before, VkPipelineStageFlags after) {
+    void Barrier(VkImage image, VkImageLayout oldLayout, VkImageLayout next, VkAccessFlags src, VkAccessFlags dst, VkPipelineStageFlags before, VkPipelineStageFlags after,
+        VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; barrier.image = image;
         barrier.oldLayout = oldLayout; barrier.newLayout = next; barrier.srcAccessMask = src; barrier.dstAccessMask = dst;
         barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barrier.subresourceRange = {aspect, 0, 1, 0, 1};
         vkCmdPipelineBarrier(command, before, after, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
     VkShaderModule Module(const char* name) {
@@ -109,7 +116,7 @@ struct Fixture {
         VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; info.codeSize = words.size() * 4; info.pCode = words.data();
         VkShaderModule module; Vk(vkCreateShaderModule(device, &info, nullptr, &module)); modules.push_back(module); return module;
     }
-    void Init() {
+    void Init(bool temporal = false) {
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO}; app.apiVersion = VK_API_VERSION_1_1;
         VkInstanceCreateInfo create{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; create.pApplicationInfo = &app;
         Vk(vkCreateInstance(&create, nullptr, &instance));
@@ -141,6 +148,15 @@ struct Fixture {
         auto base = MakeImage(16, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
         auto mask = MakeImage(16, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
         target = MakeImage(64, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        if (temporal) {
+            previousUniform = MakeBuffer(sizeof(VertexConstants),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+            jitterUniform = MakeBuffer(16,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+            motionOptions = MakeBuffer(16,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+            motionReadback = MakeBuffer(64*64*16,VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            motionTarget = MakeImage(64,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,VK_FORMAT_R32G32B32A32_SFLOAT);
+            std::memset(previousUniform.mapped,0,sizeof(VertexConstants));
+            std::memset(jitterUniform.mapped,0,16); std::memset(motionOptions.mapped,0,16);
+        }
         auto* texels = static_cast<uint8_t*>(staging.mapped);
         for (int y = 0; y < 16; ++y) for (int x = 0; x < 16; ++x) {
             const int offset = (y * 16 + x) * 4; texels[offset] = 128; texels[offset + 1] = 64; texels[offset + 2] = 32; texels[offset + 3] = 128;
@@ -163,11 +179,16 @@ struct Fixture {
             std::vector<VkDescriptorSetLayoutBinding> bindings;
             if (i == 1 || i == 3) bindings.push_back({0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, i == 1 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
             if (i == 3) bindings.push_back({1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+            if (temporal && i == 1) {
+                bindings.push_back({1,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT,nullptr});
+                bindings.push_back({2,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT,nullptr});
+            }
+            if (temporal && i == 3) bindings.push_back({2,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr});
             if (i == 2) for (unsigned slot = 0; slot < 8; ++slot) bindings.push_back({slot, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
             VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; info.bindingCount = static_cast<uint32_t>(bindings.size()); info.pBindings = bindings.data();
             Vk(vkCreateDescriptorSetLayout(device, &info, nullptr, &setLayouts[i]));
         }
-        const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8}};
+        const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, temporal ? 6u : 3u}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8}};
         VkDescriptorPoolCreateInfo descriptors{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; descriptors.maxSets = 4; descriptors.poolSizeCount = 2; descriptors.pPoolSizes = sizes;
         Vk(vkCreateDescriptorPool(device, &descriptors, nullptr, &descriptorPool));
         VkDescriptorSetAllocateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; set.descriptorPool = descriptorPool; set.descriptorSetCount = 4; set.pSetLayouts = setLayouts.data();
@@ -176,18 +197,34 @@ struct Fixture {
         std::array<VkDescriptorImageInfo, 8> textures{}; std::vector<VkWriteDescriptorSet> writes;
         for (unsigned i = 0; i < 3; ++i) { VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; write.dstSet = sets[i == 0 ? 1 : 3]; write.dstBinding = i == 2 ? 1 : 0; write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; write.pBufferInfo = &uniform[i]; writes.push_back(write); }
         for (unsigned i = 0; i < 8; ++i) { textures[i] = {sampler, i == 1 ? mask.view : base.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; write.dstSet = sets[2]; write.dstBinding = i; write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; write.pImageInfo = &textures[i]; writes.push_back(write); }
+        if (temporal) {
+            const VkDescriptorBufferInfo extra[] = {{previousUniform.handle,0,sizeof(VertexConstants)},
+                {jitterUniform.handle,0,16},{motionOptions.handle,0,16}};
+            for (unsigned i = 0; i < 3; ++i) {
+                VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; write.dstSet = sets[i == 2 ? 3 : 1];
+                write.dstBinding = i == 0 ? 1 : 2; write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; write.pBufferInfo = &extra[i];
+                vkUpdateDescriptorSets(device,1,&write,0,nullptr);
+            }
+        }
         vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         VkAttachmentDescription attachment{}; attachment.format = VK_FORMAT_R8G8B8A8_UNORM; attachment.samples = VK_SAMPLE_COUNT_1_BIT;
         attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         VkAttachmentReference reference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}; VkSubpassDescription subpass{}; subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; subpass.colorAttachmentCount = 1; subpass.pColorAttachments = &reference;
-        VkRenderPassCreateInfo render{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO}; render.attachmentCount = 1; render.pAttachments = &attachment; render.subpassCount = 1; render.pSubpasses = &subpass;
+        std::array<VkAttachmentDescription,2> attachments{attachment,attachment};
+        attachments[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        const VkAttachmentReference references[] = {reference,{1,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
+        const uint32_t targetCount = temporal ? 2 : 1;
+        subpass.colorAttachmentCount = targetCount; subpass.pColorAttachments = references;
+        VkRenderPassCreateInfo render{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO}; render.attachmentCount = targetCount; render.pAttachments = attachments.data(); render.subpassCount = 1; render.pSubpasses = &subpass;
         Vk(vkCreateRenderPass(device, &render, nullptr, &pass));
-        VkFramebufferCreateInfo frame{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; frame.renderPass = pass; frame.attachmentCount = 1; frame.pAttachments = &target.view; frame.width = frame.height = 64; frame.layers = 1;
+        const VkImageView views[] = {target.view,motionTarget.view};
+        VkFramebufferCreateInfo frame{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; frame.renderPass = pass; frame.attachmentCount = targetCount; frame.pAttachments = views; frame.width = frame.height = 64; frame.layers = 1;
         Vk(vkCreateFramebuffer(device, &frame, nullptr, &framebuffer));
         VkPipelineLayoutCreateInfo pipelineLayout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pipelineLayout.setLayoutCount = 4; pipelineLayout.pSetLayouts = setLayouts.data(); Vk(vkCreatePipelineLayout(device, &pipelineLayout, nullptr, &layout));
-        SetShaders(Module("fixed.vert.spv"), Module("fixed.frag.spv"));
+        if (!temporal) SetShaders(Module("fixed.vert.spv"), Module("fixed.frag.spv"));
     }
-    void SetShaders(VkShaderModule vertex, VkShaderModule pixel, bool legacyVertex = false) {
+    void SetShaders(VkShaderModule vertex, VkShaderModule pixel, bool legacyVertex = false, uint32_t attributeMask = ~0u, bool subviewport = false) {
         if (pipeline) { vkDestroyPipeline(device, pipeline, nullptr); pipeline = VK_NULL_HANDLE; }
         VkPipelineShaderStageCreateInfo stages[2]{};
         for (int i = 0; i < 2; ++i) { stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stages[i].stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT; stages[i].module = i ? pixel : vertex; stages[i].pName = "main"; }
@@ -199,14 +236,18 @@ struct Fixture {
             for (auto attribute : attributes) if (attribute.location == 0 || attribute.location == 4 || attribute.location == 7) used.push_back(attribute);
             attributes = used;
         }
+        attributes.erase(std::remove_if(attributes.begin(),attributes.end(),[&](const auto& attribute) {
+            return !(attributeMask & (1u << attribute.location));
+        }),attributes.end());
         VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO}; input.vertexBindingDescriptionCount = 1; input.pVertexBindingDescriptions = &binding; input.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size()); input.pVertexAttributeDescriptions = attributes.data();
         VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        VkViewport viewport{0,0,64,64,0,1}; VkRect2D scissor{{0,0},{64,64}};
+        VkViewport viewport = subviewport ? VkViewport{16,48,32,-32,0,1} : VkViewport{0,motionTarget.handle ? 64.f : 0.f,64,motionTarget.handle ? -64.f : 64.f,0,1}; VkRect2D scissor{{0,0},{64,64}};
         VkPipelineViewportStateCreateInfo view{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; view.viewportCount = view.scissorCount = 1; view.pViewports = &viewport; view.pScissors = &scissor;
         VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO}; raster.polygonMode = VK_POLYGON_MODE_FILL; raster.lineWidth = 1;
         VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         VkPipelineColorBlendAttachmentState colour{}; colour.colorWriteMask = 15;
-        VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; blend.attachmentCount = 1; blend.pAttachments = &colour;
+        const std::array<VkPipelineColorBlendAttachmentState,2> colours{colour,colour};
+        VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; blend.attachmentCount = motionTarget.handle ? 2 : 1; blend.pAttachments = colours.data();
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO}; info.stageCount = 2; info.pStages = stages; info.pVertexInputState = &input; info.pInputAssemblyState = &assembly;
         info.pViewportState = &view; info.pRasterizationState = &raster; info.pMultisampleState = &samples; info.pColorBlendState = &blend; info.layout = layout; info.renderPass = pass;
         Vk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline));
@@ -215,19 +256,191 @@ struct Fixture {
         std::memcpy(vertexUniform.mapped, &v, sizeof(v)); std::memcpy(pixelUniform.mapped, &p, sizeof(p));
         const float uv[6][2] = {{0,0},{1,0},{0,1},{0,1},{1,0},{1,1}}; Vertex data[6]{};
         for (unsigned i = 0; i < 6; ++i) { data[i].position[0] = uv[i][0] * 2 - 1; data[i].position[1] = uv[i][1] * 2 - 1; data[i].normal[2] = 1; data[i].colour = colour; for (auto& coordinate : data[i].uv) { coordinate[0] = uv[i][0]; coordinate[1] = uv[i][1]; } }
-        std::memcpy(vertices.mapped, data, sizeof(data)); Begin(); VkClearValue clear{};
+        std::memcpy(vertices.mapped, data, sizeof(data)); Begin(); std::array<VkClearValue,2> clear{};
+        clear[1].color.float32[2] = -1; // No geometry is not a valid previous-depth sample.
         const auto vertexBuffer = residentVertices ? resident.Resolve(device, memoryProperties, command,
             ++residentFrame, data, sizeof(data), retired, residentDrawUploads) : vertices.handle;
-        VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; begin.renderPass = pass; begin.framebuffer = framebuffer; begin.renderArea.extent = {64,64}; begin.clearValueCount = 1; begin.pClearValues = &clear;
+        VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; begin.renderPass = pass; begin.framebuffer = framebuffer; begin.renderArea.extent = {64,64}; begin.clearValueCount = motionTarget.handle ? 2 : 1; begin.pClearValues = clear.data();
         vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE); vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         const VkDeviceSize offset = 0; vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &offset);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 4, sets.data(), 0, nullptr); vkCmdDraw(command, 6, 1, 0, 0); vkCmdEndRenderPass(command);
         Barrier(target.handle, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy copy{}; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}; copy.imageExtent = {64,64,1};
         vkCmdCopyImageToBuffer(command, target.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.handle, 1, &copy);
+        if (motionTarget.handle) {
+            Barrier(motionTarget.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT);
+            vkCmdCopyImageToBuffer(command,motionTarget.handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,motionReadback.handle,1,&copy);
+        }
         VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER}; host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
         host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; host.buffer = readback.handle; host.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr); Submit();
+        std::array<VkBufferMemoryBarrier,2> hosts{host,host}; hosts[1].buffer = motionReadback.handle;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr,motionTarget.handle ? 2 : 1,hosts.data(),0,nullptr); Submit();
+    }
+    void TestTemporalShaders() {
+        constexpr uint32_t rigid[] = {0xFFFE0200,0x0200001F,0x80000000,0x900F0000,
+            0x03000002,0xC00F0000,0x90E40000,0xA0E40000,0x0000FFFF};
+        // Weighted bone translation plus a separate world/camera translation.
+        constexpr uint32_t skinned[] = {0xFFFE0200,0x0200001F,0x80000000,0x900F0000,
+            0x0200001F,0x80010005,0x900F0002,
+            0x03000005,0x800F0000,0xA0E40001,0x90000002,
+            0x03000002,0x800F0000,0x80E40000,0x90E40000,
+            0x03000002,0xC00F0000,0x80E40000,0xA0E40000,0x0000FFFF};
+        constexpr uint32_t pixel[] = {0xFFFF0200,0x02000001,0x800F0800,0xA0E40000,0x0000FFFF};
+        GxVulkan::SlangCompiler compiler;
+        const auto fragment = Module(compiler.Compile(GxVulkan::RecoverTemporalSlangShader(pixel,sizeof(pixel)).source,false));
+        SetShaders(Module(compiler.Compile(GxVulkan::RecoverTemporalSlangShader(rigid,sizeof(rigid)).source,true)),fragment,true,1);
+        VertexConstants v{}; PixelConstants p{}; p.options = {.2f,.4f,.6f,.8f};
+        auto* options = static_cast<float*>(motionOptions.mapped); options[0] = 1; options[1] = .35f; options[2] = 0; options[3] = 1;
+        const auto motion = [&](const std::array<float,4>& expected) {
+            const auto* actual = static_cast<const float*>(motionReadback.mapped)+(32*64+32)*4;
+            for (unsigned i = 0; i < 4; ++i)
+                Check(std::isfinite(actual[i]) && std::fabs(actual[i]-expected[i])<.00001f,"Rendered temporal motion/validity mismatch");
+        };
+        v.projection[0] = .25f; v.projection[1] = .1f;
+        Draw(v,p); Pixel(32,32,p.options); motion({.125f,-.05f,0,.35f});
+        static_cast<float*>(previousUniform.mapped)[2] = .4f;
+        Draw(v,p); motion({.125f,-.05f,.4f,.35f});
+        static_cast<float*>(previousUniform.mapped)[2] = 0;
+        options[0] = 0; Draw(v,p); motion({0,0,-1,.35f});
+        options[0] = 1;
+        static_cast<float*>(previousUniform.mapped)[3] = -2;
+        Draw(v,p); motion({0,0,-1,.35f});
+        static_cast<float*>(previousUniform.mapped)[3] = 0;
+        static_cast<float*>(previousUniform.mapped)[0] = std::numeric_limits<float>::quiet_NaN();
+        Draw(v,p); motion({0,0,-1,.35f});
+        static_cast<float*>(previousUniform.mapped)[0] = std::numeric_limits<float>::max();
+        static_cast<float*>(previousUniform.mapped)[3] = -.9999f;
+        Draw(v,p); motion({0,0,-1,.35f});
+        std::memset(previousUniform.mapped,0,sizeof(VertexConstants));
+        v = {}; auto* jitter = static_cast<float*>(jitterUniform.mapped); jitter[0] = .125f; jitter[1] = -.25f;
+        Draw(v,p); motion({0,0,0,.35f}); Pixel(1,32,{0,0,0,0}); Pixel(8,32,p.options);
+        std::memset(jitterUniform.mapped,0,16);
+        static_cast<float*>(alphaUniform.mapped)[0] = .9f;
+        Draw(v,p); Pixel(32,32,{0,0,0,0}); motion({0,0,-1,0});
+        static_cast<float*>(alphaUniform.mapped)[0] = 0;
+        SetShaders(Module(compiler.Compile(GxVulkan::RecoverTemporalSlangShader(skinned,sizeof(skinned)).source,true)),fragment,true,1u|(1u<<7));
+        v.projection[0] = .1f; v.projection[4] = .4f;
+        auto* previous = static_cast<float*>(previousUniform.mapped); previous[0] = -.05f; previous[4] = -.2f;
+        Draw(v,p); Pixel(32,32,p.options);
+        const float currentNdcX = 2*(32.5f/64)-1;
+        const float weight = (currentNdcX+1-.1f)/2.4f;
+        motion({.075f+.3f*weight,0,0,.35f});
+        std::cout << "Temporal GPU shaders: current/previous pose, weighted bone motion, jitter exclusion, alpha discard and invalid-history flags passed\n";
+    }
+    void TestTemporalBackend() {
+        constexpr uint32_t rigid[] = {0xFFFE0200,0x0200001F,0x80000000,0x900F0000,
+            0x03000002,0xC00F0000,0x90E40000,0xA0E40000,0x0000FFFF};
+        constexpr uint32_t pixel[] = {0xFFFF0200,0x02000001,0x800F0800,0xA0E40000,0x0000FFFF};
+        GxVulkan::SlangCompiler compiler;
+        const auto recoveredVS = Module(compiler.Compile(GxVulkan::TemporalViewportSource(
+            GxVulkan::RecoverTemporalSlangShader(rigid,sizeof(rigid)).source),true));
+        const auto recoveredPS = Module(compiler.Compile(GxVulkan::RecoverTemporalSlangShader(pixel,sizeof(pixel)).source,false));
+        const auto fixedVS = Module("fixed-temporal.vert.spv"), fixedPS = Module("fixed-temporal.frag.spv");
+        auto* options = static_cast<float*>(motionOptions.mapped);
+        options[0] = 1; options[1] = .25f; options[2] = .2f; options[3] = .8f;
+        auto* jitter = static_cast<float*>(jitterUniform.mapped);
+        const auto motion = [&](std::array<float,4> expected) {
+            const auto* actual = static_cast<float*>(motionReadback.mapped)+(32*64+32)*4;
+            for (unsigned i = 0; i < 4; ++i)
+                Check(std::isfinite(actual[i]) && std::fabs(actual[i]-expected[i]) < .00001f,
+                    "Backend fixed/recovered viewport motion mismatch");
+        };
+        for (bool subviewport : {false,true}) {
+            const float scale = subviewport ? .5f : 1.f;
+            jitter[0] = .03125f; jitter[1] = -.0625f; jitter[2] = jitter[3] = scale;
+            VertexConstants v{}; PixelConstants p{}; p.options = {.2f,.4f,.6f,.8f};
+            v.projection[0] = .25f; v.projection[1] = .125f; v.projection[2] = .3f;
+            std::memset(previousUniform.mapped,0,sizeof(VertexConstants));
+            static_cast<float*>(previousUniform.mapped)[2] = .4f;
+            SetShaders(recoveredVS,recoveredPS,true,1,subviewport);
+            Draw(v,p); Pixel(32,32,p.options); motion({.125f*scale,-.0625f*scale,.44f,.25f});
+            VertexConstants previous{};
+            previous.projection = Identity(); previous.projection[14] = .4f;
+            v = {}; v.projection = Identity(); v.view = v.normal = Identity();
+            v.projection[12] = .25f; v.projection[13] = .125f; v.projection[14] = .3f;
+            std::memcpy(previousUniform.mapped,&previous,sizeof(previous));
+            // Mixed authored VS/recovered PS keeps location 11/12 and material colour.
+            SetShaders(fixedVS,recoveredPS,false,~0u,subviewport);
+            Draw(v,p); Pixel(32,32,p.options); motion({.125f*scale,-.0625f*scale,.44f,.25f});
+            SetShaders(fixedVS,fixedPS,false,~0u,subviewport);
+            p = {}; Draw(v,p); Pixel(32,32,{1,1,1,1}); motion({.125f*scale,-.0625f*scale,.44f,.25f});
+            options[0] = 0; Draw(v,p); motion({0,0,-1,.25f}); options[0] = 1;
+            if (subviewport) Pixel(4,32,{0,0,0,0});
+        }
+        std::cout << "Backend temporal GPU: full/subviewport (nonzero origin), fixed/recovered/mixed stages, jitter exclusion, previous mapped depth and invalid ownership passed\n";
+    }
+    void TestWorldTargets() {
+        const auto portrait = GxVulkan::WorldViewportRect({712,1236}, 0,1,0,1);
+        Check(portrait.extent.width == 712 && portrait.extent.height == 1236, "World viewport used fixed aspect");
+        bool rejected = false;
+        try { GxVulkan::WorldViewportRect({64,64}, 0,1,0,std::numeric_limits<float>::quiet_NaN()); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        Check(rejected, "Non-finite world viewport accepted");
+        for (unsigned size : {16u,64u,32u,64u}) {
+            const size_t bytes = size * size * 4;
+            const auto usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            auto output = MakeImage(size,usage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+            auto scene = MakeImage(size,usage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+            auto outputDepth = MakeImage(size,usage | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,VK_FORMAT_D32_SFLOAT,VK_IMAGE_ASPECT_DEPTH_BIT);
+            auto sceneDepth = MakeImage(size,usage | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,VK_FORMAT_D32_SFLOAT,VK_IMAGE_ASPECT_DEPTH_BIT);
+            auto original = MakeBuffer(bytes,VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+            auto painted = MakeBuffer(bytes,VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+            auto oldDepth = MakeBuffer(bytes,VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+            auto newDepth = MakeBuffer(bytes,VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+            for (unsigned i = 0; i < size*size; ++i) {
+                static_cast<uint32_t*>(original.mapped)[i] = 0xFF000000u | (i*7919u & 0xFFFFFFu);
+                static_cast<uint32_t*>(painted.mapped)[i] = 0xFF2080F0u;
+                static_cast<float*>(oldDepth.mapped)[i] = .25f;
+                static_cast<float*>(newDepth.mapped)[i] = .5f + .25f * (i % size) / size;
+            }
+            const auto uploadImage = [&](Image image, VkImageAspectFlags aspect, Buffer data, bool first) {
+                Barrier(image.handle, first ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, first ? 0 : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,aspect);
+                VkBufferImageCopy copy{}; copy.imageSubresource = {aspect,0,0,1}; copy.imageExtent = {size,size,1};
+                vkCmdCopyBufferToImage(command,data.handle,image.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
+                Barrier(image.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL,VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,aspect);
+            };
+            const auto readImage = [&](Image image, VkImageAspectFlags aspect) {
+                Begin();
+                Barrier(image.handle,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_ACCESS_MEMORY_WRITE_BIT,
+                    VK_ACCESS_TRANSFER_READ_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,aspect);
+                VkBufferImageCopy copy{}; copy.imageSubresource = {aspect,0,0,1}; copy.imageExtent = {size,size,1};
+                vkCmdCopyImageToBuffer(command,image.handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,readback.handle,1,&copy);
+                Barrier(image.handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_GENERAL,VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,aspect);
+                VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+                host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+                host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                host.buffer = readback.handle; host.size = VK_WHOLE_SIZE;
+                vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host,0,nullptr);
+                Submit();
+            };
+            Begin(); uploadImage(output,VK_IMAGE_ASPECT_COLOR_BIT,original,true); uploadImage(outputDepth,VK_IMAGE_ASPECT_DEPTH_BIT,oldDepth,true);
+            Barrier(scene.handle,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL,0,VK_ACCESS_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            Barrier(sceneDepth.handle,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL,0,VK_ACCESS_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
+            const VkRect2D full{{0,0},{size,size}};
+            GxVulkan::CopyWorldImage(command,output.handle,scene.handle,VK_IMAGE_ASPECT_COLOR_BIT,full);
+            GxVulkan::CopyWorldImage(command,outputDepth.handle,sceneDepth.handle,VK_IMAGE_ASPECT_DEPTH_BIT,full); Submit();
+            readImage(scene,VK_IMAGE_ASPECT_COLOR_BIT); Check(std::memcmp(readback.mapped,original.mapped,bytes)==0,"World scope lost pre-existing colour");
+            readImage(sceneDepth,VK_IMAGE_ASPECT_DEPTH_BIT); Check(std::memcmp(readback.mapped,oldDepth.mapped,bytes)==0,"World scope lost pre-existing depth");
+            Begin(); uploadImage(scene,VK_IMAGE_ASPECT_COLOR_BIT,painted,false); uploadImage(sceneDepth,VK_IMAGE_ASPECT_DEPTH_BIT,newDepth,false);
+            const auto rect = GxVulkan::WorldViewportRect({size,size},.25f,.75f,.25f,.75f);
+            GxVulkan::CopyWorldImage(command,scene.handle,output.handle,VK_IMAGE_ASPECT_COLOR_BIT,rect);
+            GxVulkan::CopyWorldImage(command,sceneDepth.handle,outputDepth.handle,VK_IMAGE_ASPECT_DEPTH_BIT,rect); Submit();
+            for (unsigned depthCase = 0; depthCase < 2; ++depthCase) {
+                readImage(depthCase ? outputDepth : output,depthCase ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT);
+                for (unsigned y = 0; y < size; ++y) for (unsigned x = 0; x < size; ++x) {
+                    const auto i = y*size+x; const bool inside = x >= size/4 && x < size*3/4 && y >= size/4 && y < size*3/4;
+                    const auto data = depthCase ? (inside ? newDepth : oldDepth) : (inside ? painted : original);
+                    Check(std::memcmp(static_cast<uint8_t*>(readback.mapped)+i*4,static_cast<uint8_t*>(data.mapped)+i*4,4)==0,
+                        "World composite changed outside-viewport UI or lost colour/depth bits");
+                }
+            }
+        }
+        std::cout << "World targets: viewport conversion, invalid input, exact colour/depth copies, contained composite and recreated sizes passed\n";
     }
     void TestResidency() {
         uint64_t uploaded = 0;
@@ -327,8 +540,13 @@ std::array<float,4> Combine(const std::array<float,4>& tex, const std::array<flo
 }
 int main(int argc, char** argv) {
     try {
-        Fixture fixture; fixture.Init();
+        const bool backend = argc == 2 && std::strcmp(argv[1],"--temporal-backend") == 0;
+        const bool temporal = backend || (argc == 2 && std::strcmp(argv[1],"--temporal") == 0);
+        Fixture fixture; fixture.Init(temporal);
+        if (backend) { fixture.TestTemporalBackend(); return 0; }
+        if (temporal) { fixture.TestTemporalShaders(); return 0; }
         if (argc == 2 && std::strcmp(argv[1],"--residency") == 0) { fixture.TestResidency(); return 0; }
+        if (argc == 2 && std::strcmp(argv[1],"--world-target") == 0) { fixture.TestWorldTargets(); return 0; }
         VertexConstants v{}; PixelConstants p{};
         v.projection = v.view = v.normal = Identity(); for (auto& matrix : v.texture) matrix = Identity();
         fixture.Draw(v,p,0xFF0000FF); fixture.Pixel(32,32,{0,0,1,1});

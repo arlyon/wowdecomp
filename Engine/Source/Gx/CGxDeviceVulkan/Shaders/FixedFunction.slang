@@ -1,5 +1,9 @@
 // Unlit Gx fixed-function primitives. Preserve the D3D9 texture-stage contract
 // used by minimap masks, sky gradients, clouds and ordinary coloured UI geometry.
+#ifndef GX_TEMPORAL
+#define GX_TEMPORAL 0
+#endif
+
 struct VertexConstants
 {
     row_major float4x4 worldViewProjection;
@@ -24,6 +28,13 @@ struct PixelConstants
 [[vk::binding(6, 2)]] Sampler2D<float4> texture6;
 [[vk::binding(7, 2)]] Sampler2D<float4> texture7;
 
+#if GX_TEMPORAL
+[[vk::binding(1, 1)]] ConstantBuffer<VertexConstants> previousVertexConstants;
+// xy clip jitter; zw viewport extent / image extent (motion only).
+[[vk::binding(2, 1)]] cbuffer TemporalJitter { float4 temporalJitter; };
+[[vk::binding(2, 3)]] cbuffer TemporalOptions { float4 temporalOptions; };
+#endif
+
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
@@ -34,6 +45,10 @@ struct VertexInput
 struct VertexOutput
 {
     float4 position : SV_Position;
+#if GX_TEMPORAL
+    [[vk::location(11)]] float4 currentClip : TEXCOORD8;
+    [[vk::location(12)]] float4 previousClip : TEXCOORD9;
+#endif
     [[vk::location(0)]] float4 colour : COLOR0;
     [[vk::location(1)]] float4 secondaryColour : COLOR1;
     [[vk::location(2)]] float4 uv[8] : TEXCOORD0;
@@ -45,6 +60,13 @@ VertexOutput vertexMain(VertexInput input)
 {
     VertexOutput output = (VertexOutput)0;
     output.position = mul(float4(input.position, 1.0), vertexConstants.worldViewProjection);
+#if GX_TEMPORAL
+    output.currentClip = output.position;
+    output.previousClip = mul(float4(input.position, 1.0), previousVertexConstants.worldViewProjection);
+    output.currentClip.xy *= temporalJitter.zw;
+    output.previousClip.xy *= temporalJitter.zw;
+    output.position.xy += temporalJitter.xy * output.position.w;
+#endif
     output.colour = input.colour.bgra;
     float3 eyePosition = mul(float4(input.position, 1.0), vertexConstants.worldView).xyz;
     float3 eyeNormal = mul(float4(input.normal, 0.0), vertexConstants.normalTransform).xyz;
@@ -94,8 +116,14 @@ float4 combine(float4 texture, float4 current, float4 diffuse, int operation)
     }
 }
 
+#if GX_TEMPORAL
+struct TemporalOutput { float4 colour : SV_Target0; float4 motion : SV_Target1; };
+[shader("fragment")]
+TemporalOutput pixelMain(VertexOutput input)
+#else
 [shader("fragment")]
 float4 pixelMain(VertexOutput input) : SV_Target
+#endif
 {
     float4 colour = input.colour;
     [unroll] for (int i = 0; i < 8; ++i)
@@ -108,5 +136,20 @@ float4 pixelMain(VertexOutput input) : SV_Target
         colour.a = combine(texel, previous, input.colour, int(stage.z)).a;
     }
     clip(colour.a - pixelConstants.options.x);
+#if GX_TEMPORAL
+    TemporalOutput output;
+    output.colour = colour;
+    output.motion = float4(0, 0, -1, saturate(temporalOptions.y));
+    if (temporalOptions.x > 0 && input.currentClip.w > 0.00001 && input.previousClip.w > 0.00001 &&
+        all(isfinite(input.currentClip)) && all(isfinite(input.previousClip)))
+    {
+        float2 delta = input.currentClip.xy / input.currentClip.w - input.previousClip.xy / input.previousClip.w;
+        float depth = lerp(temporalOptions.z, temporalOptions.w, input.previousClip.z / input.previousClip.w);
+        if (all(isfinite(delta)) && all(abs(delta) <= 4) && isfinite(depth) && depth >= 0 && depth <= 1)
+            output.motion = float4(delta * float2(0.5, -0.5), depth, saturate(temporalOptions.y));
+    }
+    return output;
+#else
     return colour;
+#endif
 }

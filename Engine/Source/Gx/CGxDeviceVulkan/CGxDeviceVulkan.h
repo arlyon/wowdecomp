@@ -20,6 +20,15 @@ public:
     void XformSetProjection(const C44Matrix& matrix) override;
     void SceneClear(uint32_t mask, CImVector color) override;
     void ScenePresent() override;
+    bool SceneBeginWorld(bool temporal = false, uint64_t scene = 0) override;
+    void SceneEndWorld() override;
+    bool SceneTemporalSupported() const override;
+    bool SceneRenderScaleSupported() const override;
+    bool SceneSetRenderScale(float scale) override;
+    void ScenePauseWorldMotion() override;
+    void SceneInvalidateHistory() override;
+    void SceneSetMotionOwner(const void* owner, bool stableVertices) override;
+    void SceneForgetMotionOwner(const void* owner) override;
     void Draw(CGxBatch* batch, int32_t indexed) override;
     void IRsSendToHw(EGxRenderState which) override;
     void PoolSizeSet(CGxPool* pool, uint32_t size) override;
