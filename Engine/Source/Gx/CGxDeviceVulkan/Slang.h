@@ -11,9 +11,11 @@ class ShaderSourceFiles;
 struct ShaderOverride;
 struct ShaderBindings;
 struct CompiledShader;
+enum class MaintainedShaderVariant { Raster, Directional };
 struct ShaderCompileContext {
     std::shared_ptr<ShaderSourceFiles> files;
     std::string filename = "gx-shader.slang";
+    MaintainedShaderVariant variant = MaintainedShaderVariant::Raster;
 };
 // Owned by the renderer thread. Compilation sessions are released after each
 // shader; the global compiler session retains the shared standard library.
@@ -24,7 +26,7 @@ public:
     std::vector<uint32_t> Compile(const std::string& source, bool vertex, const ShaderCompileContext& context = {});
     // Maintained source never invokes the bytecode frontend. Its compiled layout
     // must satisfy the explicit full-register binding interface.
-    CompiledShader CompileMaintained(const ShaderOverride& source);
+    CompiledShader CompileMaintained(const ShaderOverride& source, MaintainedShaderVariant variant = MaintainedShaderVariant::Raster);
 private:
     std::vector<uint32_t> CompileProgram(const std::string& source, bool vertex, const ShaderCompileContext& context, ShaderBindings* bindings);
     struct State;

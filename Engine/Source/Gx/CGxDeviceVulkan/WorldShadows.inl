@@ -13,7 +13,7 @@ void CGxDeviceVulkan::State::RecordWorldShadowVisibility(){
     auto gpu=std::make_shared<ShadowGpuFrame>();gpu->device=device;gpu->source=shadowSource;
     gpu->releaseImage=[this](NativeImage& image){DestroyImage(image);};
     shadowRetired.push_back(gpu); // Keep failed/recorded allocations until fence too.
-    struct Triangle {float uv01[4],uv2OpacityThreshold[4];uint32_t flags[4];};
+    using Triangle=GxShadow::GpuTriangle;
     struct Uniform {float inverse[16],camera[4],light[4],depthRange[4];uint32_t rect[4],size[4];};
     static_assert(sizeof(Triangle)==48&&sizeof(Uniform)==144,"World visibility ABI");
     try {

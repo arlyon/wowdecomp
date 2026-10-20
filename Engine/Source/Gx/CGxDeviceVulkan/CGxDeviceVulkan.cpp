@@ -2286,6 +2286,7 @@ void CGxDeviceVulkan::SceneEndWorld() {
 }
 #ifdef WOWDECOMP_VULKAN_TESTING
 std::array<uint32_t,4> CGxDeviceVulkan::SceneWorldTestCompletedFrame() const { return m_native->completedWorldTest; }
+#include "DirectionalLightingTest.inl"
 bool CGxDeviceVulkan::SceneRayQueryTestReadback() {
     auto& state = *m_native;
     if (!state.device || !state.rayQueryCapabilities.Available() || !state.BeginFrame()) return false;

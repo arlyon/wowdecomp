@@ -65,11 +65,13 @@ ShaderPair LinkShaders(const MOJOSHADER_parseData& vertex,
 struct ShaderRegisterRange { int first = 0; size_t count = 0; };
 struct ShaderRegisterLiteral { int index = 0; std::array<float,4> value{}; };
 struct ShaderBindings {
+    uint32_t interfaceVersion = 1;
     std::vector<int> attributes;
     std::vector<int> samplers;
     std::vector<ShaderRegisterRange> registers;
     std::vector<ShaderRegisterLiteral> literals;
     bool previousRegisters = false, motionParameters = false;
+    bool directionalVisibility = false, shadowFrame = false;
 };
 struct CompiledShader {
     std::vector<uint32_t> code;

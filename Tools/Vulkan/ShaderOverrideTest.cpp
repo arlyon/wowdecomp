@@ -1,4 +1,5 @@
 #include "Engine/Source/Gx/CGxDeviceVulkan/ShaderOverride.h"
+#include "Engine/Source/Gx/CGxDeviceVulkan/SpirvNonUniform.h"
 #if defined(WOWDECOMP_TEST_SLANG_COMPILER)
 #include "Engine/Source/Gx/CGxDeviceVulkan/Slang.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/Shader.h"
@@ -22,6 +23,18 @@ struct Scratch {
 };
 }
 int main(){try {
+    const std::vector<uint32_t> rawModule={0x07230203,0x00010500,0,10,0,
+        (3u<<16)|71,4,5300,(3u<<16)|71,6,5300,
+        (3u<<16)|22,1,32,(2u<<16)|26,2,(4u<<16)|32,3,0,2,
+        (4u<<16)|61,2,5,4,(4u<<16)|61,1,7,6};
+    const auto qualified=QualifyNonUniformResourceLoads(rawModule);
+    Check(qualified.size()==rawModule.size()+3,"descriptor qualification missed resource load or tainted arithmetic");
+    Check(QualifyNonUniformResourceLoads(qualified)==qualified,"descriptor qualification is not idempotent");
+    Check(QualifyNonUniformResourceLoads({0x07230203,0x00010500,0,1,0})==std::vector<uint32_t>({0x07230203,0x00010500,0,1,0}),"empty qualification changed module");
+    Reject([&]{QualifyNonUniformResourceLoads({});});
+    auto broken=rawModule;broken[5]=0;Reject([&]{QualifyNonUniformResourceLoads(broken);});
+    broken=rawModule;broken.pop_back();Reject([&]{QualifyNonUniformResourceLoads(broken);});
+    broken=rawModule;broken[3]=5;Reject([&]{QualifyNonUniformResourceLoads(broken);});
     Scratch scratch;const auto root=scratch.path/"root";
     const uint32_t version=0xffff0300;
     const auto key=IdentifyShader(ShaderStage::Pixel,"Terrain:17",&version,sizeof(version));
@@ -89,6 +102,24 @@ int main(){try {
         "float4 main():SV_Target0{clip(1-threshold.x);return values[0];}");});
     Reject([&]{maintained(alpha+"[[vk::binding(17,2)]] Sampler2D<float4> image;\n"
         "float4 main():SV_Target0{clip(1-threshold.x);return image.Sample(float2(0,0));}");});
+    for(const auto* shared:{"ShadowCoverage.slang","DirectionalLighting.slang"})
+        fs::copy_file(fs::path(WOWDECOMP_TEST_SHARED_SHADERS)/shared,root/"shared"/shared);
+    const std::string directionalSource=registers+alpha+
+        "#include \"shared/DirectionalLighting.slang\"\n"
+        "float4 main():SV_Target0{float v=1;\n"
+        "#if GX_DIRECTIONAL_SHADOWS\n v=GxWorldSunVisibility(float3(0,0,0));\n#endif\n"
+        "float3 c=GxComposeLighting(values[0].xyz,values[1].xyz,values[2].xyz,values[3].xyz,values[4].xyz,v);clip(1-threshold.x);return float4(c,1);}";
+    Write(file,directionalSource);auto directional=ResolveShaderOverride(root,id);
+    const auto ordinary=compiler.CompileMaintained(*directional);
+    Check(!ordinary.bindings.directionalVisibility&&!ordinary.bindings.shadowFrame,"raster source unexpectedly requires ray capabilities");
+    const auto inlineProgram=compiler.CompileMaintained(*directional,MaintainedShaderVariant::Directional);
+    Check(inlineProgram.bindings.directionalVisibility&&inlineProgram.bindings.shadowFrame,"explicit inline directional interface was not reflected");
+    Reject([&]{compiler.CompileMaintained(*directional,static_cast<MaintainedShaderVariant>(99));});
+    Write(file,registers+alpha+"float4 main():SV_Target0{clip(1-threshold.x);return values[0];}");
+    auto missingDirectional=ResolveShaderOverride(root,id);
+    Reject([&]{compiler.CompileMaintained(*missingDirectional,MaintainedShaderVariant::Directional);});
+    Write(file,registers+alpha+"#include \"shared/ShadowCoverage.slang\"\nfloat4 main():SV_Target0{clip(1-threshold.x);return values[0];}");
+    auto unguarded=ResolveShaderOverride(root,id);Reject([&]{compiler.CompileMaintained(*unguarded);});
     ShaderIdentity vertexId{ShaderStage::Vertex,"Terrain","vs_3_0",0};
     const auto vertexFile=root/"vertex/vs_3_0/Terrain/0.slang";
     Write(vertexFile,"[[vk::binding(0,1)]] cbuffer Registers {float4 values[256];};\n"
@@ -97,6 +128,29 @@ int main(){try {
         "Output main(Input input){Output o;o.position=float4(input.position,1)+values[0];o.uv=input.uv;return o;}");
     auto selectedVertex=ResolveShaderOverride(root,vertexId);Check(bool(selectedVertex),"vertex source missing");
     Check(compiler.CompileMaintained(*selectedVertex).bindings.attributes==std::vector<int>({0,6}),"compiled vertex layout locations changed");
+    Write(vertexFile,"[[vk::binding(0,1)]] cbuffer Registers {float4 values[256];};\n"
+        "#include \"shared/DirectionalLighting.slang\"\n"
+        "float4 main([[vk::location(0)]] float3 p:POSITION):SV_Position{\n"
+        "#if GX_DIRECTIONAL_SHADOWS\np=GxShadowWorldPosition(p);\n#endif\nreturn float4(p,1)+values[0];}");
+    auto inlineVertex=ResolveShaderOverride(root,vertexId);
+    Check(compiler.CompileMaintained(*inlineVertex,MaintainedShaderVariant::Directional).bindings.shadowFrame,"directional vertex frame interface missing");
+    // Prove that neither fixed arrays nor a padded-but-wrong triangle record
+    // acquire runtime coverage permission merely by using the right binding.
+    std::ifstream sharedInput(fs::path(WOWDECOMP_TEST_SHARED_SHADERS)/"ShadowCoverage.slang");
+    const std::string sharedText((std::istreambuf_iterator<char>(sharedInput)),std::istreambuf_iterator<char>());
+    auto malformed=sharedText;auto editAt=malformed.find("gxShadowTextures[]");Check(editAt!=std::string::npos,"texture fixture anchor missing");
+    malformed.replace(editAt,std::string("gxShadowTextures[]").size(),"gxShadowTextures[1]");
+    Write(root/"shared/ShadowCoverage.slang",malformed);Write(file,directionalSource);
+    auto fixedArray=ResolveShaderOverride(root,id);Reject([&]{compiler.CompileMaintained(*fixedArray,MaintainedShaderVariant::Directional);});
+    malformed=sharedText;editAt=malformed.find("uint4 flags");Check(editAt!=std::string::npos,"coverage fixture anchor missing");
+    malformed.replace(editAt,std::string("uint4 flags").size(),"uint3 flags");
+    Write(root/"shared/ShadowCoverage.slang",malformed);auto wrongTriangle=ResolveShaderOverride(root,id);
+    Reject([&]{compiler.CompileMaintained(*wrongTriangle,MaintainedShaderVariant::Directional);});
+    Write(root/"shared/ShadowCoverage.slang",sharedText);
+    Write(vertexFile,"[[vk::binding(4,0)]] Sampler2D<float4> image;\n"
+        "float4 main([[vk::location(0)]] float3 p:POSITION):SV_Position{return float4(p,1)+image.SampleLevel(float2(0,0),0);}");
+    auto excessiveVertexSampler=ResolveShaderOverride(root,vertexId);
+    Reject([&]{compiler.CompileMaintained(*excessiveVertexSampler);});
 #endif
     fs::remove(file);fs::create_symlink(scratch.path/"outside.slang",file);
     Reject([&]{ResolveShaderOverride(root,id);});

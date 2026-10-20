@@ -3,11 +3,17 @@
 #include "ShadowCoverage.h"
 #include <array>
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <vector>
 class CGxTex;
 namespace GxShadow {
 enum class FrameResult { Disabled, Ready, Unavailable, PendingGeometry, PendingTexture, StalePose, InvalidGeometry, UnsupportedCoverage, AllocationFailed };
+// Explicit interface-v2 wire types, independent of CPU lighting/object layouts.
+struct alignas(16) GpuTriangle { float uv01[4],uv2OpacityThreshold[4];uint32_t flags[4]; };
+struct alignas(16) GpuDirectionalFrame { float values[7][4]; };
+static_assert(sizeof(GpuTriangle)==48&&offsetof(GpuTriangle,flags)==32,"Shared triangle coverage ABI");
+static_assert(sizeof(GpuDirectionalFrame)==112,"Directional frame ABI");
 struct Position { float xyz[3]; };
 struct CoverageVertex { float uv[4][2]{}; };
 struct Material {

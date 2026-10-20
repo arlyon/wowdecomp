@@ -40,7 +40,7 @@ The backend consumes one common binding/packing layout for both origins:
 
 | Stage | Descriptor interface |
 |---|---|
-| Vertex | Combined ordinary texture samplers at set 0, bindings 0–15 |
+| Vertex | Combined ordinary texture samplers at set 0, bindings 0–3 |
 | Vertex | Optional full float register file at set 1, binding 0: one `float4[256]` field, 4096 bytes |
 | Vertex motion | Previous full register file at set 1/binding 1; one float4 jitter block at binding 2 |
 | Pixel | Combined ordinary texture samplers at set 2, bindings 0–15 |
@@ -59,6 +59,42 @@ explicitly rather than smuggling resources through an unchecked binding.
 Compatibility source keeps its original sparse register packing and immutable
 DEF precedence. Maintained source explicitly exposes the full register file when
 needed; both are filled by the same layout-driven upload implementation.
+
+## Directional interface v2 (receiver integration in progress)
+
+`CompileMaintained(source, MaintainedShaderVariant::Directional)` compiles the
+same immutable selected source with `GX_DIRECTIONAL_SHADOWS=1`, the original
+stage in `GX_SHADER_VERTEX`, and SPIR-V 1.5. The default raster variant defines
+shadows as zero and retains SPIR-V 1.3 and interface v1. There is no second
+bytecode recovery or source-arithmetic reconstruction. V2 requires these exact
+additional shared bindings at set 4:
+
+| Binding | Resource |
+|---|---|
+| 0 (pixel) | Shared triangle acceleration structure |
+| 1 (pixel) | Read-only structured coverage buffer; 48-byte records, two float4s followed by uint4 |
+| 2 (both) | One `float4[7]` frame block, 112 bytes: four view-inverse rows, camera/region, world light/distance, bias/enabled/reserved |
+| 3 (pixel) | Runtime array of original combined 2D coverage samplers |
+
+The pixel variant must declare all four; vertex declares the frame block only.
+V1 rejects these resources. Reflection rejects incomplete bindings, fixed texture
+arrays and padded-but-incompatible coverage records. GPU wire types are explicit,
+not copies of CPU `CM2Lighting` or model objects.
+
+`shared/ShadowCoverage.slang` is the authored common query/coverage implementation
+used by the world diagnostic and the new inline receiver source interface.
+`shared/DirectionalLighting.slang` composes ambient, local, emission and the
+visibility-modulated directional diffuse/specular inputs explicitly. This source
+interface and its GPU fixture are **not yet production material receiver wiring
+or complete corpus acceptance**.
+
+The pinned compiler omits `NonUniform` on loaded sampled-image handles even when
+it qualifies the divergent descriptor access-chain. A bounded original-device
+fixture demonstrated repeat/clamp sampler aliasing on RADV. A shared SPIR-V
+backend pass qualifies only those resource loads, identically in runtime Slang
+compilation and authored kernel builds; it does not alter arithmetic, infer
+material meaning or reconstruct lighting. Regression checks include malformed
+modules, idempotence, unchanged scalar loads and divergent GPU sampler cases.
 
 ## Variants, failures and source freshness
 
@@ -81,7 +117,7 @@ still uses the selected shader; a fallback frame is not effect completion.
 Loaded entry/includes are immutable for that shader generation. Hot reload is
 not automatic: explicit shader recreation/reload obtains a new snapshot and a
 fresh process-local pipeline identity. Compiler profile, row-major options and
-interface v1 are fixed for that compiler instance; temporal/fog/output options
+the explicitly selected interface version belong to each compiled variant; temporal/fog/output options
 have generation-owned variant entries. No application-owned persisted shader
 cache exists (the GPU driver may maintain its own ordinary cache).
 Identical base SPIR-V from different source generations cannot alias an HDR

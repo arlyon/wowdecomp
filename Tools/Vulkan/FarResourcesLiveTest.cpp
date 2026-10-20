@@ -62,23 +62,25 @@ int main(int argc, char** argv) {
         const bool rayCapability = argc == 2 && std::strcmp(argv[1], "--ray-query-capability") == 0;
         const bool accelerationBuild = argc == 2 && std::strcmp(argv[1], "--acceleration-build") == 0;
         const bool accelerationQuery = argc == 2 && std::strcmp(argv[1], "--acceleration-query") == 0;
-        Check(argc == 1 || rayCapability || accelerationBuild || accelerationQuery, "unknown fixture mode");
+        const bool directionalQuery = argc == 2 && std::strcmp(argv[1], "--directional-query") == 0;
+        Check(argc == 1 || rayCapability || accelerationBuild || accelerationQuery || directionalQuery, "unknown fixture mode");
         Check(SDL_Init(SDL_INIT_VIDEO)==0,SDL_GetError());
         auto owner=std::make_unique<CGxDeviceVulkan>();auto& gx=*owner;
         g_theGxDevicePtr=&gx;CGxDevice& api=gx;
-        if (!rayCapability && !accelerationBuild && !accelerationQuery) {
+        if (!rayCapability && !accelerationBuild && !accelerationQuery && !directionalQuery) {
             gx.SceneFarTestAdmissionLimits(256*MiB,192*MiB,32*MiB);
             GxFar::SetFarCpuPressureForTesting(32*MiB);
             Check(gx.CGxDevice::SceneCreateFarResources(Request()).result==GxFarResourceResult::Unsupported,"non-native default manufactured FAR support");
         }
         CGxFormat format;format.m_window=1;format.m_maximize=0;format.m_size={320,240};
         Check(gx.DeviceCreate(static_cast<GxWindowProc>(nullptr),format)!=0,"device creation failed");gx.m_cursorVisible=0;
-        if (rayCapability || accelerationBuild || accelerationQuery) {
-            Check(accelerationQuery ? gx.SceneRayQueryTestReadback() : (accelerationBuild ? gx.SceneRayQueryTestAccelerationBuild() : gx.SceneRayQueryTestDeviceAddress()),
+        if (rayCapability || accelerationBuild || accelerationQuery || directionalQuery) {
+            Check(directionalQuery ? gx.SceneRayQueryTestDirectionalLighting() : accelerationQuery ? gx.SceneRayQueryTestReadback() : (accelerationBuild ? gx.SceneRayQueryTestAccelerationBuild() : gx.SceneRayQueryTestDeviceAddress()),
                 "required native acceleration capability/build/fence/admission unavailable or invalid");
             gx.DeviceDestroy(); Check(gx.SceneHdrTestValidationClean(), "Vulkan capability diagnostics emitted");
             g_theGxDevicePtr = nullptr; owner.reset(); SDL_Quit();
-            if (accelerationQuery) std::cout << "PASS original native AS query readback: hit/miss, both faces, t-min self exclusion and finite t-max; NOT material/world coverage\n";
+            if (directionalQuery) std::cout << "PASS shared GPU coverage and explicit directional-only composition: opaque/cutout/forced/noncaster, alpha equality, wrap/clamp, both faces, UV/opacity/geometry updates and light changes; NOT production-world receiver acceptance\n";
+            else if (accelerationQuery) std::cout << "PASS original native AS query readback: hit/miss, both faces, t-min self exclusion and finite t-max; NOT material/world coverage\n";
             else std::cout << (accelerationBuild ? "PASS original native acceleration build, pressure unwind, immutable snapshot and fence retirement; NOT shadow coverage\n" :
                 "PASS original native device optional ray-query feature chain and physically admitted device-address buffer; NOT shadow readiness\n");
             return 0;

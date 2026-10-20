@@ -58,7 +58,8 @@ if (WOWDECOMP_SLANGC)
     target_link_libraries(HdrOutputBoundaryTest PRIVATE GxVulkanShaders)
     add_test(NAME HdrOutputBoundary COMMAND HdrOutputBoundaryTest)
     target_compile_definitions(VulkanShaderTest PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1)
-    target_compile_definitions(ShaderOverrideTest PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1)
+    target_compile_definitions(ShaderOverrideTest PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1
+        WOWDECOMP_TEST_SHARED_SHADERS="${WOWDECOMP_ROOT}/Shaders/Overrides/shared")
     target_compile_definitions(VulkanShaderCorpus PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1)
     include("${WOWDECOMP_ROOT}/cmake/SlangShaders.cmake")
     target_compile_definitions(GxVulkanShaders PUBLIC WOWDECOMP_VULKAN_OVERRIDE_DIR="${WOWDECOMP_VULKAN_OVERRIDE_DIR}")
@@ -170,11 +171,23 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
             -entry computeMain -stage compute -target spirv -profile spirv_1_5 -matrix-layout-row-major -o "${accelerationProbe}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/AccelerationProbe.slang" "${WOWDECOMP_SLANGC}" VERBATIM)
     add_custom_target(GxAccelerationProbe DEPENDS "${accelerationProbe}")
-    add_dependencies(FarResourcesLiveTest GxSlangShaders GxAccelerationProbe)
+    set(directionalProbe "${WOWDECOMP_VULKAN_SHADER_DIR}/directional-lighting-probe.comp.spv")
+    add_custom_command(OUTPUT "${directionalProbe}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${WOWDECOMP_VULKAN_SHADER_DIR}"
+        COMMAND "${WOWDECOMP_SLANGC}" "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/DirectionalLightingProbe.slang"
+            -I "${WOWDECOMP_ROOT}/Shaders/Overrides" -entry computeMain -stage compute -target spirv -profile spirv_1_5
+            -matrix-layout-row-major -o "${directionalProbe}"
+        COMMAND GxQualifySpirv "${directionalProbe}"
+        DEPENDS GxQualifySpirv "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/DirectionalLightingProbe.slang"
+            "${WOWDECOMP_ROOT}/Shaders/Overrides/shared/DirectionalLighting.slang"
+            "${WOWDECOMP_ROOT}/Shaders/Overrides/shared/ShadowCoverage.slang" "${WOWDECOMP_SLANGC}" VERBATIM)
+    add_custom_target(GxDirectionalProbe DEPENDS "${directionalProbe}")
+    add_dependencies(FarResourcesLiveTest GxSlangShaders GxAccelerationProbe GxDirectionalProbe)
     add_test(NAME FarResourcesLiveGpu COMMAND FarResourcesLiveTest)
     add_test(NAME RayQueryCapabilityGpu COMMAND FarResourcesLiveTest --ray-query-capability)
     add_test(NAME AccelerationBuildGpu COMMAND FarResourcesLiveTest --acceleration-build)
     add_test(NAME AccelerationQueryGpu COMMAND FarResourcesLiveTest --acceleration-query)
+    add_test(NAME SharedDirectionalQueryGpu COMMAND FarResourcesLiveTest --directional-query)
     set_tests_properties(FarResourcesLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
 
     set(farTerrainArchives ${ffxArchives})

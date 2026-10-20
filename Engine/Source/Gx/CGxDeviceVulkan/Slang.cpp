@@ -1,6 +1,7 @@
 #include "Slang.h"
 #include "ShaderOverride.h"
 #include "Shader.h"
+#include "SpirvNonUniform.h"
 #include <slang.h>
 #include <slang-com-ptr.h>
 #include <cstring>
@@ -70,7 +71,7 @@ bool FloatVector(slang::TypeLayoutReflection* type,unsigned count=0) {
         type->getColumnCount()>=1 && type->getColumnCount()<=4 && (!count || type->getColumnCount()==count);
 }
 void RequireInterface(bool value,const char* reason) {
-    if(!value)throw std::runtime_error(std::string("Maintained shader interface v1: ")+reason);
+    if(!value)throw std::runtime_error(std::string("Maintained shader interface: ")+reason);
 }
 bool RegisterBlock(slang::TypeLayoutReflection* type,bool full) {
     auto* block=type->getElementTypeLayout();
@@ -80,15 +81,51 @@ bool RegisterBlock(slang::TypeLayoutReflection* type,bool full) {
     if(!full)return FloatVector(value,4);
     return value->getKind()==slang::TypeReflection::Kind::Array && value->getElementCount()==256 && FloatVector(value->getElementTypeLayout(),4);
 }
-ShaderBindings MaintainedBindings(slang::ProgramLayout* layout,bool vertex) {
+bool ShadowFrameBlock(slang::TypeLayoutReflection* type) {
+    auto* block=type->getElementTypeLayout();
+    if(!block||block->getKind()!=slang::TypeReflection::Kind::Struct||block->getFieldCount()!=1||block->getSize()!=112)return false;
+    auto* field=block->getFieldByIndex(0);auto* value=field->getTypeLayout();
+    return field->getOffset()==0&&value->getKind()==slang::TypeReflection::Kind::Array&&value->getElementCount()==7&&FloatVector(value->getElementTypeLayout(),4);
+}
+bool ShadowTriangles(slang::TypeLayoutReflection* type) {
+    auto* element=type->getElementTypeLayout();
+    if(!element||element->getKind()!=slang::TypeReflection::Kind::Struct||element->getFieldCount()!=3||element->getSize()!=48)return false;
+    for(unsigned i=0;i<3;++i){auto* field=element->getFieldByIndex(i);auto* value=field->getTypeLayout();
+        if(field->getOffset()!=i*16||value->getKind()!=slang::TypeReflection::Kind::Vector||value->getColumnCount()!=4||
+            value->getScalarType()!=(i==2?slang::TypeReflection::ScalarType::UInt32:slang::TypeReflection::ScalarType::Float32))return false;
+    }
+    return true;
+}
+ShaderBindings MaintainedBindings(slang::ProgramLayout* layout,bool vertex,MaintainedShaderVariant variant) {
     RequireInterface(layout && layout->getEntryPointCount()==1,"one graphics entry point is required");
     ShaderBindings result;
+    result.interfaceVersion=variant==MaintainedShaderVariant::Directional?2:1;
     bool alpha=false,position=false,colour=false;
+    unsigned shadowBindings=0;
     std::set<std::pair<unsigned,unsigned>> descriptors;
     for(unsigned i=0;i<layout->getParameterCount();++i) {
         auto* p=layout->getParameterByIndex(i);auto* type=p->getTypeLayout();
         const unsigned set=p->getBindingSpace(),binding=p->getBindingIndex();
         RequireInterface(descriptors.emplace(set,binding).second,"duplicate descriptor binding");
+        if(set==4){
+            RequireInterface(variant==MaintainedShaderVariant::Directional,"shadow resources require the directional source variant");
+            RequireInterface(binding<4&&(!vertex||binding==2),"resource outside the directional stage interface");
+            switch(binding){
+            case 0:RequireInterface(type->getKind()==slang::TypeReflection::Kind::Resource&&type->getResourceShape()==SLANG_ACCELERATION_STRUCTURE,"expected shared triangle acceleration structure");break;
+            case 1:RequireInterface((type->getResourceShape()&SLANG_RESOURCE_BASE_SHAPE_MASK)==SLANG_STRUCTURED_BUFFER&&type->getResourceAccess()==SLANG_RESOURCE_ACCESS_READ&&ShadowTriangles(type),"expected read-only 48-byte shared triangle coverage");break;
+            case 2:RequireInterface(type->getKind()==slang::TypeReflection::Kind::ConstantBuffer&&ShadowFrameBlock(type),"expected explicit seven-float4 directional frame");result.shadowFrame=true;break;
+            case 3:{
+                // The pinned compiler reports unsized getElementCount() as zero
+                // (specialized count INT_MAX); its descriptor binding range is -1.
+                RequireInterface(type->getKind()==slang::TypeReflection::Kind::Array&&
+                    type->getBindingRangeCount()==1&&type->getBindingRangeBindingCount(0)==-1,
+                    "expected runtime coverage texture array");
+                auto* element=type->getElementTypeLayout();
+                RequireInterface(element->getKind()==slang::TypeReflection::Kind::Resource&&element->getResourceShape()==(SLANG_TEXTURE_2D|SLANG_TEXTURE_COMBINED_FLAG)&&element->getResourceAccess()==SLANG_RESOURCE_ACCESS_READ,"expected original read-only combined 2D coverage samplers");break;
+            }
+            }
+            shadowBindings|=1u<<binding;continue;
+        }
         if(type->getKind()==slang::TypeReflection::Kind::ConstantBuffer) {
             RequireInterface(set==(vertex?1u:3u) && binding<=2,"constant buffer binding is outside the Gx stage interface");
             const bool full=binding==0 || (vertex && binding==1);
@@ -99,12 +136,16 @@ ShaderBindings MaintainedBindings(slang::ProgramLayout* layout,bool vertex) {
             if(!vertex && binding==1)alpha=true;
         }else if(type->getKind()==slang::TypeReflection::Kind::Resource) {
             const auto shape=type->getResourceShape();const auto base=shape&SLANG_RESOURCE_BASE_SHAPE_MASK;
-            RequireInterface(set==(vertex?0u:2u) && binding<16,"sampler binding is outside the Gx stage interface");
+            RequireInterface(set==(vertex?0u:2u) && binding<(vertex?4u:16u),"sampler binding is outside the Gx stage interface");
             RequireInterface((shape&~SLANG_RESOURCE_BASE_SHAPE_MASK)==SLANG_TEXTURE_COMBINED_FLAG &&
                 (base==SLANG_TEXTURE_2D || base==SLANG_TEXTURE_3D || base==SLANG_TEXTURE_CUBE) &&
                 type->getResourceAccess()==SLANG_RESOURCE_ACCESS_READ,"only ordinary combined Gx texture samplers are supported");
             result.samplers.push_back(static_cast<int>(binding));
         }else RequireInterface(false,"unsupported global resource or implicit uniform");
+    }
+    if(variant==MaintainedShaderVariant::Directional){
+        RequireInterface(shadowBindings==(vertex?4u:15u),"directional source must declare its complete shared query interface");
+        result.directionalVisibility=!vertex;
     }
     auto* entry=layout->getEntryPointByIndex(0);
     std::function<void(slang::VariableLayoutReflection*,size_t)> input=[&](auto* value,size_t base) {
@@ -161,21 +202,24 @@ SlangCompiler::~SlangCompiler() = default;
 std::vector<uint32_t> SlangCompiler::Compile(const std::string& source, bool vertex, const ShaderCompileContext& context) {
     return CompileProgram(source,vertex,context,nullptr);
 }
-CompiledShader SlangCompiler::CompileMaintained(const ShaderOverride& source) {
+CompiledShader SlangCompiler::CompileMaintained(const ShaderOverride& source,MaintainedShaderVariant variant) {
     CompiledShader result;
     RequireInterface(bool(source.files),"maintained source must carry its confined file snapshot");
     const bool vertex=source.identity.stage==ShaderStage::Vertex;
     RequireInterface(vertex || source.identity.stage==ShaderStage::Pixel,"unsupported stage");
-    result.code=CompileProgram(source.source,vertex,{source.files,source.filename.generic_string()},&result.bindings);
+    RequireInterface(variant==MaintainedShaderVariant::Raster||variant==MaintainedShaderVariant::Directional,"unknown maintained source variant");
+    result.code=CompileProgram(source.source,vertex,{source.files,source.filename.generic_string(),variant},&result.bindings);
     return result;
 }
 std::vector<uint32_t> SlangCompiler::CompileProgram(const std::string& source,bool vertex,const ShaderCompileContext& context,ShaderBindings* bindings) {
     slang::TargetDesc target{};
     target.format = SLANG_SPIRV;
-    target.profile = m_state->global->findProfile("spirv_1_3");
+    target.profile = m_state->global->findProfile(context.variant==MaintainedShaderVariant::Directional?"spirv_1_5":"spirv_1_3");
     slang::SessionDesc description{};
     description.targets = &target; description.targetCount = 1;
     description.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
+    const slang::PreprocessorMacroDesc macros[]={{"GX_DIRECTIONAL_SHADOWS",context.variant==MaintainedShaderVariant::Directional?"1":"0"},{"GX_SHADER_VERTEX",vertex?"1":"0"}};
+    description.preprocessorMacros=macros;description.preprocessorMacroCount=2;
     Slang::ComPtr<SourceFileSystem> fileSystem;
     std::string root;
     const char* searchPaths[1]{};
@@ -210,7 +254,7 @@ std::vector<uint32_t> SlangCompiler::CompileProgram(const std::string& source,bo
     std::vector<uint32_t> words(code->getBufferSize() / 4);
     std::memcpy(words.data(), code->getBufferPointer(), code->getBufferSize());
     if (words[0] != 0x07230203) throw std::runtime_error("Slang produced invalid SPIR-V magic");
-    if(bindings)*bindings=MaintainedBindings(linked->getLayout(),vertex);
-    return words;
+    if(bindings)*bindings=MaintainedBindings(linked->getLayout(),vertex,context.variant);
+    return QualifyNonUniformResourceLoads(words);
 }
 }
