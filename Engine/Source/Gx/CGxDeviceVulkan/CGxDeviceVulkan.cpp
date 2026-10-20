@@ -11,6 +11,7 @@
 #include "HdrLutJob.h"
 #include "GpuAdmission.h"
 #include "RayQueryCapabilities.h"
+#include "AccelerationScene.h"
 #include "Engine/Source/Gx/Blit.h"
 #include "Engine/Source/Gx/Buffer.h"
 #include "Engine/Source/Gx/CGxPool.h"
@@ -2225,6 +2226,33 @@ void CGxDeviceVulkan::SceneEndWorld() {
 }
 #ifdef WOWDECOMP_VULKAN_TESTING
 std::array<uint32_t,4> CGxDeviceVulkan::SceneWorldTestCompletedFrame() const { return m_native->completedWorldTest; }
+bool CGxDeviceVulkan::SceneRayQueryTestAccelerationBuild() {
+    auto& state = *m_native;
+    if (!state.device || !state.rayQueryCapabilities.Available() || !state.BeginFrame()) return false;
+    state.EndPass();
+    const auto before = state.sceneAdmission->Used();
+    const GxVulkan::ShadowPosition vertices[] = {{{0,0,0}},{{1,0,0}},{{0,1,0}}};
+    const uint32_t indices[] = {0,1,2};
+    auto pressure = std::make_shared<GxVulkan::GpuAdmission>(1);
+    bool rejected = false;
+    try {
+        GxVulkan::AccelerationScene failed(state.device,state.physical,state.memoryProperties,state.rayQueryCapabilities,pressure);
+        failed.Build(state.command,vertices,3,indices,3);
+    } catch (const std::runtime_error&) { rejected = true; }
+    if (!rejected || pressure->Used()) throw std::runtime_error("Failed AS admission did not unwind");
+    auto scene = std::make_unique<GxVulkan::AccelerationScene>(state.device,state.physical,state.memoryProperties,
+        state.rayQueryCapabilities,state.sceneAdmission);
+    scene->Build(state.command,vertices,3,indices,3);
+    const auto usage = scene->Usage();
+    const bool recorded = scene->TopLevel() && usage.vertices == 3 && usage.triangles == 1 &&
+        usage.bottomBytes && usage.topBytes && usage.scratchBytes && state.sceneAdmission->Used() == before + usage.physicalBytes;
+    bool immutable = false;
+    try { scene->Build(state.command,vertices,3,indices,3); } catch (const std::logic_error&) { immutable = true; }
+    // Original queue/fence completion, not a host event or another device.
+    state.Submit(false,true);
+    scene.reset();
+    return recorded && immutable && state.sceneAdmission->Used() == before;
+}
 bool CGxDeviceVulkan::SceneRayQueryTestDeviceAddress() {
     auto& state = *m_native;
     if (!state.device || !state.rayQueryCapabilities.Available()) return false;

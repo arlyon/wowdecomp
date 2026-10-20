@@ -60,22 +60,25 @@ void Next(CGxDevice& gx) { gx.ScenePresent();gx.SceneClear(3,CImVector(0,0,0,255
 int main(int argc, char** argv) {
     try {
         const bool rayCapability = argc == 2 && std::strcmp(argv[1], "--ray-query-capability") == 0;
-        Check(argc == 1 || rayCapability, "unknown fixture mode");
+        const bool accelerationBuild = argc == 2 && std::strcmp(argv[1], "--acceleration-build") == 0;
+        Check(argc == 1 || rayCapability || accelerationBuild, "unknown fixture mode");
         Check(SDL_Init(SDL_INIT_VIDEO)==0,SDL_GetError());
         auto owner=std::make_unique<CGxDeviceVulkan>();auto& gx=*owner;
         g_theGxDevicePtr=&gx;CGxDevice& api=gx;
-        if (!rayCapability) {
+        if (!rayCapability && !accelerationBuild) {
             gx.SceneFarTestAdmissionLimits(256*MiB,192*MiB,32*MiB);
             GxFar::SetFarCpuPressureForTesting(32*MiB);
             Check(gx.CGxDevice::SceneCreateFarResources(Request()).result==GxFarResourceResult::Unsupported,"non-native default manufactured FAR support");
         }
         CGxFormat format;format.m_window=1;format.m_maximize=0;format.m_size={320,240};
         Check(gx.DeviceCreate(static_cast<GxWindowProc>(nullptr),format)!=0,"device creation failed");gx.m_cursorVisible=0;
-        if (rayCapability) {
-            Check(gx.SceneRayQueryTestDeviceAddress(), "required RT query/device-address/texture-indexing capability unavailable or unenabled");
+        if (rayCapability || accelerationBuild) {
+            Check(accelerationBuild ? gx.SceneRayQueryTestAccelerationBuild() : gx.SceneRayQueryTestDeviceAddress(),
+                "required native acceleration capability/build/fence/admission unavailable or invalid");
             gx.DeviceDestroy(); Check(gx.SceneHdrTestValidationClean(), "Vulkan capability diagnostics emitted");
             g_theGxDevicePtr = nullptr; owner.reset(); SDL_Quit();
-            std::cout << "PASS original native device optional ray-query feature chain and physically admitted device-address buffer; NOT shadow readiness\n";
+            std::cout << (accelerationBuild ? "PASS original native acceleration build, pressure unwind, immutable snapshot and fence retirement; NOT shadow coverage\n" :
+                "PASS original native device optional ray-query feature chain and physically admitted device-address buffer; NOT shadow readiness\n");
             return 0;
         }
         Check(api.SceneCreateFarResources(Request()).result==GxFarResourceResult::Unavailable,"unrecorded admission accepted");
