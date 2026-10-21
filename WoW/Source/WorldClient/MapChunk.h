@@ -3,6 +3,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+class TerrainHitSnapshot;
 #include "Engine/Source/Tempest/C2Vector.h"
 #include "WoW/Source/WorldClient/CChunkLiquid.h"
 #include "Engine/Source/Base/BitArray.h"
@@ -108,6 +110,8 @@ class CMapChunk : public CMapBaseObj {
     /* 013C */ CWSoundEmitter* m_soundEmitters;
     /* 0140 */ CBitArray m_deepBits;
     /* 014C */ CBitArray m_fishableBits;
+    std::shared_ptr<const TerrainHitSnapshot> m_hitSnapshot;
+    std::shared_ptr<const TerrainHitSnapshot> CaptureHitSnapshot();
 
     virtual void SelectLights(CM2Lighting* lighting);
 

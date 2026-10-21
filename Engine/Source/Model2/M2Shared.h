@@ -3,6 +3,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+class M2HitGeometrySource;
 #include "Engine/Source/Model2/M2Data.h"
 #include "Engine/Source/Tempest/CAaBox.h"
 #include "Engine/Source/Storm/H/stpl.h"
@@ -72,6 +74,7 @@ class CM2Shared {
     /* 0198 */ uint16_t m_billboardBoneCount;
     /* 019C */ uint32_t m_lastUsedTime;
     /* 01A0 */ TSLink<CM2Shared> m_updateLink;
+    std::shared_ptr<const M2HitGeometrySource> m_hitGeometrySnapshot;
 
     static void LoadFailedCallback(void* param);
     static void LoadSucceededCallback(void* param);

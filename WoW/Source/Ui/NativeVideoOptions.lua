@@ -261,6 +261,55 @@ do
     refresh()
 end
 
+-- World image production is independent of UI presentation, on one device.
+do
+    local panel = CreateFrame("Frame", "NativeWorldPresentationPanel", VideoOptionsFramePanelContainer)
+    panel.name = "World Presentation"
+    panel.controls = {}
+    panel:Hide()
+    panel:SetAllPoints(VideoOptionsFramePanelContainer)
+    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("Independent World Frames")
+    local check = CreateFrame("CheckButton", "NativeIndependentWorldCheck", panel, "UICheckButtonTemplate")
+    check:SetPoint("TOPLEFT", 16, -70)
+    local label = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    label:SetPoint("LEFT", check, "RIGHT", 2, 0)
+    label:SetText("Update UI without a new 3D frame")
+    check.tooltipText = "Reuse the latest completed world image while the next is being produced. Uses one graphics device. Long GPU draws can still delay the UI. Default: Off."
+    local note = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    note:SetPoint("TOPLEFT", 24, -120)
+    note:SetWidth(320)
+    note:SetJustifyH("LEFT")
+    local original, pending = 0, 0
+    local function show()
+        check:SetChecked(pending == 1)
+        if IsNativeIndependentWorldSupported() then check:Enable() else check:Disable() end
+        note:SetText(GetNativeIndependentWorldStatus().."\n\nApplies in the game world. Apply saves; Cancel restores your selection. No restart is needed. GPU draw time is unchanged.")
+    end
+    local function refresh()
+        original = tonumber(GetCVar("nativeIndependentWorld")) or 0
+        pending = original
+        show()
+    end
+    local function okay() SetCVar("nativeIndependentWorld", tostring(pending)); refresh() end
+    local function cancel() pending = original; show() end
+    local function defaults() pending = 0; show(); VideoOptionsFrameApply:Enable() end
+    check:SetScript("OnClick", function(self)
+        if not IsNativeIndependentWorldSupported() then show(); return end
+        pending = self:GetChecked() and 1 or 0
+        VideoOptionsFrameApply:Enable()
+    end)
+    local elapsed = 0
+    panel:SetScript("OnUpdate", function(self, delta)
+        elapsed = elapsed + delta
+        if elapsed >= 1 then elapsed = 0; show() end
+    end)
+    panel:SetScript("OnShow", show)
+    VideoOptionsPanel_OnLoad(panel, okay, cancel, defaults, refresh)
+    refresh()
+end
+
 -- Visual lighting controls do not change server/gameplay time.
 do
     local lighting = CreateFrame("Frame", "NativeNightLightingPanel", VideoOptionsFramePanelContainer)

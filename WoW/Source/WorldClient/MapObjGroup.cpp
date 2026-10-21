@@ -1520,6 +1520,7 @@ void CMapObjGroup::FreeLiquidVB() {
 // VERIFY: 200c714f manual
 // OFFSET: 0x007CBE80
 void CMapObjGroup::Clear() {
+    m_geometryHitSnapshot.reset();
     int32_t freeFile = 1;
 
     if (this->m_asyncObjPtr) {

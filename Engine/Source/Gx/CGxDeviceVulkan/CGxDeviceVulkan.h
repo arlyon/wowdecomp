@@ -2,6 +2,7 @@
 #define ENGINE_SOURCE_GX_CGXDEVICEVULKAN_CGXDEVICEVULKAN_H
 
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+#include "Engine/Source/Gx/CompletedWorld.h"
 #include <memory>
 #include <array>
 
@@ -23,6 +24,27 @@ public:
     void ScenePresent() override;
     bool SceneBeginWorld(bool temporal = false, uint64_t scene = 0) override;
     void SceneEndWorld() override;
+    // Final output only: call capture after world effects/text and before UI.
+    // These currently use the presentation recording lane; independent producer
+    // recording and original WorldFrame scheduling are integrated separately.
+    bool SceneCaptureCompletedWorld(const GxWorld::WorldFrameDescription& frame);
+    bool SceneComposeCompletedWorld(uint64_t scene, GxWorld::WorldFrame* displayed = nullptr) override;
+    bool SceneIndependentWorldSupported() const override;
+    const char* SceneIndependentWorldStatus() const override;
+    void SceneReportIndependentWorldFailure(const char* error) override;
+    bool SceneConfigureIndependentWorld(bool enabled) override;
+    bool SceneWorldProductionReady() override;
+    bool SceneBeginWorldProduction(uint64_t scene) override;
+    GxWorld::WorldFrameLease SceneEndWorldProduction(const GxWorld::WorldFrameDescription& frame) override;
+    void SceneAbortWorldProduction() override;
+    uint64_t ScenePresentationVersion() const override;
+#ifdef WOWDECOMP_VULKAN_TESTING
+    void SceneWorldTestHoldProducer(bool hold);
+    bool SceneWorldTestProducerHeld() const;
+    void SceneWorldTestProbeUi(uint32_t x,uint32_t y,uint32_t worldX,uint32_t worldY);
+    bool SceneWorldTestReadUiProbe(CImVector& pixel,uint32_t index=0) const;
+#endif
+    void SceneInvalidateCompletedWorld() override;
     void SceneConfigureShadows(bool requested, bool strict) override;
     void SceneConfigureTerrainShadows(bool requested) override;
     bool SceneTerrainShadowsRequested() const override;
@@ -42,6 +64,7 @@ public:
     bool SceneHdrTestValidationClean() const;
     // Completed world boundary: HDR published, AA resolved, render width/height.
     std::array<uint32_t,4> SceneWorldTestCompletedFrame() const;
+    bool SceneWorldTestHistoryValid() const;
     void SceneHdrTestLimits(uint32_t slots, uint64_t budget, uint32_t draw);
 #endif
     bool SceneHdrSupported() const override;

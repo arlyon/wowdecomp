@@ -39,6 +39,7 @@
 #include "WoW/Source/Ui/BarberShop.h"
 #include "WoW/Source/Ui/GameUI.h"
 #include "WoW/Source/Ui/WorldFrame.h"
+#include "WoW/Source/WorldClient/WorldDisplayEpoch.h"
 #include "WoW/Source/UIUtil/InputControl.h"
 #include "WoW/Source/WorldClient/FrameTime.h"
 #include "WoW/Source/WorldClient/World.h"
@@ -1040,6 +1041,7 @@ void CGCamera::SetModeNormal() {
 // VERIFY: 62256cd1 manual
 // OFFSET: 0x00606570
 int32_t CGCamera::SetModelCamera(const char* fileName, const C3Vector* position, float facing, void (*callback)(CM2Model* model, uint32_t boneId, uint32_t sequenceId, int32_t interrupted, uint32_t time, uint64_t param), uint64_t param) {
+    InvalidateWorldDisplay();
     if (this->m_model) {
         this->m_state &= ~0x4;
 
@@ -1110,7 +1112,10 @@ void CGCamera::SetTarget(CGObject_C* target, int32_t freeLook) {
     }
 
     int32_t immediate = !(this->m_state & 0x10) || newTarget;
-    if ((newTarget || (!target && previous)) && g_theGxDevicePtr) g_theGxDevicePtr->SceneInvalidateHistory();
+    if (newTarget || (!target && previous)) {
+        InvalidateWorldDisplay();
+        if(g_theGxDevicePtr)g_theGxDevicePtr->SceneInvalidateHistory();
+    }
 
     if (!(this->m_state & 0x10) || newTarget || moved) {
         uint32_t time = OsGetAsyncTimeMs();
@@ -1593,6 +1598,7 @@ void CGCamera::ClampPitchAndNormalize() {
 // VERIFY: fcc0db6a auto
 // OFFSET: 0x005FE360
 void CGCamera::ClearModelCamera() {
+    if(this->m_model)InvalidateWorldDisplay();
     if (!this->m_model) {
         return;
     }

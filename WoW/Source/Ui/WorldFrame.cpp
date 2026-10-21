@@ -1,4 +1,12 @@
 #include "WorldFrame.h"
+#include "WorldInteractionFrame.h"
+#include "WoW/Source/WorldClient/WorldDisplayEpoch.h"
+#include "WoW/Source/LoadingScreen.h"
+#include <chrono>
+#include <cstdio>
+#include <cmath>
+#include <string>
+#include <stdexcept>
 #include "Engine/Source/Base/ConvertUTF.h"
 #include <cstring>
 #include <typeinfo>
@@ -273,7 +281,11 @@ void CGWorldFrame::AddObjectToHitTestList(CModelRecord* record, uint32_t flags) 
 
 // VERIFY: 611dc17c manual
 // OFFSET: 0x004F6450
+#include "WorldFramePresentation.inl"
+
 int32_t CGWorldFrame::GetLineSegment(float mouseX, float mouseY, C3Vector* start, C3Vector* end) {
+    if(m_presentation && m_presentation->enabled && !m_presentation->producing)
+        return HasDisplayedWorld() && start && end && m_presentation->interaction->LineSegment(m_presentation->displayed,mouseX,mouseY,*start,*end);
     float x = (mouseX - this->m_viewportDDC.minX) / (this->m_viewportDDC.maxX - this->m_viewportDDC.minX);
     float y = (mouseY - this->m_viewportDDC.minY) / (this->m_viewportDDC.maxY - this->m_viewportDDC.minY);
 
@@ -381,6 +393,8 @@ void CGWorldFrame::GetCameraFacing(C3Vector* facing) {
 // VERIFY: 1f9c430b manual
 // OFFSET: 0x004F6D20
 bool CGWorldFrame::GetScreenCoordinates(const C3Vector& world, C3Vector* screen, uint32_t* result) {
+    if(m_presentation && m_presentation->enabled && !m_presentation->producing)
+        return HasDisplayedWorld() && screen && m_presentation->interaction->ScreenCoordinates(m_presentation->displayed,world,*screen,result);
     const C3Vector& camera = this->m_camera->m_position;
 
     C4Vector relative;
@@ -432,6 +446,7 @@ bool CGWorldFrame::GetScreenCoordinates(const C3Vector& world, C3Vector* screen,
 // VERIFY: aaab1f42 manual
 // OFFSET: 0x004F6F50
 void CGWorldFrame::SetCameraTarget(CGObject_C* target, int32_t freeLook) {
+    // CGCamera invalidates presentation only when its actual owner changes.
     this->m_camera->SetTarget(target, freeLook);
 
     if (target && (target->m_obj->m_type & TYPEMASK_UNIT)) {
@@ -1055,6 +1070,7 @@ uint64_t CGWorldFrame::FindClosestModel(const C3Vector& start, const C3Vector& e
 // VERIFY: d0d131d0 manual
 // OFFSET: 0x004F9930
 int32_t CGWorldFrame::HitTest(const C3Vector& start, const C3Vector& end, uint32_t flags, HITTESTRESULT* result) {
+    if(m_presentation && m_presentation->enabled && !m_presentation->producing)return HitDisplayedWorld(start,end,flags,result);
     C3Vector hitPoint = { 0.0f, 0.0f, 0.0f };
     float t = 1.0f;
     float objectDistance = 0.0f;
@@ -1170,6 +1186,10 @@ int32_t CGWorldFrame::HitTest(const C3Vector& start, const C3Vector& end, uint32
 // VERIFY: 53a93536 auto
 // OFFSET: 0x004F9DA0
 int32_t CGWorldFrame::HitTestPoint(float x, float y, int32_t a3, HITTESTRESULT* result) {
+    if(m_presentation && m_presentation->enabled && !m_presentation->producing){
+        if(!HasDisplayedWorld())return 0;
+        return m_presentation->interaction->HitTestPointOnOwner(*this,m_presentation->displayed,*m_presentation->input,x,y,a3,result);
+    }
     if (!(CGInputControl::GetActive()->m_mouseModeFlags & 0x1)) {
         return 0;
     }
@@ -1211,6 +1231,7 @@ int32_t CGWorldFrame::HitTestPoint(float x, float y, int32_t a3, HITTESTRESULT* 
 // VERIFY: 21cb1ac2 auto
 // OFFSET: 0x004FA5D0
 void CGWorldFrame::UnitClear() {
+    InvalidateWorldDisplay();
     this->MoveToFreeList(&this->m_modelList);
     this->MoveToFreeList(&this->m_hitModelList);
 }
@@ -1409,6 +1430,7 @@ void CGWorldFrame::UpdateScreenEffect() {
 // VERIFY: 8df0efa3 manual
 // OFFSET: 0x004F5A90
 void CGWorldFrame::OnFrameSizeChanged(const CRect& rect) {
+    InvalidateWorldDisplay();
     this->CSimpleFrame::OnFrameSizeChanged(rect);
 
     this->m_viewportDDC = this->m_rect;
@@ -1989,6 +2011,10 @@ void CGWorldFrame::OnLayerUpdate(float elapsedSec) {
 
     CGInputControl::GetActive()->OnUpdate(elapsedSec);
     this->m_elapsedSec = elapsedSec;
+    if(CWorldParam::cvar_nativeIndependentWorld && CWorldParam::cvar_nativeIndependentWorld->m_intValue){
+        if(!m_presentation)m_presentation=std::make_unique<WorldFramePresentation>();
+        if(std::isfinite(elapsedSec) && elapsedSec>0)m_presentation->elapsed+=elapsedSec;
+    }
     CGGameUI::UpdateInteractTarget();
     CGGameUI::UpdateCorpseDistance();
     CGGameUI::UpdateAreaSpiritHealerDistance();
@@ -2137,10 +2163,67 @@ void CGWorldFrame::RenderWorld(void* param) {
     projection = g_theGxDevicePtr->m_projection;
     GxXformView(view);
 
-    worldFrame->OnWorldUpdate();
-    PlayerNameUpdateWorldText();
-    worldFrame->OnWorldRender();
-    WorldTextRenderBatch();
+    auto& gx=*g_theGxDevicePtr;
+    const bool requested=CWorldParam::cvar_nativeIndependentWorld && CWorldParam::cvar_nativeIndependentWorld->m_intValue!=0;
+    if(!worldFrame->m_presentation)worldFrame->m_presentation=std::make_unique<WorldFramePresentation>();
+    auto& s=*worldFrame->m_presentation;
+    if(s.requested!=requested || s.epoch!=WorldDisplayEpoch() || s.device!=gx.ScenePresentationVersion()){
+        gx.SceneInvalidateCompletedWorld();s.Clear();s.failed=false;s.error.clear();
+    }
+    s.requested=requested;s.epoch=WorldDisplayEpoch();
+    const bool wanted=requested && !s.failed && gx.SceneIndependentWorldSupported();
+    const float uiElapsed=worldFrame->m_elapsedSec;
+    const auto rsDepth=gx.m_stackOffsets.Count();
+    const auto viewport=gx.m_viewport;
+    try {
+        const bool configured=gx.SceneConfigureIndependentWorld(wanted);
+        s.enabled=configured && wanted;s.device=gx.ScenePresentationVersion();
+        if(wanted && !configured){s.failed=true;s.error=gx.SceneIndependentWorldStatus();}
+        if(!s.error.empty())gx.SceneReportIndependentWorldFailure(s.error.c_str());
+        else gx.SceneReportIndependentWorldFailure("");
+        if(!s.enabled){
+            s.Clear();worldFrame->OnWorldUpdate();PlayerNameUpdateWorldText();worldFrame->OnWorldRender();WorldTextRenderBatch();
+        }else if(LoadingScreenDrawing() || !World::s_m2Scene || !worldFrame->m_camera){
+            gx.SceneInvalidateCompletedWorld();s.Clear();
+        }else {
+            if(gx.SceneWorldProductionReady()){
+                s.producing=true;
+                worldFrame->m_elapsedSec=s.elapsed>0?float(s.elapsed):uiElapsed;s.elapsed=0;
+                const auto started=std::chrono::steady_clock::now();
+                worldFrame->OnWorldUpdate();PlayerNameUpdateWorldText();
+                if(s.epoch==WorldDisplayEpoch() && gx.SceneBeginWorldProduction(s.epoch)){
+                    GxWorld::WorldFrameDescription description;description.scene=s.epoch;
+                    const auto& viewStack=gx.m_xforms[GxXform_View];
+                    std::memcpy(description.view.data(),&viewStack.m_mtx[viewStack.m_level],sizeof(C44Matrix));
+                    std::memcpy(description.projection.data(),&gx.m_projection,sizeof(C44Matrix));
+                    worldFrame->OnWorldRender();WorldTextRenderBatch();
+                    const auto lease=gx.SceneEndWorldProduction(description);
+                    const auto recorded=std::chrono::steady_clock::now();
+                    s.snapshots[lease.slot]=worldFrame->CaptureWorldInteraction(lease);
+                    if(s.epoch!=WorldDisplayEpoch())throw std::logic_error("World lifecycle changed while preparing a generation");
+                    static auto lastTiming=std::chrono::steady_clock::time_point{};
+                    if(recorded-lastTiming>=std::chrono::seconds(2)){
+                        std::fprintf(stderr,"Independent world owner CPU: update/record=%.2fms interaction=%.2fms\n",
+                            std::chrono::duration<double,std::milli>(recorded-started).count(),
+                            std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-recorded).count());lastTiming=recorded;
+                    }
+                }
+                s.producing=false;
+            }
+            if(s.epoch!=WorldDisplayEpoch() || s.device!=gx.ScenePresentationVersion()){
+                gx.SceneInvalidateCompletedWorld();s.Clear();s.epoch=WorldDisplayEpoch();s.device=gx.ScenePresentationVersion();
+            }else s.Poll(gx);
+        }
+    }catch(const std::exception& error){
+        if(!s.enabled)throw;
+        s.producing=false;gx.SceneAbortWorldProduction();
+        while(gx.m_stackOffsets.Count()>rsDepth)gx.RsPop();
+        GxXformSetViewport(viewport.m_x.m_l,viewport.m_x.m_h,viewport.m_y.m_l,viewport.m_y.m_h,viewport.m_z.m_l,viewport.m_z.m_h);
+        const bool lifecycle=s.epoch!=WorldDisplayEpoch() || s.device!=gx.ScenePresentationVersion();
+        s.Clear();s.failed=!lifecycle;s.error=lifecycle?"":error.what();
+        s.device=gx.ScenePresentationVersion();gx.SceneReportIndependentWorldFailure(s.error.c_str());gx.SceneClear(3,CImVector(0,0,0,255));
+    }
+    worldFrame->m_elapsedSec=uiElapsed;
 
     g_theGxDevicePtr->XformSetProjection(projection);
     g_theGxDevicePtr->XformSetView(view);
@@ -2175,6 +2258,8 @@ void CGWorldFrame::OnMouseModeRelative() {
 // VERIFY: bef9479f manual
 // OFFSET: 0x004F7880
 void CGWorldFrame::PerformDefaultAction(MOUSEBUTTON button) {
+    if(m_presentation && m_presentation->enabled && !m_presentation->producing && !CGNamePlateFrame::GetNamePlateFocus() &&
+        (!HasDisplayedWorld() || !(m_presentation->action==m_presentation->displayed.lease)))return;
     CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
     if (!player || player->m_unit->m_unitFieldCharmedby) {
@@ -2490,6 +2575,7 @@ int32_t CGWorldFrame::OnLayerMouseUp(const CMouseEvent& evt, const char* btn) {
 int32_t CGWorldFrame::SetupDefaultAction() {
     NDCToDDC(this->m_simpleTop->m_mousePosition.m_x, this->m_simpleTop->m_mousePosition.m_y, &this->m_defaultActionPointDDC.x, &this->m_defaultActionPointDDC.y);
     this->m_defaultActionHitKind = this->HitTestPoint(this->m_defaultActionPointDDC.x, this->m_defaultActionPointDDC.y, 0, &this->m_defaultActionHit);
+    if(m_presentation)m_presentation->action=HasDisplayedWorld()?m_presentation->displayed.lease:GxWorld::WorldFrameLease{};
     return this->m_defaultActionHitKind;
 }
 
@@ -2532,6 +2618,7 @@ int32_t CGWorldFrame::SpellEffectEnumProc(void* param, uint32_t flags, uint64_t 
 // VERIFY: 57ad68af manual
 // OFFSET: [0x004FA390, 0x004FAF60]
 CGWorldFrame::~CGWorldFrame() {
+    InvalidateWorldDisplay();
     EventUnregisterEx(EVENT_ID_IDLE, CGWorldFrame::Update, this, 0xFFFFFFFF);
     EventSetMouseMode(MOUSE_MODE_NORMAL, 0);
     CGWorldFrame::s_currentWorldFrame = nullptr;

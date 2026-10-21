@@ -1,4 +1,5 @@
 #include <cstdint>
+#include "WoW/Source/WorldClient/WorldDisplayEpoch.h"
 #include <cstring>
 #include <malloc.h>
 #include "Engine/Source/Base/Handle.h"
@@ -699,6 +700,7 @@ void LoadingScreenSpellUpdateProgress(float progress) {
 // VERIFY: 2d94348d manual
 // OFFSET: 0x0040AB70
 void LoadingScreenEnable(int32_t mapID, bool loadingWorld) {
+    InvalidateWorldDisplay();
     CGGameUI::SetAspect();
 
     if (s_gameTip) {
@@ -816,6 +818,7 @@ static void ClearDynamicData() {
 // VERIFY: 2116833b manual
 // OFFSET: 0x00409550
 void LoadingScreenDisable() {
+    InvalidateWorldDisplay();
     if (s_loadingScreenLayer) {
         HandleClose(reinterpret_cast<HOBJECT>(s_loadingScreenLayer));
     }

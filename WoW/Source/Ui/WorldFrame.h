@@ -4,6 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include "Engine/Source/Gx/CompletedWorld.h"
+class WorldFramePresentation;
+class WorldInteractionFrame;
 #include "Engine/Source/Base/CDataAllocator.h"
 #include "Engine/Source/Frame/CSimpleFrame.h"
 #include "Engine/Source/Model2/M2Model.h"
@@ -152,6 +156,11 @@ class CGWorldFrame : public CSimpleFrame {
     /* 79C4 */ KEYDOWNSTATE m_mouseDown [31];
     /* 7E20 */ CGCamera* m_camera;
     /* 7E24 */ uint32_t unused_7E24;
+    std::unique_ptr<WorldFramePresentation> m_presentation;
+    bool HasDisplayedWorld() const;
+    bool DisplayedWorld(GxWorld::WorldFrame& frame) const;
+    std::shared_ptr<const WorldInteractionFrame> CaptureWorldInteraction(GxWorld::WorldFrameLease lease);
+    int32_t HitDisplayedWorld(const C3Vector&,const C3Vector&,uint32_t,HITTESTRESULT*);
 
     CGWorldFrame(CSimpleFrame* parent);
     ~CGWorldFrame() override;

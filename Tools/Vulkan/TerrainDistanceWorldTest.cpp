@@ -6,6 +6,8 @@
 #include "Engine/Source/ConsoleBase/ConsoleVar.h"
 #include "Engine/Source/Event/Event.h"
 #include "Engine/Source/Frame/CSimpleTop.h"
+#include "Engine/Source/Frame/CSimpleTexture.h"
+#include "Engine/Source/FrameXML/LoadXML.h"
 #include "Engine/Source/FrameScript/FrameScript.h"
 #include "Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.h"
 #include "Engine/Source/Gx/Gx.h"
@@ -35,6 +37,12 @@
 #include "WoW/Source/UIUtil/Camera.h"
 #include "WoW/Source/Ui/GameUI.h"
 #include "WoW/Source/Ui/WorldFrame.h"
+#include "WoW/Source/Ui/CGWorldStateInfo.h"
+#include "WoW/Source/UIUtil/InputControl.h"
+#include "WoW/Source/Game/GameClient/WorldText.h"
+#include "WoW/Source/Game/GameClient/WTOBJECT.h"
+#include "WoW/Source/WorldClient/FrameTime.h"
+#include "WoW/Source/WorldClient/WorldDisplayEpoch.h"
 #include "WoW/Source/WorldClient/FarAdtService.h"
 #include "WoW/Source/WorldClient/Map.h"
 #include "WoW/Source/WorldClient/MapLowDetail.h"
@@ -57,7 +65,7 @@
 #include <vector>
 
 namespace {
-constexpr unsigned Width=640, Height=480;
+unsigned Width=640, Height=480;
 struct State {
     std::filesystem::path assets;
     std::vector<SArchive*> archives;
@@ -75,6 +83,7 @@ struct State {
     std::filesystem::path receiverFixtureRoot;
     std::string previousShaderRoot;
     bool hadShaderRoot=false;
+    bool independentWorld=false,independentRT=false,independentVsync=false,inputs=false,worldText=false;
     CGxFont* font=nullptr;
     CGxString* label=nullptr;
     CGxStringBatch* labelBatch=nullptr;
@@ -260,6 +269,37 @@ void TerrainTick() {
     const auto* map=g_mapDB.GetRecord(test.northrend?571:0);auto position=test.frame->m_camera->m_position;
     CWorld::LoadMap(map->m_directory,&position,map->m_id,1);Stage("map reload and Classic retirement");
 }
+void CheckCompletedWorldReplay(TSGrowableArray<CImVector>& expected) {
+    auto& gx=*test.device;
+    GxWorld::WorldFrameDescription frame;
+    frame.scene=reinterpret_cast<uintptr_t>(test.frame->m_camera);frame.width=Width;frame.height=Height;
+    frame.viewport={0,0,Width,Height};
+    const auto& view=gx.m_xforms[GxXform_View];
+    static_assert(sizeof(frame.view)==sizeof(C44Matrix));
+    std::memcpy(frame.view.data(),&view.m_mtx[view.m_level],sizeof(C44Matrix));
+    std::memcpy(frame.projection.data(),&gx.m_projection,sizeof(C44Matrix));
+    CiRect rect;rect.minX=rect.minY=0;rect.maxX=Width;rect.maxY=Height;
+    TSGrowableArray<float> depthBefore;gx.DeviceReadDepths(rect,depthBefore);
+    Check(depthBefore.Count()==expected.Count(),"actual RT capture depth extent mismatch");
+    Check(gx.SceneCaptureCompletedWorld(frame),"actual RT completed-image capture failed");
+    // The ordinary readback seam completes the capture's real GPU submission;
+    // the completed-image selector is then tested without guessing completion.
+    TSGrowableArray<CImVector> before;gx.DeviceReadPixels(rect,before);
+    gx.XformSetViewport(0,1,0,1,0,1);gx.SceneClear(3,CImVector(0,0,0,255));
+    GxWorld::WorldFrame displayed;
+    Check(gx.SceneComposeCompletedWorld(frame.scene,&displayed),"actual RT completed-image replay failed");
+    Check(displayed.description.scene==frame.scene && displayed.description.view==frame.view &&
+        displayed.description.projection==frame.projection,"actual RT image/camera publication mismatch");
+    TSGrowableArray<CImVector> after;TSGrowableArray<float> depthAfter;
+    gx.DeviceReadPixels(rect,after);gx.DeviceReadDepths(rect,depthAfter);
+    Check(after.Count()==expected.Count() && depthAfter.Count()==depthBefore.Count(),"actual RT replay extent mismatch");
+    for(unsigned i=0;i<after.Count();++i) {
+        const auto a=after[i],b=expected[i];
+        Check(a.r==b.r && a.g==b.g && a.b==b.b && a.a==b.a,"actual RT completed replay changed final colour/alpha");
+        Check(depthAfter[i]==depthBefore[i],"actual RT completed replay changed published depth");
+    }
+    std::fprintf(stderr,"Actual terrain RT completed publication: exact colour/alpha/depth and paired camera, %u pixels\n",after.Count());
+}
 void ShadowVisibilityTick(){
     auto& gx=*test.device;const auto status=gx.SceneShadowStatus();
     if(test.ticks%30==0)std::fprintf(stderr,"World RT visibility tick=%u result=%u rendered=%u terrain=%llu models=%llu wmo=%llu triangles=%llu unsupported=%llu\n",test.ticks,unsigned(status.result),status.diagnosticRendered,
@@ -323,6 +363,7 @@ void ShadowVisibilityTick(){
         std::fprintf(stderr,"Actual terrain RT receivers=%llu coloured=%u changed=%u meanDifference=%g\n",(unsigned long long)status.terrainReceivers,coloured,changed,difference);
         Check(coloured>pixels.Count()/5&&changed>1000&&difference>1,"terrain shadow slice was a mask or had no meaningful colour effect");
         RasterCase capture{"terrain-ray-shadows","12","0","1","0","0","0"};SaveRasterCapture(capture,pixels);
+        CheckCompletedWorldReplay(pixels);
         test.shadowPrevious.assign(&pixels[0],&pixels[0]+pixels.Count());
         test.phase=2;test.featureFrame=0;gx.SceneShadowTestCasters(false,true);return;
     }
@@ -336,17 +377,19 @@ void ShadowVisibilityTick(){
     Check(lit>100&&shadow>100,"actual world RT query output was vacuous");
     test.phase=2;test.featureFrame=0;Set(CWorldParam::cvar_nativeRayTracing,"0");
 }
+#include "IndependentWorldUiTest.inl"
 int32_t Tick(const void*,void*) {
     try {
-        Check(++test.ticks<=1200,"production world did not reach required state");
+        Check(++test.ticks<=(test.independentWorld?100000u:1200u),"production world did not reach required state");
         Check(std::chrono::steady_clock::now()-test.started<std::chrono::seconds(120),"production render deadline exceeded");
+        if(test.independentWorld && test.ticks>90u){IndependentUiTick();return 1;}
         auto& gx=*test.device;auto* camera=test.frame->m_camera;auto position=camera->m_position;
         test.frame->m_elapsedSec=1.f/60;
         camera->SetGxProjectionAndView(CRect{0,0,1,1});
         test.frame->UpdateDayNight(test.frame->m_elapsedSec);
         C3Vector target=position+camera->Forward();CWorld::Update(&position,&target,&position);
         gx.SceneClear(3,CImVector(0,0,0,255));test.frame->OnWorldRender();
-        if(test.shadowVisibility||test.terrainShadows)ShadowVisibilityTick();else if(test.rasterFeatures)RasterTick();else TerrainTick();
+        if(!test.independentWorld){if(test.shadowVisibility||test.terrainShadows)ShadowVisibilityTick();else if(test.rasterFeatures)RasterTick();else TerrainTick();}
         gx.ScenePresent();
     }catch(const std::exception& error) {std::fprintf(stderr,"FAIL synchronous terrain: %s\n",error.what());test.result=1;EventPostClose();}
     return 1;
@@ -367,14 +410,14 @@ int32_t Initialize(const void*,void*) {
         }
         test.device=std::make_unique<CGxDeviceVulkan>();g_theGxDevicePtr=test.device.get();
         if(test.terrainPressure)test.device->SceneFarTestAdmissionLimits(64ull*1024*1024,192ull*1024*1024,32ull*1024*1024);
-        CGxFormat format;format.m_window=1;format.m_maximize=0;format.m_size={Width,Height};
+        CGxFormat format;format.m_window=1;format.m_maximize=0;format.m_size={int32_t(Width),int32_t(Height)};if(test.independentWorld)format.m_vsync=test.independentVsync;
         Check(test.device->DeviceCreate(static_cast<GxWindowProc>(nullptr),format)!=0,"native device creation failed");
         test.device->m_cursorVisible=0;
         Stage("services");AsyncFileReadRegisterCVars();TextureInitialize();test.textures=true;
         M2Initialize(GetM2CvarFlags(),0);test.models=true;
         SysMsgInitialize();Check(FrameScript_Initialize(0)!=0,"script context failed");ScrnInitialize(0);ILayerDestroy();
         Stage("database");ClientDBInitialize();CWorldParam::Initialize();CameraRegisterCVars();
-        Set(CWorldParam::cvar_landscapeDistance,(test.rasterFeatures||test.shadowVisibility||test.terrainShadows)?"0":"4000");Set(CWorldParam::cvar_nativeAA,"0");
+        Set(CWorldParam::cvar_landscapeDistance,(test.rasterFeatures||test.shadowVisibility||test.terrainShadows||test.independentWorld)?"0":"4000");Set(CWorldParam::cvar_nativeAA,"0");
         Set(CWorldParam::cvar_nativeRayTracing,"0");Set(CWorldParam::cvar_nativeTerrainRayShadows,"0");Set(CWorldParam::cvar_nativeRayStrict,"1");
         Set(CWorldParam::cvar_nativeHDR,"0");Set(CWorldParam::cvar_localTimePreview,"12");
         Stage("world");CWorld::Initialize();test.world=true;ShadowInit();GxuLightInitialize();GxuLightSetGridSize(16.665001f);
@@ -388,14 +431,22 @@ int32_t Initialize(const void*,void*) {
         camera->m_position=test.northrend?C3Vector(3060,5300,6000):C3Vector(-9464,-95,6000);camera->SetFacing(C3Vector(1,0,-1));
         camera->SetGxProjectionAndView(CRect{0,0,1,1});const auto* map=g_mapDB.GetRecord(test.northrend?571:0);
         Check(map && std::strcmp(map->m_directory,test.northrend?"Northrend":"Azeroth")==0,"map directory mismatch");
-        if(test.rasterFeatures||test.shadowVisibility||test.terrainShadows){camera->m_position=C3Vector(-9505,70,62);camera->SetFacing(C3Vector(1,-.4f,-.15f));}
-        if(test.rasterFeatures) {
+        if(test.rasterFeatures||test.shadowVisibility||test.terrainShadows||test.independentWorld){camera->m_position=C3Vector(-9505,70,62);camera->SetFacing(C3Vector(1,-.4f,-.15f));}
+        if(test.rasterFeatures || test.independentWorld) {
             if(!g_FTLibrary){GxuFontInitialize();test.ownsFonts=true;}
             Check(GxuFontCreateFont("Fonts\\FRIZQT__.TTF",18.f/Height,test.font,8),"actual game font load failed");
             test.labelBatch=GxuFontCreateBatch(false,false);
             Check(GxuFontCreateString(test.font,"Goldshire: Native raster - Agj 0123456789",18.f/Height,C3Vector(.05f,.8f,0),
                 .9f,.15f,0,test.label,GxVJ_Top,GxHJ_Left,0,CImVector(255,255,255,255),0,1),"actual font layout failed");
-            GxuFontAddToBatch(test.labelBatch,test.label);SelectRasterCase();
+            GxuFontAddToBatch(test.labelBatch,test.label);if(test.rasterFeatures)SelectRasterCase();
+            if(test.independentWorld){
+                GxSetMaxFPS(0);GxSetMaxFPSBk(0);
+                // Offline fixture has no server session; defer its periodic timer request beyond the test deadline.
+                CGWorldStateInfo::m_nextUITimeUpdate=OsGetAsyncTimeMs()+120000;
+                InputControlInitialize();test.inputs=true;
+                auto* L=FrameScript_GetContext();lua_pushstring(L,"Fonts\\FRIZQT__.TTF");lua_setfield(L,LUA_GLOBALSINDEX,"DAMAGE_TEXT_FONT");
+                WorldTextInitialize();test.worldText=true;
+            }
         }
         auto position=camera->m_position;Stage("map load");CWorld::LoadMap(map->m_directory,&position,map->m_id,1);
         test.started=std::chrono::steady_clock::now();EventRegister(EVENT_ID_IDLE,Tick);Stage("render");
@@ -409,6 +460,8 @@ int32_t Destroy(const void*,void*) {
     if(test.labelBatch)GxuFontDestroyBatch(test.labelBatch);
     if(test.font)GxuFontDestroyFont(test.font);
     test.top.reset();test.frame=nullptr;
+    if(test.worldText)WorldTextShutdown();
+    if(test.inputs)InputControlDestroy();
     if(test.ownsFonts)GxuFontShutdown();
     if(test.world)CWorld::Destroy();
     if(test.models)M2Destroy();
@@ -445,18 +498,22 @@ extern "C" int __wrap_connect(int socket,const sockaddr* address,socklen_t size)
     return __real_connect(socket,address,size);
 }
 int main(int argc,char** argv) {
-    if(argc!=2 || (std::strcmp(argv[1],"--elwynn-distance") && std::strcmp(argv[1],"--northrend-distance") && std::strcmp(argv[1],"--raster-features") && std::strcmp(argv[1],"--rt-visibility") && std::strcmp(argv[1],"--terrain-ray-shadows") && std::strcmp(argv[1],"--terrain-ray-fallback") && std::strcmp(argv[1],"--terrain-ray-pressure"))) {
+    if(argc!=2 || (std::strcmp(argv[1],"--elwynn-distance") && std::strcmp(argv[1],"--northrend-distance") && std::strcmp(argv[1],"--raster-features") && std::strcmp(argv[1],"--rt-visibility") && std::strcmp(argv[1],"--terrain-ray-shadows") && std::strcmp(argv[1],"--terrain-ray-fallback") && std::strcmp(argv[1],"--terrain-ray-pressure") && std::strcmp(argv[1],"--independent-ui") && std::strcmp(argv[1],"--independent-ui-rt") && std::strcmp(argv[1],"--independent-ui-vsync") && std::strcmp(argv[1],"--detail-instancing") && std::strcmp(argv[1],"--detail-instancing-rt"))) {
         std::fputs("Pass --elwynn-distance, --northrend-distance, --raster-features, --rt-visibility, --terrain-ray-shadows, --terrain-ray-fallback or --terrain-ray-pressure; environment cannot select a weaker test.\n",stderr);return 1;
     }
     const char* assets=std::getenv("WOWDECOMP_TEST_WORLD_ASSETS");
     if(!assets || !*assets){std::fputs("WOWDECOMP_TEST_WORLD_ASSETS must identify read-only Data\n",stderr);return 1;}
+    test.independentVsync=!std::strcmp(argv[1],"--independent-ui-vsync");
+    test.independentRT=test.independentVsync||!std::strcmp(argv[1],"--independent-ui-rt");test.independentWorld=test.independentRT||!std::strcmp(argv[1],"--independent-ui");
+    if(test.independentWorld){Width=test.independentVsync?1428:1280;Height=test.independentVsync?2516:720;}
     test.assets=std::filesystem::absolute(assets);test.northrend=!std::strcmp(argv[1],"--northrend-distance");
     test.rasterFeatures=!std::strcmp(argv[1],"--raster-features");test.shadowVisibility=!std::strcmp(argv[1],"--rt-visibility");test.terrainFallback=!std::strcmp(argv[1],"--terrain-ray-fallback");test.terrainPressure=!std::strcmp(argv[1],"--terrain-ray-pressure");test.terrainShadows=test.terrainFallback||test.terrainPressure||!std::strcmp(argv[1],"--terrain-ray-shadows");
     Check(std::filesystem::is_directory(test.assets),"external world assets missing");
     StormRtlInitialize();BaseInitializeGlobal();EventInitialize(1,0);OsTimeStartup(static_cast<OsTimeManager::TimingMethod>(0));
     if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)!=0)return 1;
     g_clientEventContext=EventCreateContextEx(1,Initialize,Destroy,0,0);EventDoMessageLoop();
-    if(!test.result && test.terrainFallback)std::puts("PASS late missing receiver source restores whole raster frame; NOT positive shadow acceptance");
+    if(!test.result && test.independentWorld)std::puts("PASS original WorldFrame/strata/UI/input pipeline during repeated 500ms producer holds, paired interaction/lifecycle cancellation and synchronous rollback");
+    else if(!test.result && test.terrainFallback)std::puts("PASS late missing receiver source restores whole raster frame; NOT positive shadow acceptance");
     else if(!test.result && test.terrainPressure)std::puts("PASS physical admission failure retains raster and recovers without changing RT intent; NOT full coverage acceptance");
     else if(!test.result && test.terrainShadows)std::puts("PASS actual Goldshire terrain directional receiver slice and off/on/off parity; NOT full world receiver/corpus acceptance");
     else if(!test.result && test.shadowVisibility)std::puts("PASS actual Goldshire AS visibility diagnostic only; NOT complete RT material/receiver acceptance");

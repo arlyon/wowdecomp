@@ -1,4 +1,5 @@
 #include "Map.h"
+#include "WorldDisplayEpoch.h"
 #include "FarAdtService.h"
 #include "Engine/Source/ShaderEffect/ShadowCache.h"
 #if defined(_MSC_VER)
@@ -5900,6 +5901,7 @@ void CMap::RenderFootprints() {
 // VERIFY: 331b297f manual
 // OFFSET: 0x007C3830
 void CMap::Unload() {
+    InvalidateWorldDisplay();
     FarAdtReset();
     CMap::PurgeMaps();
     CMap::s_lowDetail.Unload();
