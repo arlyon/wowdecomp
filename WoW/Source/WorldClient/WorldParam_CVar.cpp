@@ -71,6 +71,7 @@ CVar* CWorldParam::cvar_nativeTerrainRayShadows;
 CVar* CWorldParam::cvar_nativeRayStrict;
 CVar* CWorldParam::cvar_nativeAA;
 CVar* CWorldParam::cvar_nativeIndependentWorld;
+CVar* CWorldParam::cvar_nativeDetailInstancing;
 CVar* CWorldParam::cvar_nativeSceneScale;
 CVar* CWorldParam::cvar_nativeHDR;
 CVar* CWorldParam::cvar_nativeHDRExposure;
@@ -258,6 +259,11 @@ bool CWorldParam::NativeIndependentWorldCallback(CVar*, const char*, const char*
     if(value && (!SStrCmp(value,"0",STORM_MAX_STR) || !SStrCmp(value,"1",STORM_MAX_STR)))return true;
     ConsoleWrite("nativeIndependentWorld must be 0 (synchronous) or 1 (independent world frames).",DEFAULT_COLOR);
     return false;
+}
+
+bool CWorldParam::NativeDetailInstancingCallback(CVar*,const char*,const char* value,void*) {
+    if(value && (!SStrCmp(value,"0",STORM_MAX_STR) || !SStrCmp(value,"1",STORM_MAX_STR)))return true;
+    ConsoleWrite("nativeDetailInstancing must be 0 (legacy) or 1 (experimental instancing).",DEFAULT_COLOR);return false;
 }
 
 bool CWorldParam::NativeAACallback(CVar*, const char*, const char* value, void*) {
@@ -743,6 +749,7 @@ void CWorldParam::Initialize() {
     cvar_nativeRayTracing = CVar::Register("nativeRayTracing", "Development RT world visibility view; directional material integration unfinished", 1, "0", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
     cvar_nativeRayStrict = CVar::Register("nativeRayStrict", "Refuse incomplete caster frames; disabling is diagnostic only, never full coverage", 1, "1", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
     cvar_nativeIndependentWorld=CVar::Register("nativeIndependentWorld","Opt-in independent UI/world presentation on one Vulkan device",1,"0",NativeIndependentWorldCallback,CATEGORY_GRAPHICS,false,nullptr,false);
+    cvar_nativeDetailInstancing=CVar::Register("nativeDetailInstancing","Experimental retained-mesh ground clutter instancing (0/1)",0,"0",NativeDetailInstancingCallback,CATEGORY_GRAPHICS,false,nullptr,false);
     CWorldParam::cvar_nativeAA = CVar::Register("nativeAA", "Experimental native temporal anti-aliasing; 0 Off, 1 TAA on supported Vulkan devices", 1, "0", CWorldParam::NativeAACallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_nativeSceneScale = CVar::Register("nativeSceneScale", "3D scene resolution scale; native UI unchanged; range 0.5 to 1", 1, "1", CWorldParam::NativeSceneScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::InitializeNativeHDRCVars();

@@ -257,6 +257,29 @@ std::string PruneVertexFogOutput(std::string source) {
     return source;
 }
 
+std::string DetailDoodadInstancedSource(std::string source) {
+    const auto begin=source.find("struct main_Input"),end=source.find("};",begin);
+    if(begin==std::string::npos || end==std::string::npos)throw std::runtime_error("Missing detail vertex input");
+    const auto fields=source.substr(begin,end-begin);
+    const auto field=[&](const char* semantic){
+        std::smatch m;const std::regex pattern(std::string(R"(float[34]\s+(\w+)\s*:\s*)")+semantic+R"(0?\s*;)");
+        return std::regex_search(fields,m,pattern)?m[1].str():std::string{};
+    };
+    const auto position=field("POSITION"),normal=field("NORMAL"),colour=field("COLOR");
+    if(position.empty())throw std::runtime_error("Missing detail position semantic");
+    const std::regex entry(R"(main_Output main\(main_Input input\)\s*\{)");
+    std::smatch m;if(!std::regex_search(source,m,entry))throw std::runtime_error("Unrecognised detail vertex entry");
+    std::string body="main_Output main(main_Input input, uint gx_instanceID : SV_InstanceID) {\n"
+        "GxDetailInstance gx_i = gx_detailInstances[gx_instanceID];\n"
+        "float3 gx_p = input."+position+".xyz;\n"
+        "input."+position+".xyz = float3(dot(gx_p,gx_i.r0.xyz),dot(gx_p,gx_i.r1.xyz),dot(gx_p,gx_i.r2.xyz))*gx_i.normalScale.w + float3(gx_i.r0.w,gx_i.r1.w,gx_i.r2.w);\n";
+    if(!normal.empty())body+="input."+normal+".xyz = gx_i.normalScale.xyz;\n";
+    if(!colour.empty())body+="input."+colour+" = gx_i.colour;\n";
+    source.replace(size_t(m.position()),size_t(m.length()),body);
+    return "struct GxDetailInstance { float4 r0; float4 r1; float4 r2; float4 normalScale; float4 colour; };\n"
+        "[[vk::binding(3,1)]] StructuredBuffer<GxDetailInstance> gx_detailInstances;\n"+source;
+}
+
 std::string ShaderOutputBoundary(std::string source, bool decode) {
     // Wrap only the generated entry's final colour. Do not inspect or alter its
     // lighting arithmetic, original clips, alpha or resource bindings.

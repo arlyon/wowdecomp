@@ -40,7 +40,7 @@ struct RecordingResources {
             Check(vkCreateFence(owner, &completion, nullptr, &fence), "vkCreateFence");
             const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 98304},
                 {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 327680}, {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16},
-                {VK_DESCRIPTOR_TYPE_SAMPLER, 16}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16}};
+                {VK_DESCRIPTOR_TYPE_SAMPLER, 16}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16400}};
             VkDescriptorPoolCreateInfo descriptors{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
             descriptors.maxSets = 65536; descriptors.poolSizeCount = 5; descriptors.pPoolSizes = sizes;
             Check(vkCreateDescriptorPool(owner, &descriptors, nullptr, &descriptorPool), "vkCreateDescriptorPool");

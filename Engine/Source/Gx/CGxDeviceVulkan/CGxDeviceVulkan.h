@@ -96,6 +96,8 @@ public:
     void SceneSetMotionOwner(const void* owner, bool stableVertices) override;
     void SceneForgetMotionOwner(const void* owner) override;
     void Draw(CGxBatch* batch, int32_t indexed) override;
+    bool DetailDoodadInstancingSupported() const override;
+    bool DrawDetailDoodadInstances(CGxBatch* batch,CGxBuf* instances,uint32_t count) override;
     void IRsSendToHw(EGxRenderState which) override;
     void PoolSizeSet(CGxPool* pool, uint32_t size) override;
     void PoolDestroy(CGxPool* pool) override;

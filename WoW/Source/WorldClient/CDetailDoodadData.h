@@ -5,6 +5,7 @@
 #include <cstdint>
 
 class CM2Model;
+struct CGxBuf;
 class CTexture;
 class GroundEffectDoodadRec;
 
@@ -15,6 +16,9 @@ class CDetailDoodadData {
     /* 0000 */ GroundEffectDoodadRec* m_record;
     /* 0004 */ CM2Model* m_model;
     /* 0008 */ CTexture* m_texture;
+    CGxBuf* m_instanceVertexBuf=nullptr;
+    CGxBuf* m_instanceIndexBuf=nullptr;
+    const void* m_instanceSkin=nullptr;
 
     int32_t Load();
 };

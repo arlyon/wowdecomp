@@ -353,6 +353,8 @@ if (WOWDECOMP_WORLD_ASSETS AND WOWDECOMP_VULKAN_CLIENT_BUILD AND TARGET Vulkan::
         set_tests_properties(${name} PROPERTIES TIMEOUT 30)
     endforeach ()
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terrain-world")
+    add_test(NAME DetailDoodadInstancingGpu COMMAND TerrainDistanceWorldTest --detail-instancing)
+    add_test(NAME DetailDoodadInstancingRtGpu COMMAND TerrainDistanceWorldTest --detail-instancing-rt)
     add_test(NAME IndependentWorldUiGpu COMMAND TerrainDistanceWorldTest --independent-ui)
     add_test(NAME IndependentWorldUiRtGpu COMMAND TerrainDistanceWorldTest --independent-ui-rt)
     add_test(NAME IndependentWorldUiVsyncGpu COMMAND TerrainDistanceWorldTest --independent-ui-vsync)
@@ -363,7 +365,7 @@ if (WOWDECOMP_WORLD_ASSETS AND WOWDECOMP_VULKAN_CLIENT_BUILD AND TARGET Vulkan::
     add_test(NAME TerrainDirectionalSliceGpu COMMAND TerrainDistanceWorldTest --terrain-ray-shadows)
     add_test(NAME TerrainDirectionalFallbackGpu COMMAND TerrainDistanceWorldTest --terrain-ray-fallback)
     add_test(NAME TerrainDirectionalPressureGpu COMMAND TerrainDistanceWorldTest --terrain-ray-pressure)
-    set_tests_properties(IndependentWorldUiGpu IndependentWorldUiRtGpu IndependentWorldUiVsyncGpu TerrainDistanceWorldGpu TerrainDistanceNorthrendGpu RasterWorldFeaturesGpu WorldRayVisibilityDiagnosticGpu TerrainDirectionalSliceGpu TerrainDirectionalFallbackGpu TerrainDirectionalPressureGpu PROPERTIES TIMEOUT 180
+    set_tests_properties(DetailDoodadInstancingGpu DetailDoodadInstancingRtGpu IndependentWorldUiGpu IndependentWorldUiRtGpu IndependentWorldUiVsyncGpu TerrainDistanceWorldGpu TerrainDistanceNorthrendGpu RasterWorldFeaturesGpu WorldRayVisibilityDiagnosticGpu TerrainDirectionalSliceGpu TerrainDirectionalFallbackGpu TerrainDirectionalPressureGpu PROPERTIES TIMEOUT 180
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terrain-world"
         ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~;WOWDECOMP_TEST_WORLD_ASSETS=${WOWDECOMP_WORLD_ASSETS}")
 else ()

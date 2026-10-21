@@ -35,6 +35,9 @@ std::string ShaderOutputBoundary(std::string source, bool decode = true);
 bool ShaderUsesInputLocation(const std::vector<uint32_t>& code, uint32_t location);
 bool ShaderUsesOutputLocation(const std::vector<uint32_t>& code, uint32_t location);
 std::string PruneVertexFogOutput(std::string source);
+// Prepend instance placement to the recovered Wrath detail-doodad program.
+// Instance records use GxDetailDoodadInstance at set1/binding3.
+std::string DetailDoodadInstancedSource(std::string source);
 RecoveredShader RecoverFoglessSlangShader(const void* bytecode, size_t size, bool temporal);
 // Optional motion variant: previous packed vertex registers at set1/binding1,
 // clip-space jitter at set1/binding2; pixel options at set3/binding2 are

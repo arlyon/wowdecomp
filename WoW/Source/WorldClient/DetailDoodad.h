@@ -21,6 +21,9 @@ class CTexture;
 class CDetailDoodad {
     public:
     struct SShaderConstants;
+    struct InstancingStats { uint64_t draws=0,instances=0,meshBuiltBytes=0,instanceBuiltBytes=0,legacyEquivalentBytes=0,fallbacks=0; double meshBuildMs=0,instanceBuildMs=0; };
+    static InstancingStats s_instancingStats;
+    static void FreeInstancedBuffer(CGxBuf*& buffer);
 
     static CGxTex* s_alphaRampTexture;
     static int32_t s_bPoolsDirty;
@@ -97,6 +100,8 @@ class CDetailDoodadInstBatch {
     /* 000C */ CGxBuf* m_vertexBuf;
     /* 0010 */ CGxBuf* m_indexBuf;
     /* 0014 */ TSGrowableArray<CDetailDoodadInstAdd> m_adds;
+    CGxBuf* m_instanceBuf=nullptr;
+    bool DrawInstanced();
 
     CDetailDoodadInstBatch();
     ~CDetailDoodadInstBatch();
@@ -130,6 +135,7 @@ inline CDetailDoodadInstAdd::CDetailDoodadInstAdd() {
 
 // INLINED
 inline void CDetailDoodadInstBatch::FreeBuffers() {
+    CDetailDoodad::FreeInstancedBuffer(m_instanceBuf);
     if (!this->m_vertexBuf) {
         return;
     }

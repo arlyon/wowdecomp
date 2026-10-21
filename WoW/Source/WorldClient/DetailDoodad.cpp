@@ -1,5 +1,10 @@
 #include "DetailDoodad.h"
 #include <cmath>
+#include <stdexcept>
+#include <chrono>
+#include "Engine/Source/ConsoleBase/ConsoleVar.h"
+#include "Engine/Source/Gx/DetailDoodadInstance.h"
+#include "WoW/Source/WorldClient/WorldParam.h"
 #include "Engine/Source/Base/Handle.h"
 #include "Engine/Source/Base/ObjectAlloc.h"
 #include "Engine/Source/Gx/CGxBuf.h"
@@ -128,7 +133,7 @@ static void AcquireBuffers(uint32_t vertexCount, CGxBuf** vertexBuf, uint32_t in
 // OFFSET: 0x007B0D40
 int32_t CDetailDoodadInst::HasBatches() {
     for (uint32_t i = 0; i < 4; i++) {
-        if (this->m_batches[i].m_vertexBuf) {
+        if (this->m_batches[i].m_vertexBuf || this->m_batches[i].m_instanceBuf) {
             return 1;
         }
     }
@@ -435,6 +440,8 @@ void CDetailDoodadInstBatch::FillVertices() {
     buf->m_hasData = 1;
 }
 
+#include "DetailDoodadInstancing.inl"
+
 // VERIFY: a2c3ec0e manual
 // OFFSET: 0x007B1380
 void CDetailDoodad::DestroyModels() {
@@ -443,6 +450,7 @@ void CDetailDoodad::DestroyModels() {
             CDetailDoodadData* data = CDetailDoodad::s_doodadList[i];
 
             if (data) {
+                FreeInstancedBuffer(data->m_instanceVertexBuf);FreeInstancedBuffer(data->m_instanceIndexBuf);
                 if (data->m_texture) {
                     HandleClose(reinterpret_cast<HOBJECT>(data->m_texture));
                     data->m_texture = nullptr;
@@ -720,6 +728,12 @@ void CDetailDoodadInstBatch::Draw() {
         return;
     }
 
+    const bool instanced=CWorldParam::cvar_nativeDetailInstancing && CWorldParam::cvar_nativeDetailInstancing->m_intValue;
+    if(instanced){
+        g_theGxDevicePtr->RsSet(GxRs_Texture0,gxTex);
+        if(DrawInstanced())return;
+        ++CDetailDoodad::s_instancingStats.fallbacks;
+    }
     if (!this->m_vertexBuf || this->m_vertexBuf->m_pool->m_usage == GxPoolUsage_Stream) {
         AcquireBuffers(this->m_vertexCount, &this->m_vertexBuf, this->m_indexCount, &this->m_indexBuf);
     }
