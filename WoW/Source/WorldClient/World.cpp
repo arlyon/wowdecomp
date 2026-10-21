@@ -7,6 +7,7 @@
 #endif
 #line 1
 #include "World.h"
+#include "WorldDisplayEpoch.h"
 #include <cstdlib>
 #include <new>
 #include <algorithm>
@@ -1373,6 +1374,7 @@ void World::SetFarClip(float farClip) {
 // VERIFY: 833d137a auto
 // OFFSET: 0x00781430
 void CWorld::LoadMap(const char* mapName, C3Vector* position, int32_t zoneID, int32_t unused_a4) {
+    InvalidateWorldDisplay();
     if (g_theGxDevicePtr) g_theGxDevicePtr->SceneInvalidateHistory();
     World::s_farClip = World::ValidateFarClip(CWorldParam::cvar_farClip->m_floatValue, zoneID);
     World::s_nearClip = 0.2f;

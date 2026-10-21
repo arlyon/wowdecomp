@@ -48,6 +48,12 @@ int NativeShadowStatus(lua_State* state) {
     lua_pushnumber(state,status.triangles);lua_setfield(state,-2,"triangles");
     return 1;
 }
+int NativeIndependentWorldSupported(lua_State* state) {
+    lua_pushboolean(state,g_theGxDevicePtr && g_theGxDevicePtr->SceneIndependentWorldSupported());return 1;
+}
+int NativeIndependentWorldStatus(lua_State* state) {
+    lua_pushstring(state,g_theGxDevicePtr?g_theGxDevicePtr->SceneIndependentWorldStatus():"No graphics device");return 1;
+}
 int NativeTemporalSupported(lua_State* state) {
     lua_pushboolean(state, g_theGxDevicePtr && g_theGxDevicePtr->SceneTemporalSupported());
     return 1;
@@ -98,6 +104,8 @@ void InstallNativeVideoOptions() {
     FrameScript_RegisterFunction("GetNativeHdrStatus", NativeHdrStatus);
     FrameScript_RegisterFunction("GetNativeShadowStatus", NativeShadowStatus);
     FrameScript_RegisterFunction("GetNativeGraphicsDevices", NativeGraphicsDevices);
+    FrameScript_RegisterFunction("IsNativeIndependentWorldSupported",NativeIndependentWorldSupported);
+    FrameScript_RegisterFunction("GetNativeIndependentWorldStatus",NativeIndependentWorldStatus);
     FrameScript_RegisterFunction("IsNativeTemporalAASupported", NativeTemporalSupported);
     FrameScript_RegisterFunction("IsNativeSceneScalingSupported", NativeSceneScaleSupported);
     FrameScript_Execute(nativeVideoOptionsSource, "NativeVideoOptions", nullptr);

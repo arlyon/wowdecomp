@@ -15,6 +15,9 @@
 #include "WoW/Common/Types.h"
 #include "Engine/Source/Tempest/C2iVector.h"
 
+#include <memory>
+class WmoGeometryHitSnapshot;
+class WmoLiquidHitSnapshot;
 class CFrustum;
 class CWFrustum;
 struct SIffChunk;
@@ -247,6 +250,9 @@ class CMapObjGroup {
     void HandleAntiportal();
     int32_t FindLiquidType();
     bool GetTris(const CWFrustum& frustum, uint32_t flags, uint16_t faceIgnoreFlags, World::TriData* triData, CMapObjDef* mapObjDef);
+    std::shared_ptr<const WmoGeometryHitSnapshot> m_geometryHitSnapshot;
+    std::shared_ptr<const WmoGeometryHitSnapshot> CaptureGeometryHitSnapshot();
+    std::shared_ptr<const WmoLiquidHitSnapshot> CaptureLiquidHitSnapshot();
     bool GetTris(const C3Segment& seg, float* dist, uint32_t flags, uint16_t faceIgnoreFlags, World::TriData* triData, CMapObjDef* mapObjDef);
     bool GetTris(const CAaBox& box, uint32_t flags, uint16_t faceIgnoreFlags, World::TriData* triData, CMapObjDef* mapObjDef);
     void GetTrisFromQuery(World::TriData* triData, BspQuery* query, CMapObjDef* mapObjDef, uint32_t statusFlags);

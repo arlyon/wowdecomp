@@ -131,12 +131,15 @@ void CameraGetLineSegment(float x, float y, C3Vector* start, C3Vector* end) {
         return;
     }
 
-    C3Vector corners[8];
-    C44Matrix view;
-    C44Matrix projection;
     CGxDevice* device = g_theGxDevicePtr;
-    view = device->m_xforms[GxXform_View].m_mtx[device->m_xforms[GxXform_View].m_level];
-    projection = device->m_projection;
+    CameraGetLineSegmentFromTransforms(x,y,device->m_xforms[GxXform_View].m_mtx[device->m_xforms[GxXform_View].m_level],device->m_projection,start,end);
+}
+
+void CameraGetLineSegmentFromTransforms(float x,float y,const C44Matrix& view,const C44Matrix& projection,C3Vector* start,C3Vector* end) {
+    if(!start || !end || !(x>=0 && x<=1 && y>=0 && y<=1)) {
+        SErrSetLastError(STORM_ERROR_INVALID_PARAMETER);return;
+    }
+    C3Vector corners[8];
     GxuXformCalcFrustumCorners(view, projection, corners);
 
     float nearLeftX = corners[0].x + (corners[1].x - corners[0].x) * y;

@@ -35,6 +35,7 @@ void CGxDeviceVulkan::State::DestroyFarBuffer(FarBuffer& buffer) {
     buffer = {};
 }
 void CGxDeviceVulkan::State::CollectFar(bool destroy) {
+    if(!destroy && productionLease)return;
     for (auto it = farEntries.begin(); it != farEntries.end();) {
         auto& entry = **it;
         if (destroy) entry.lease->status = GxFarResourceStatus::DeviceExpired;

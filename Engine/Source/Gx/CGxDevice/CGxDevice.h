@@ -7,6 +7,7 @@
 #include "Engine/Source/Gx/CGxBuf.h"
 #include "Engine/Source/Gx/FarResources.h"
 #include "Engine/Source/Gx/ShadowScene.h"
+#include "Engine/Source/Gx/CompletedWorld.h"
 #include "Engine/Source/Gx/CGxDevice/CGxShader.h"
 #include "Engine/Source/Gx/CGxDevice/EmergencyMem.h"
 #include "Engine/Source/Gx/CGxDevice/Types.h"
@@ -204,6 +205,17 @@ class CGxDevice {
     // Optional world-only target scope; unsupported backends keep their existing path.
     virtual bool SceneBeginWorld(bool = false, uint64_t = 0) { return false; }
     virtual void SceneEndWorld() {}
+    virtual bool SceneIndependentWorldSupported() const { return false; }
+    virtual const char* SceneIndependentWorldStatus() const { return "Unavailable on this renderer; synchronous rendering retained"; }
+    virtual void SceneReportIndependentWorldFailure(const char*) {}
+    virtual bool SceneConfigureIndependentWorld(bool enabled) { return !enabled; }
+    virtual bool SceneWorldProductionReady() { return false; }
+    virtual bool SceneBeginWorldProduction(uint64_t) { return false; }
+    virtual GxWorld::WorldFrameLease SceneEndWorldProduction(const GxWorld::WorldFrameDescription&) { return {}; }
+    virtual void SceneAbortWorldProduction() {}
+    virtual bool SceneComposeCompletedWorld(uint64_t, GxWorld::WorldFrame* = nullptr) { return false; }
+    virtual void SceneInvalidateCompletedWorld() {}
+    virtual uint64_t ScenePresentationVersion() const { return 0; }
     virtual void SceneConfigureShadows(bool, bool) {}
     virtual void SceneConfigureTerrainShadows(bool) {}
     virtual bool SceneTerrainShadowsRequested() const { return false; }

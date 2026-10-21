@@ -187,6 +187,7 @@ void CGxDeviceVulkan::State::HdrTransfer(NativeImage& source,VkImageView target,
     Barrier(source.image,source.aspect,1,1,source.layout,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);source.layout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDescriptorImageInfo images[]={{VK_NULL_HANDLE,source.view,source.layout},{hdrSampler,VK_NULL_HANDLE,VK_IMAGE_LAYOUT_UNDEFINED}};
     VkWriteDescriptorSet writes[2]{};for(unsigned i=0;i<2;++i) {auto& w=writes[i];w.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;w.dstSet=set;w.dstBinding=i;w.descriptorCount=1;w.descriptorType=i?VK_DESCRIPTOR_TYPE_SAMPLER:VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;w.pImageInfo=&images[i];}
+    if(productionCapture)producerBuffers.insert(hdrLutBuffer.buffer);
     VkDescriptorBufferInfo lutBuffer{hdrLutBuffer.buffer,0,hdrLutBuffer.size};
     VkWriteDescriptorSet lutWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};lutWrite.dstSet=set;lutWrite.dstBinding=2;lutWrite.descriptorCount=1;lutWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;lutWrite.pBufferInfo=&lutBuffer;
     vkUpdateDescriptorSets(device,2,writes,0,nullptr);vkUpdateDescriptorSets(device,1,&lutWrite,0,nullptr);

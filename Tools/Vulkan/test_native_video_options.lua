@@ -1,5 +1,5 @@
 -- Exercise the production settings script in the client's bundled Lua runtime.
-local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1",nativeHDR="0",nativeHDRExposure="0",nativeHDRLut="",landscapeDistance="0",nativeRayTracing="0",nativeRayStrict="1",nativeTerrainRayShadows="0"}, 0, 0
+local frames, saved, writes, categories = {}, {gxBackend="auto",gxAdapter="auto",nightDarkness="0",localTimePreview="-1",nativeAA="0",nativeSceneScale="1",nativeHDR="0",nativeHDRExposure="0",nativeHDRLut="",landscapeDistance="0",nativeRayTracing="0",nativeRayStrict="1",nativeTerrainRayShadows="0",nativeIndependentWorld="0"}, 0, 0
 local methods = {}
 for _, key in ipairs({"SetAllPoints","SetWidth","SetJustifyH","SetMinMaxValues","SetValueStep","SetHeight","SetAutoFocus","SetMaxLetters","ClearFocus"}) do methods[key] = function() end end
 function methods:Enable() self.enabled=true end
@@ -53,6 +53,9 @@ VideoOptionsFrameApply={Enable=function() end}
 local scaleSupported, aaSupported = true, true
 function IsNativeSceneScalingSupported() return scaleSupported end
 function IsNativeTemporalAASupported() return aaSupported end
+local independentSupported = true
+function IsNativeIndependentWorldSupported() return independentSupported end
+function GetNativeIndependentWorldStatus() return independentSupported and "Off: synchronous rendering" or "Unavailable; saved choice preserved" end
 local hdrSupported, lutState, reloads=true,"None",0
 function GetNativeHdrStatus() return {supported=hdrSupported,active=false,lut=lutState} end
 local raySupported=true
@@ -86,7 +89,7 @@ display.okay=apply;display.cancel=apply
 display.default=function() error("Legacy resolution defaults invoked") end
 function VideoOptionsPanel_Default(self) for _,v in ipairs(self.controls) do v:SetValue(v.defaultValue) end end
 loadProduction()()
-assert(categories==5 and writes==0 and modeWrites==0,"Installation changed settings or installed unavailable features")
+assert(categories==6 and writes==0 and modeWrites==0,"Installation changed settings or installed unavailable features")
 assert(resolution.hidden and refresh.hidden and resolution.newValue==nil and refresh.newValue==nil)
 assert(#display.controls==5 and display.controls[1]==samples and display.controls[2]==ui and display.controls[3]==vsync and display.controls[4]==window and display.controls[5]==gamma)
 assert(samples.point[2]==display and vsync.point[2]==samples and ui.point[2]==display)
@@ -114,8 +117,21 @@ snapshot.backendOverride="vulkan";snapshot.adapterOverride=identity;snapshot.loa
 renderer.refresh()
 local status=renderer.fontStrings[#renderer.fontStrings].text
 assert(status:find("WOWDECOMP_GX_BACKEND",1,true) and status:find("Loader-filtered",1,true) and status:find("Recovery",1,true))
-loadProduction()();assert(categories==5,"Duplicate installation")
+loadProduction()();assert(categories==6,"Duplicate installation")
 assert(not NativeRayTracedShadowsCheck,"Unimplemented graphics features exposed")
+local worldPanel=frames.NativeWorldPresentationPanel
+local independent=frames.NativeIndependentWorldCheck
+local beforeIndependent=writes
+independent:SetChecked(true);independent.scripts.OnClick(independent)
+worldPanel.scripts.OnShow();assert(writes==beforeIndependent and independent:GetChecked(),"World scheduling applied before Apply")
+worldPanel.cancel();worldPanel.okay();assert(saved.nativeIndependentWorld=="0","World scheduling Cancel changed settings")
+independent:SetChecked(true);independent.scripts.OnClick(independent);worldPanel.okay()
+assert(saved.nativeIndependentWorld=="1","World scheduling Apply did not save")
+worldPanel.default();assert(saved.nativeIndependentWorld=="1" and not independent:GetChecked(),"World scheduling Defaults saved early")
+worldPanel.cancel();assert(independent:GetChecked(),"World scheduling Cancel lost saved intent")
+independentSupported=false;worldPanel.refresh();worldPanel.okay()
+assert(saved.nativeIndependentWorld=="1" and not independent.enabled and independent:GetChecked(),"Unsupported world scheduling erased saved intent")
+independentSupported=true;worldPanel.default();worldPanel.okay();assert(saved.nativeIndependentWorld=="0","World scheduling Defaults did not apply")
 local lighting=frames.NativeNightLightingPanel
 local darkness=frames.NativeNightDarknessSlider
 local clock=frames.NativeLocalTimePreviewSlider
