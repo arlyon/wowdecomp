@@ -28,6 +28,7 @@ class CWorldParam {
     static CVar* cvar_nativeRayStrict;
     static CVar* cvar_nativeAA;
     static CVar* cvar_nativeIndependentWorld;
+    static CVar* cvar_nativeDetailInstancing;
     static CVar* cvar_nativeSceneScale;
     static CVar* cvar_nativeHDR;
     static CVar* cvar_nativeHDRExposure;
@@ -69,6 +70,7 @@ class CWorldParam {
     static bool NightDarknessCallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static bool NativeAACallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static bool NativeIndependentWorldCallback(CVar*, const char*, const char*, void*);
+    static bool NativeDetailInstancingCallback(CVar*, const char*, const char*, void*);
     static bool NativeSceneScaleCallback(CVar* var, const char* oldValue, const char* value, void* arg);
     static void InitializeNativeHDRCVars();
     static bool NativeHDRCallback(CVar*, const char*, const char*, void*);

@@ -18,6 +18,7 @@
 #include "AccelerationScene.h"
 #include "Engine/Source/Gx/Blit.h"
 #include "Engine/Source/Gx/Buffer.h"
+#include "Engine/Source/Gx/DetailDoodadInstance.h"
 #include "Engine/Source/Gx/CGxPool.h"
 #include "Engine/Source/Gx/Gx.h"
 #include "Engine/Source/Os/Window.h"
@@ -139,6 +140,8 @@ struct NativeShader {
     GxVulkan::ShaderBindings bindings;
     std::vector<uint32_t> code, temporalCode;
     std::vector<uint32_t> foglessCode[2];
+    std::vector<uint32_t> detailInstancedCode[2];
+    bool detailInstancedAttempted[2]{};
     bool inputFog = false, outputFog = false;
     std::string source, temporalSource;
     std::shared_ptr<GxVulkan::ShaderOverride> maintained;
@@ -407,6 +410,9 @@ struct CGxDeviceVulkan::State : GxVulkan::RecordingResources {
     std::map<CGxTex*, NativeImage> textures;
     std::vector<NativeImage> retiredImages;
     std::map<CGxShader*, NativeShader> shaders;
+    CGxBuf* detailInstances=nullptr;
+    uint32_t detailInstanceCount=1;
+    uint64_t detailDraws=0,detailDrawnInstances=0;
     uint64_t nextShader = 1;
     GxVulkan::SlangCompiler shaderCompiler;
     std::vector<uint32_t> fixedVertex, fixedPixel, temporalFixedVertex, temporalFixedPixel;
@@ -746,6 +752,7 @@ void CGxDeviceVulkan::State::Initialize() {
         for (unsigned binding = 0; binding < (uniform ? 3u : set == 0 ? 4u : 16u); ++binding)
             bindings.push_back({binding, uniform ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 1, set < 2 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+        if(set==1)bindings.push_back({3,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT,nullptr});
         VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         layout.bindingCount = static_cast<uint32_t>(bindings.size()); layout.pBindings = bindings.data();
         GX_VK(vkCreateDescriptorSetLayout(device, &layout, nullptr, &descriptorLayouts[set]));
@@ -1381,8 +1388,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
             foglessVertex = &code;
         }
     }
-    const auto& vertexCode = terrainDraw?v->directional.code:foglessVertex ? *foglessVertex : msdfFont ? msdfFontVertex : fixedVertexStage ?
+    const auto& ordinaryVertexCode = terrainDraw?v->directional.code:foglessVertex ? *foglessVertex : msdfFont ? msdfFontVertex : fixedVertexStage ?
         (temporal ? temporalFixedVertex : fixedVertex) : (temporal ? temporalCode(v, vertexShader) : v->code);
+    const auto& vertexCode=detailInstances?v->detailInstancedCode[foglessVertex?1:0]:ordinaryVertexCode;
     const auto& originalPixelCode = terrainDraw?p->directional.code:msdfFont ? (temporal ? temporalMsdfFontPixel : msdfFontPixel) : fixedPixelStage ?
         (temporal ? temporalFixedPixel : fixedPixel) : (temporal ? temporalCode(p, pixelShader) : p->code);
     const std::vector<uint32_t>* selectedPixelCode = &originalPixelCode;
@@ -1402,6 +1410,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
         required = {GxVA_Position, GxVA_Normal, GxVA_Color0};
         for (int i = 0; i < 8; ++i) required.push_back(GxVA_TexCoord0 + i);
     } else required = vertexBindings->attributes;
+    if(detailInstances)required.erase(std::remove_if(required.begin(),required.end(),[&](int location){return !GxVulkan::ShaderUsesInputLocation(vertexCode,location);}),required.end());
     std::array<const CGxVertexAttrib*, GxVAs_Last> declarations{};
     std::array<CGxBuf*, GxVAs_Last> buffers{};
     if (gx.m_primVertexFormat < GxVertexBufferFormats_Last) {
@@ -1661,6 +1670,12 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     if (msdfFont) writeSampler(2, 0);
     else if (fixedPixelStage) for (unsigned stage = 0; stage < 8; ++stage) writeSampler(2, stage);
     else for (int slot : pixelBindings->samplers) writeSampler(2, slot);
+    VkDescriptorBufferInfo instanceBinding{};
+    if(detailInstances){
+        const auto source=Geometry(detailInstances);instanceBinding={source.first,source.second,VkDeviceSize(detailInstanceCount)*sizeof(GxDetailDoodadInstance)};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=sets[1];write.dstBinding=3;write.descriptorCount=1;
+        write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.pBufferInfo=&instanceBinding;writes.push_back(write);
+    }
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     std::pair<VkBuffer, VkDeviceSize> residentIndex{};
     if (indexed && batch.m_primType != GxPrim_TriangleFan) {
@@ -1678,6 +1693,7 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
     std::vector<uint64_t> key{fixedVertexStage ? 0 : v->id, fixedPixelStage ? 0 : p->id, reinterpret_cast<uint64_t>(currentPass),
         blend, depthTest, depthWrite, cull, colourMask, depthFunction, static_cast<uint64_t>(primitive)};
     key.push_back(terrainDraw?1:0);
+    key.push_back(detailInstances?1:0);
     key.push_back(msdfFont ? 1 : 0); // Authored fonts cannot alias fixed/legacy pipelines.
     key.push_back(hdrDraw && !linearOutput && !terrainShadowActive ? 1 : 0); // Encoded and explicit-linear providers have distinct output boundaries.
     for (const auto& binding : bindings) { key.push_back(binding.binding); key.push_back(binding.stride); }
@@ -1823,9 +1839,9 @@ void CGxDeviceVulkan::State::Draw(CGxBatch& batch, bool indexed) {
             indexOffset = residentIndex.second + static_cast<uint64_t>(batch.m_start) * 2;
         } else indexOffset = Upload(data->data() + buffer->m_index + batch.m_start * 2, batch.m_count * 2, 4);
         vkCmdBindIndexBuffer(command, indexBuffer, indexOffset, VK_INDEX_TYPE_UINT16);
-        vkCmdDrawIndexed(command, batch.m_count, 1, 0, 0, 0);
+        vkCmdDrawIndexed(command, batch.m_count, detailInstanceCount, 0, 0, 0);
     } else {
-        vkCmdDraw(command, batch.m_count, 1, batch.m_start, 0);
+        vkCmdDraw(command, batch.m_count, detailInstanceCount, batch.m_start, 0);
     }
     ++drawCount;
 }
@@ -2758,6 +2774,31 @@ void CGxDeviceVulkan::ScenePresent() {
 }
 void CGxDeviceVulkan::Draw(CGxBatch* batch, int32_t indexed) {
     if (m_context && batch) m_native->Draw(*batch, indexed != 0);
+}
+bool CGxDeviceVulkan::DetailDoodadInstancingSupported() const {
+    return m_context && !m_native->temporalActive && m_native->properties.limits.maxPerStageDescriptorStorageBuffers>0;
+}
+bool CGxDeviceVulkan::DrawDetailDoodadInstances(CGxBatch* batch,CGxBuf* instances,uint32_t count){
+    auto& s=*m_native;
+    if(!DetailDoodadInstancingSupported() || !batch || !instances || !count || s.temporalActive || s.terrainReceiver || s.detailInstances || batch->m_primType!=GxPrim_Triangles)return false;
+    const uint64_t bytes=uint64_t(count)*sizeof(GxDetailDoodadInstance);
+    if(!instances->m_pool || instances->m_pool->m_usage==GxPoolUsage_Stream || instances->m_itemSize!=sizeof(GxDetailDoodadInstance) || bytes>instances->m_size || bytes>s.properties.limits.maxStorageBufferRange)return false;
+    auto* vertex=static_cast<CGxShader*>(m_appRenderStates[GxRs_VertexShader].m_value.m_data.p);
+    auto* pixel=static_cast<CGxShader*>(m_appRenderStates[GxRs_PixelShader].m_value.m_data.p);
+    if(!vertex || !pixel || !vertex->m_key.m_str || (std::strcmp(vertex->m_key.m_str,"DetailDoodad") && std::strncmp(vertex->m_key.m_str,"DetailDoodad:",13)))return false;
+    if(!vertex->m_loaded)IShaderCreate(vertex);if(!pixel->m_loaded)IShaderCreate(pixel);
+    const auto vi=s.shaders.find(vertex),pi=s.shaders.find(pixel);
+    if(vi==s.shaders.end() || pi==s.shaders.end() || !vertex->m_valid || !pixel->m_valid)return false;
+    auto& v=vi->second;const bool fogless=v.outputFog && !pi->second.inputFog;
+    if(!v.detailInstancedAttempted[fogless]){
+        v.detailInstancedAttempted[fogless]=true;
+        try{auto source=fogless?GxVulkan::PruneVertexFogOutput(v.source):v.source;
+            v.detailInstancedCode[fogless]=s.Compile(GxVulkan::DetailDoodadInstancedSource(std::move(source)),true,v.maintained);
+        }catch(const std::exception& error){GxLog("Detail instancing unavailable for selected shader: %s",error.what());}
+    }
+    if(v.detailInstancedCode[fogless].empty())return false;
+    struct Reset {State& s;~Reset(){s.detailInstances=nullptr;s.detailInstanceCount=1;}} reset{s};
+    s.detailInstances=instances;s.detailInstanceCount=count;s.Draw(*batch,true);++s.detailDraws;s.detailDrawnInstances+=count;return true;
 }
 void CGxDeviceVulkan::IRsSendToHw(EGxRenderState) {
     // Gx still tracks dirty state, but Vulkan snapshots it into each draw's

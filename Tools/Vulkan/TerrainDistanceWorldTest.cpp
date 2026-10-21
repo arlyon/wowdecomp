@@ -48,6 +48,13 @@
 #include "WoW/Source/WorldClient/MapLowDetail.h"
 #include "WoW/Source/WorldClient/World.h"
 #include "WoW/Source/WorldClient/WorldParam.h"
+#include "WoW/Source/WorldClient/DetailDoodad.h"
+#include "WoW/Source/WorldClient/CDetailDoodadData.h"
+#include "WoW/Source/WorldClient/MapArea.h"
+#include "WoW/Source/WorldClient/MapChunk.h"
+#include "WoW/Source/WorldClient/MapLight.h"
+#include "Engine/Source/Model2/M2Light.h"
+#include "Engine/Source/Model2/M2Scene.h"
 #include "WoW/Source/WorldClient/shadow.h"
 #include <SDL.h>
 #include <algorithm>
@@ -84,6 +91,8 @@ struct State {
     std::string previousShaderRoot;
     bool hadShaderRoot=false;
     bool independentWorld=false,independentRT=false,independentVsync=false,inputs=false,worldText=false;
+    bool detailInstancing=false;uint64_t detailDraws=0;
+    std::vector<CImVector> detailOnlyColour;std::vector<float> detailOnlyDepth;
     CGxFont* font=nullptr;
     CGxString* label=nullptr;
     CGxStringBatch* labelBatch=nullptr;
@@ -377,18 +386,21 @@ void ShadowVisibilityTick(){
     Check(lit>100&&shadow>100,"actual world RT query output was vacuous");
     test.phase=2;test.featureFrame=0;Set(CWorldParam::cvar_nativeRayTracing,"0");
 }
+void DropDetailInstanceSources();
 #include "IndependentWorldUiTest.inl"
+#include "DetailDoodadInstancingTest.inl"
 int32_t Tick(const void*,void*) {
     try {
         Check(++test.ticks<=(test.independentWorld?100000u:1200u),"production world did not reach required state");
         Check(std::chrono::steady_clock::now()-test.started<std::chrono::seconds(120),"production render deadline exceeded");
-        if(test.independentWorld && test.ticks>90u){IndependentUiTick();return 1;}
+        if(test.independentWorld && test.ticks>(test.detailInstancing?140u:90u)){IndependentUiTick();return 1;}
         auto& gx=*test.device;auto* camera=test.frame->m_camera;auto position=camera->m_position;
         test.frame->m_elapsedSec=1.f/60;
         camera->SetGxProjectionAndView(CRect{0,0,1,1});
         test.frame->UpdateDayNight(test.frame->m_elapsedSec);
         C3Vector target=position+camera->Forward();CWorld::Update(&position,&target,&position);
         gx.SceneClear(3,CImVector(0,0,0,255));test.frame->OnWorldRender();
+        if(test.detailInstancing)DetailInstancingTick();
         if(!test.independentWorld){if(test.shadowVisibility||test.terrainShadows)ShadowVisibilityTick();else if(test.rasterFeatures)RasterTick();else TerrainTick();}
         gx.ScenePresent();
     }catch(const std::exception& error) {std::fprintf(stderr,"FAIL synchronous terrain: %s\n",error.what());test.result=1;EventPostClose();}
@@ -417,6 +429,11 @@ int32_t Initialize(const void*,void*) {
         M2Initialize(GetM2CvarFlags(),0);test.models=true;
         SysMsgInitialize();Check(FrameScript_Initialize(0)!=0,"script context failed");ScrnInitialize(0);ILayerDestroy();
         Stage("database");ClientDBInitialize();CWorldParam::Initialize();CameraRegisterCVars();
+        if(test.detailInstancing){
+            Check(CWorldParam::cvar_nativeDetailInstancing && !CWorldParam::cvar_nativeDetailInstancing->m_intValue,"Detail instancing must default Off");
+            CWorldParam::cvar_nativeDetailInstancing->Set("2",true,false,false,false);
+            Check(!CWorldParam::cvar_nativeDetailInstancing->m_intValue,"Invalid instancing toggle changed saved intent");
+        }
         Set(CWorldParam::cvar_landscapeDistance,(test.rasterFeatures||test.shadowVisibility||test.terrainShadows||test.independentWorld)?"0":"4000");Set(CWorldParam::cvar_nativeAA,"0");
         Set(CWorldParam::cvar_nativeRayTracing,"0");Set(CWorldParam::cvar_nativeTerrainRayShadows,"0");Set(CWorldParam::cvar_nativeRayStrict,"1");
         Set(CWorldParam::cvar_nativeHDR,"0");Set(CWorldParam::cvar_localTimePreview,"12");
@@ -504,7 +521,8 @@ int main(int argc,char** argv) {
     const char* assets=std::getenv("WOWDECOMP_TEST_WORLD_ASSETS");
     if(!assets || !*assets){std::fputs("WOWDECOMP_TEST_WORLD_ASSETS must identify read-only Data\n",stderr);return 1;}
     test.independentVsync=!std::strcmp(argv[1],"--independent-ui-vsync");
-    test.independentRT=test.independentVsync||!std::strcmp(argv[1],"--independent-ui-rt");test.independentWorld=test.independentRT||!std::strcmp(argv[1],"--independent-ui");
+    test.detailInstancing=!std::strcmp(argv[1],"--detail-instancing")||!std::strcmp(argv[1],"--detail-instancing-rt");
+    test.independentRT=test.independentVsync||!std::strcmp(argv[1],"--independent-ui-rt")||!std::strcmp(argv[1],"--detail-instancing-rt");test.independentWorld=test.detailInstancing||test.independentRT||!std::strcmp(argv[1],"--independent-ui");
     if(test.independentWorld){Width=test.independentVsync?1428:1280;Height=test.independentVsync?2516:720;}
     test.assets=std::filesystem::absolute(assets);test.northrend=!std::strcmp(argv[1],"--northrend-distance");
     test.rasterFeatures=!std::strcmp(argv[1],"--raster-features");test.shadowVisibility=!std::strcmp(argv[1],"--rt-visibility");test.terrainFallback=!std::strcmp(argv[1],"--terrain-ray-fallback");test.terrainPressure=!std::strcmp(argv[1],"--terrain-ray-pressure");test.terrainShadows=test.terrainFallback||test.terrainPressure||!std::strcmp(argv[1],"--terrain-ray-shadows");

@@ -87,7 +87,7 @@ VkBuffer ResidentBuffer::Resolve(VkDevice device, const VkPhysicalDeviceMemoryPr
             if (size != bytes) std::memset(staging.mapped + bytes, 0, static_cast<size_t>(size - bytes));
             if (replace) destination = CreateBuffer(device, memory, size,
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
             // Reserve ownership records before recording any commands; an
             // allocation failure must not free memory referenced by the queue.
@@ -101,10 +101,10 @@ VkBuffer ResidentBuffer::Resolve(VkDevice device, const VkPhysicalDeviceMemoryPr
         vkCmdCopyBuffer(command, staging.buffer, m_buffer.buffer, 1, &copy);
         VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
         barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.buffer = m_buffer.buffer; barrier.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
             0, 0, nullptr, 1, &barrier, 0, nullptr);
         uploadedBytes += size;
         m_sourceBytes = bytes;

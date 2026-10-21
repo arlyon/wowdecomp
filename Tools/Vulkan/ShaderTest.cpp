@@ -106,6 +106,11 @@ int main() {
         Validate(compiler.Compile(RecoverSlangSource(vertex, sizeof(vertex)), true));
         Validate(compiler.Compile(recoveredRelative, true));
         Validate(compiler.Compile(colourPointSource, true));
+        const auto detailInstance=DetailDoodadInstancedSource(colourPointSource);
+        Check(detailInstance.find("SV_InstanceID")!=std::string::npos && detailInstance.find("binding(3,1)")!=std::string::npos,"Detail instance placement ABI missing");
+        Check(detailInstance.find("input.m_v1 = gx_i.colour")!=std::string::npos,"Detail instance colour not applied before authored vertex program");
+        Validate(compiler.Compile(detailInstance,true));
+        Reject([&]{DetailDoodadInstancedSource("unrecognised vertex ABI");});
         for (const auto& program : {std::vector<uint32_t>(std::begin(vertex),std::end(vertex)),
              std::vector<uint32_t>(std::begin(relativeVertex),std::end(relativeVertex)),
              std::vector<uint32_t>(std::begin(colourPointVertex),std::end(colourPointVertex))}) {

@@ -247,6 +247,9 @@ class CGxDevice {
     virtual void XformSetProjection(const C44Matrix& matrix);
     virtual void XformSetView(const C44Matrix& matrix);
     virtual void Draw(CGxBatch* batch, int32_t count);
+    // Optional Wrath detail-doodad input placement; false leaves the legacy path.
+    virtual bool DetailDoodadInstancingSupported() const { return false; }
+    virtual bool DrawDetailDoodadInstances(CGxBatch*, CGxBuf*, uint32_t) { return false; }
     virtual void PrimBegin(EGxPrim primType);
     virtual void PrimDrawElements();
     virtual void PrimVertex(const C3Vector& v);

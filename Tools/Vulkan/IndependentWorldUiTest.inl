@@ -73,6 +73,7 @@ void IndependentUiTick(){
                 Check(epoch==WorldDisplayEpoch() && test.frame->HasDisplayedWorld(),"Reapplying unchanged camera owner invalidated completed world");m.checkedCameraOwner=true;
             }
             m.frozen=displayed;m.holding=true;m.holdStart=m.lastPresent=now;
+            if(test.detailInstancing && !m.windows)DropDetailInstanceSources();
             const float rayX=NDCToDDCWidth(.5f),rayY=NDCToDDCHeight(.5f);
             C3Vector a,b,c,d;Check(test.frame->GetLineSegment(rayX,rayY,&a,&b),"Displayed camera had no ray");
             const auto camera=test.frame->m_camera->m_position;test.frame->m_camera->m_position.x+=100;
