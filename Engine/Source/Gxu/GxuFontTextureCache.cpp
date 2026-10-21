@@ -1,4 +1,5 @@
 #include <cstddef>
+#include "Engine/Source/Gxu/GxuFontMsdf.h"
 #include <cstdint>
 #include <cstring>
 #include "Engine/Source/Base/Handle.h"
@@ -12,6 +13,7 @@
 
 // STATIC: 0x00C7D328
 static uint16_t s_textureData[256 * 256];
+static uint8_t s_msdfTextureData[256 * 256 * 4];
 
 // VERIFY: 7a9fdc75 manual
 // OFFSET: 0x006C8E70
@@ -350,7 +352,7 @@ CHARCODEDESC* TEXTURECACHE::AllocateNewGlyph(GLYPHBITMAPDATA* data) {
     uint32_t count = this->m_textureRows.m_count;
 
     for (uint32_t i = 0; i < count; i++) {
-        CHARCODEDESC* desc = this->m_textureRows.m_data[i].CreateNewDesc(data, i, this->m_theFace->m_cellHeight);
+        CHARCODEDESC* desc = this->m_textureRows.m_data[i].CreateNewDesc(data, i, this->m_theFace->AtlasCellHeight());
 
         if (desc) {
             return desc;
@@ -368,6 +370,29 @@ void TEXTURECACHE::TextureCallback(EGxTexCommand command, uint32_t width, uint32
     }
 
     TEXTURECACHE* cache = static_cast<TEXTURECACHE*>(userArg);
+    if (cache->m_theFace && cache->m_theFace->m_isMsdf) {
+        memset(s_msdfTextureData, 0, sizeof(s_msdfTextureData));
+        const uint32_t cellHeight = cache->m_theFace->AtlasCellHeight();
+        for (uint32_t row = 0; row < cache->m_textureRows.m_count; ++row) {
+            auto& cacheRow = cache->m_textureRows.m_data[row];
+            for (CHARCODEDESC* glyph = cacheRow.m_glyphlist.Head(); glyph; glyph = cacheRow.m_glyphlist.Next(glyph)) {
+                const auto& data = glyph->m_bitmapData;
+                GxuMsdf::PasteGlyph(data.m_data, data.m_dataSize, data.AtlasWidth(), cellHeight,
+                    glyph->m_glyphStartPixel, row * cellHeight, s_msdfTextureData);
+            }
+        }
+        // The existing upload blitter supports Argb8888 (BGRA bytes), not
+        // Abgr8888 identity copies. Preserve the generated RGB channels when
+        // sampling the native B8G8R8A8 atlas, without changing shared uploads.
+        for (uint32_t i = 0; i < 256 * 256 * 4; i += 4) {
+            const uint8_t red = s_msdfTextureData[i];
+            s_msdfTextureData[i] = s_msdfTextureData[i + 2];
+            s_msdfTextureData[i + 2] = red;
+        }
+        texelStrideInBytes = 256 * 4;
+        texels = s_msdfTextureData;
+        return;
+    }
 
     for (uint32_t row = cache->m_textureRows.m_count; row > 0; row--) {
         TEXTURECACHEROW& cacheRow = cache->m_textureRows.m_data[row - 1];
@@ -402,14 +427,17 @@ void TEXTURECACHE::TextureCallback(EGxTexCommand command, uint32_t width, uint32
 // OFFSET: 0x006CA050
 void TEXTURECACHE::CreateTexture(int32_t filter) {
     CGxTexFlags flags(static_cast<EGxTexFilter>(filter != 0), 0, 0, 0, 0, 0, 1, 0, 0, 0);
-    this->m_texture = TextureCreate(256, 256, GxTex_Argb4444, GxTex_Argb4444, flags, this, TEXTURECACHE::TextureCallback, "GxuFont", 0);
+    const bool msdf = this->m_theFace && this->m_theFace->m_isMsdf;
+    if (msdf) flags.m_filter = GxTex_Linear;
+    const auto format = msdf ? GxTex_Argb8888 : GxTex_Argb4444;
+    this->m_texture = TextureCreate(256, 256, format, format, flags, this, TEXTURECACHE::TextureCallback, "GxuFont", 0);
 }
 
 // VERIFY: ba005b39 manual
 // OFFSET: 0x006CA130
 void TEXTURECACHE::Initialize(CGxFont* face, uint32_t cellHeight) {
     this->m_theFace = face;
-    uint32_t rows = 256 / cellHeight;
+    uint32_t rows = cellHeight && cellHeight <= 256 ? 256 / cellHeight : 0;
     this->m_textureRows.SetCount(rows);
 
     for (uint32_t i = 0; i < rows; i++) {

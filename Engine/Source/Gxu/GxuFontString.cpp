@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstddef>
+#include "Engine/Source/Gxu/GxuFontMsdf.h"
 #include <cstdint>
 #include "Engine/Source/Gxu/GxuFontString.h"
 #include "Engine/Source/Gxu/GxuFontFont.h"
@@ -508,6 +509,11 @@ void CGxString::InitializeTextLine(const char* text, uint32_t numBytes, CImVecto
 
                     vert.m_vc.y = desc->m_bitmapData.m_yOffset * scale + vert.m_vc.y;
 
+                    const float msdfBorder = desc->m_bitmapData.m_isMsdf ? GxuMsdf::Border * scale : 0.0f;
+                    vert.m_vc.x -= msdfBorder;
+                    vert.m_vc.y -= msdfBorder;
+                    width += 2 * msdfBorder;
+
                     uint32_t vertIndex = textLine->m_verts.Add(4, 0, &vert);
                     VERT* verts = &textLine->m_verts.m_data[vertIndex];
 
@@ -517,14 +523,14 @@ void CGxString::InitializeTextLine(const char* text, uint32_t numBytes, CImVecto
                     verts[3].m_vc.x = width;
                     verts[2].m_vc.x = width;
 
-                    float top = (this->m_flags & 0x80 ? fontPixelHeight : cellHeight) + verts[3].m_vc.y;
+                    float top = (this->m_flags & 0x80 ? fontPixelHeight : cellHeight) + 2 * msdfBorder + verts[3].m_vc.y;
                     verts[3].m_vc.y = top;
                     verts[1].m_vc.y = top;
                     verts[0].m_vc.y = verts[2].m_vc.y;
 
                     CRect coords = desc->m_bitmapData.m_textureCoords;
 
-                    if (this->m_flags & 0x80) {
+                    if ((this->m_flags & 0x80) && !desc->m_bitmapData.m_isMsdf) {
                         coords.minY = coords.minY + pixelAdjustments.minY;
                         coords.minX = coords.minX + pixelAdjustments.minX;
                         coords.maxY = coords.maxY + pixelAdjustments.maxY;

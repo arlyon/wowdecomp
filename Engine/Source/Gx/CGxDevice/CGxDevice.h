@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include "Engine/Source/Gx/CGxBuf.h"
+#include "Engine/Source/Gx/FarResources.h"
+#include "Engine/Source/Gx/ShadowScene.h"
 #include "Engine/Source/Gx/CGxDevice/CGxShader.h"
 #include "Engine/Source/Gx/CGxDevice/EmergencyMem.h"
 #include "Engine/Source/Gx/CGxDevice/Types.h"
@@ -172,6 +174,7 @@ class CGxDevice {
     virtual void DeviceDestroy();
     virtual void DeviceEvictResources();
     virtual int32_t DeviceSetFormat(const CGxFormat& format);
+    virtual bool DeviceGetWindowLogicalSize(C2iVector& size) const { return false; }
     virtual void DeviceSetBaseMipLevel(uint32_t level);
     virtual void DeviceSetGamma(float gamma);
     virtual void DeviceSetGamma(const CGxGammaRamp& ramp);
@@ -198,6 +201,37 @@ class CGxDevice {
     virtual void LogCrashInfo(char* buffer, uint32_t size);
     virtual void ScenePresent();
     virtual void SceneClear(uint32_t mask, CImVector color);
+    // Optional world-only target scope; unsupported backends keep their existing path.
+    virtual bool SceneBeginWorld(bool = false, uint64_t = 0) { return false; }
+    virtual void SceneEndWorld() {}
+    virtual void SceneConfigureShadows(bool, bool) {}
+    virtual void SceneConfigureTerrainShadows(bool) {}
+    virtual bool SceneTerrainShadowsRequested() const { return false; }
+    virtual void SceneSetTerrainReceiver(bool) {}
+    virtual void SceneFinishTerrainShadows() {}
+    virtual bool SceneShadowsRequested() const { return false; }
+    virtual bool SceneShadowsSupported() const { return false; }
+    virtual void SceneSetShadowFrame(std::shared_ptr<const GxShadow::Frame>) {}
+    virtual GxShadow::Status SceneShadowStatus() const { GxShadow::Status s; s.result=GxShadow::FrameResult::Unavailable; return s; }
+    virtual void SceneRequestHdrLut(const char*, bool = false) {}
+    virtual const char* SceneHdrLutStatus() const { return "LUT unavailable on this renderer"; }
+    virtual bool SceneSetHdrLut(const float*, uint32_t size) { return size == 0; }
+    virtual bool SceneHdrSupported() const { return false; }
+    virtual bool SceneHdrActive() const { return false; }
+    virtual bool SceneSetHdr(bool enabled, float) { return !enabled; }
+    // Scoped explicit linear/emissive producer; never infer from registers.
+    virtual bool SceneSetLinearOutput(bool) { return false; }
+    virtual bool SceneFarResourcesSupported() const { return false; }
+    virtual GxFarResourceAdmission SceneCreateFarResources(const GxFarResourceRequest&) { return {}; }
+    virtual GxFarResourceUsage SceneFarResourceUsage() const { return {}; }
+    virtual void SceneWithdrawFarResources() {}
+    virtual bool SceneTemporalSupported() const { return false; }
+    virtual bool SceneRenderScaleSupported() const { return false; }
+    virtual bool SceneSetRenderScale(float scale) { return scale == 1.0f; }
+    virtual void ScenePauseWorldMotion() {}
+    virtual void SceneInvalidateHistory() {}
+    virtual void SceneSetMotionOwner(const void*, bool) {}
+    virtual void SceneForgetMotionOwner(const void*) {}
     virtual void XformSetProjection(const C44Matrix& matrix);
     virtual void XformSetView(const C44Matrix& matrix);
     virtual void Draw(CGxBatch* batch, int32_t count);
@@ -226,6 +260,10 @@ class CGxDevice {
     virtual bool QueryEnd(CGxQuery* query) = 0;
     virtual bool QueryGetParam(CGxQuery* query, EGxQueryParam param, uint32_t& data) = 0;
     virtual bool QueryGetData(CGxQuery* query, uint32_t& data) = 0;
+    // Explicit authored-font scope, not a legacy shader identity.
+    virtual bool NativeMsdfFontsSupported() const { return false; }
+    virtual void NativeMsdfFontBegin(uint32_t outlinePixels) {}
+    virtual void NativeMsdfFontEnd() {}
     virtual void ShaderCreate(CGxShader** shaders, EGxShTarget target, const char* path, const char* name, uint32_t permutations);
     virtual void ShaderDestroy(CGxShader*& shader);
     virtual void ShaderConstantsSet(EGxShTarget target, uint32_t index, const float* constants, uint32_t count);

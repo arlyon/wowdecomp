@@ -1,5 +1,19 @@
 // Unlit Gx fixed-function primitives. Preserve the D3D9 texture-stage contract
 // used by minimap masks, sky gradients, clouds and ordinary coloured UI geometry.
+#ifndef GX_TEMPORAL
+#define GX_TEMPORAL 0
+#endif
+#ifndef GX_HDR_OUTPUT
+#define GX_HDR_OUTPUT 0
+#endif
+// Legacy pixel programs do not necessarily consume the fixed vertex FOG ABI.
+#ifndef GX_FOG_EXPORT
+#define GX_FOG_EXPORT 1
+#endif
+#if GX_HDR_OUTPUT
+#include "HdrToneMapping.slang"
+#endif
+
 struct VertexConstants
 {
     row_major float4x4 worldViewProjection;
@@ -7,11 +21,13 @@ struct VertexConstants
     row_major float4x4 normalTransform;
     row_major float4x4 textureTransform[8];
     float4 textureControl[8]; // coordinate index, texgen mode, transform mode, enabled
+    float4 fog; // enabled, linear start/end, reserved
 };
 struct PixelConstants
 {
     float4 options; // alpha threshold
     float4 stage[8]; // enabled, colour operation, alpha operation
+    float4 fog; // encoded RGB fog colour, enabled
 };
 [[vk::binding(0, 1)]] ConstantBuffer<VertexConstants> vertexConstants;
 [[vk::binding(0, 3)]] ConstantBuffer<PixelConstants> pixelConstants;
@@ -24,6 +40,13 @@ struct PixelConstants
 [[vk::binding(6, 2)]] Sampler2D<float4> texture6;
 [[vk::binding(7, 2)]] Sampler2D<float4> texture7;
 
+#if GX_TEMPORAL
+[[vk::binding(1, 1)]] ConstantBuffer<VertexConstants> previousVertexConstants;
+// xy clip jitter; zw viewport extent / image extent (motion only).
+[[vk::binding(2, 1)]] cbuffer TemporalJitter { float4 temporalJitter; };
+[[vk::binding(2, 3)]] cbuffer TemporalOptions { float4 temporalOptions; };
+#endif
+
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
@@ -34,10 +57,16 @@ struct VertexInput
 struct VertexOutput
 {
     float4 position : SV_Position;
+#if GX_TEMPORAL
+    [[vk::location(11)]] float4 currentClip : TEXCOORD8;
+    [[vk::location(12)]] float4 previousClip : TEXCOORD9;
+#endif
     [[vk::location(0)]] float4 colour : COLOR0;
     [[vk::location(1)]] float4 secondaryColour : COLOR1;
     [[vk::location(2)]] float4 uv[8] : TEXCOORD0;
+#if GX_FOG_EXPORT
     [[vk::location(10)]] float fog : FOG;
+#endif
 };
 
 [shader("vertex")]
@@ -45,8 +74,25 @@ VertexOutput vertexMain(VertexInput input)
 {
     VertexOutput output = (VertexOutput)0;
     output.position = mul(float4(input.position, 1.0), vertexConstants.worldViewProjection);
+#if GX_TEMPORAL
+    output.currentClip = output.position;
+    output.previousClip = mul(float4(input.position, 1.0), previousVertexConstants.worldViewProjection);
+    output.currentClip.xy *= temporalJitter.zw;
+    output.previousClip.xy *= temporalJitter.zw;
+    output.position.xy += temporalJitter.xy * output.position.w;
+#endif
     output.colour = input.colour.bgra;
     float3 eyePosition = mul(float4(input.position, 1.0), vertexConstants.worldView).xyz;
+#if GX_FOG_EXPORT
+    output.fog = 1.0;
+    if (vertexConstants.fog.x != 0.0)
+    {
+        float distance = abs(eyePosition.z);
+        float range = vertexConstants.fog.z - vertexConstants.fog.y;
+        output.fog = range > 0.0 ? saturate((vertexConstants.fog.z - distance) / range) :
+            (distance < vertexConstants.fog.z ? 1.0 : 0.0);
+    }
+#endif
     float3 eyeNormal = mul(float4(input.normal, 0.0), vertexConstants.normalTransform).xyz;
     [unroll] for (int i = 0; i < 8; ++i)
     {
@@ -94,8 +140,22 @@ float4 combine(float4 texture, float4 current, float4 diffuse, int operation)
     }
 }
 
+#if GX_TEMPORAL || GX_HDR_OUTPUT
+struct FixedOutput {
+    [[vk::location(0)]] float4 colour : SV_Target0;
+#if GX_TEMPORAL
+    [[vk::location(1)]] float4 motion : SV_Target1;
+#endif
+#if GX_HDR_OUTPUT
+    [[vk::location(2)]] float4 classic : SV_Target2;
+#endif
+};
+[shader("fragment")]
+FixedOutput pixelMain(VertexOutput input)
+#else
 [shader("fragment")]
 float4 pixelMain(VertexOutput input) : SV_Target
+#endif
 {
     float4 colour = input.colour;
     [unroll] for (int i = 0; i < 8; ++i)
@@ -108,5 +168,32 @@ float4 pixelMain(VertexOutput input) : SV_Target
         colour.a = combine(texel, previous, input.colour, int(stage.z)).a;
     }
     clip(colour.a - pixelConstants.options.x);
+#if GX_FOG_EXPORT
+    if (pixelConstants.fog.w != 0.0)
+        colour.rgb = lerp(pixelConstants.fog.rgb, colour.rgb, saturate(input.fog));
+#endif
+#if GX_TEMPORAL || GX_HDR_OUTPUT
+    FixedOutput output;
+    output.colour = colour;
+#if GX_HDR_OUTPUT
+    output.classic = colour;
+#if !GX_HDR_ENCODED
+    output.colour.rgb = hdrDecodeLegacy(colour.rgb);
+#endif
+#endif
+#if GX_TEMPORAL
+    output.motion = float4(0, 0, -1, saturate(temporalOptions.y));
+    if (temporalOptions.x > 0 && input.currentClip.w > 0.00001 && input.previousClip.w > 0.00001 &&
+        all(isfinite(input.currentClip)) && all(isfinite(input.previousClip)))
+    {
+        float2 delta = input.currentClip.xy / input.currentClip.w - input.previousClip.xy / input.previousClip.w;
+        float depth = lerp(temporalOptions.z, temporalOptions.w, input.previousClip.z / input.previousClip.w);
+        if (all(isfinite(delta)) && all(abs(delta) <= 4) && isfinite(depth) && depth >= 0 && depth <= 1)
+            output.motion = float4(delta * float2(0.5, -0.5), depth, saturate(temporalOptions.y));
+    }
+#endif
+    return output;
+#else
     return colour;
+#endif
 }

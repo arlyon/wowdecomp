@@ -5,7 +5,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 get_filename_component(WOWDECOMP_ROOT "../.." ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 include("${WOWDECOMP_ROOT}/cmake/MojoShader.cmake")
 add_library(GxVulkanShaders STATIC
-    "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shader.cpp")
+    "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shader.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/TemporalShader.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/ShaderOverride.cpp")
 target_include_directories(GxVulkanShaders PUBLIC "${WOWDECOMP_ROOT}")
 target_link_libraries(GxVulkanShaders PUBLIC GxMojoShader)
 add_executable(VulkanShaderTest ShaderTest.cpp)
@@ -26,15 +28,41 @@ else ()
     message(STATUS "SPIRV-Tools development files not found; module validation unavailable")
 endif ()
 enable_testing()
+add_executable(ShaderOverrideTest ShaderOverrideTest.cpp)
+target_link_libraries(ShaderOverrideTest PRIVATE GxVulkanShaders)
+add_test(NAME ShaderOverride COMMAND ShaderOverrideTest)
 add_test(NAME VulkanShader COMMAND VulkanShaderTest)
 set_tests_properties(VulkanShader PROPERTIES TIMEOUT 20)
+foreach (name TemporalHistory TemporalBackend HdrToneMapping HdrLut HdrLutJob LandscapeSettings)
+    add_executable(${name}Test ${name}Test.cpp)
+    target_include_directories(${name}Test PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_options(${name}Test PRIVATE -UNDEBUG)
+    set(arguments)
+    if (name STREQUAL "HdrLutJob")
+        set(arguments "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures")
+    endif ()
+    add_test(NAME ${name} COMMAND ${name}Test ${arguments})
+endforeach ()
+find_package(Threads REQUIRED)
+target_link_libraries(HdrLutJobTest PRIVATE Threads::Threads)
+add_executable(FarCpuAdmissionTest FarCpuAdmissionTest.cpp
+    "${WOWDECOMP_ROOT}/Engine/Source/Gx/FarResources.cpp")
+target_include_directories(FarCpuAdmissionTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_definitions(FarCpuAdmissionTest PRIVATE WOWDECOMP_FAR_TESTING=1)
+add_test(NAME FarCpuAdmission COMMAND FarCpuAdmissionTest)
 if (WOWDECOMP_SLANGC)
     include("${WOWDECOMP_ROOT}/cmake/SlangCompiler.cmake")
     target_sources(GxVulkanShaders PRIVATE "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Slang.cpp")
     target_link_libraries(GxVulkanShaders PUBLIC GxSlangCompiler)
+    add_executable(HdrOutputBoundaryTest HdrOutputBoundaryTest.cpp)
+    target_link_libraries(HdrOutputBoundaryTest PRIVATE GxVulkanShaders)
+    add_test(NAME HdrOutputBoundary COMMAND HdrOutputBoundaryTest)
     target_compile_definitions(VulkanShaderTest PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1)
+    target_compile_definitions(ShaderOverrideTest PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1
+        WOWDECOMP_TEST_SHARED_SHADERS="${WOWDECOMP_ROOT}/Shaders/Overrides/shared")
     target_compile_definitions(VulkanShaderCorpus PRIVATE WOWDECOMP_TEST_SLANG_COMPILER=1)
     include("${WOWDECOMP_ROOT}/cmake/SlangShaders.cmake")
+    target_compile_definitions(GxVulkanShaders PUBLIC WOWDECOMP_VULKAN_OVERRIDE_DIR="${WOWDECOMP_VULKAN_OVERRIDE_DIR}")
     add_dependencies(VulkanShaderTest GxSlangShaders)
     target_compile_definitions(VulkanShaderTest PRIVATE
         WOWDECOMP_SLANG_TEST_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
@@ -48,7 +76,21 @@ if (WOWDECOMP_SLANGC)
         add_dependencies(FixedFunctionTest GxSlangShaders)
         add_test(NAME FixedFunctionGpu COMMAND FixedFunctionTest)
         add_test(NAME BufferResidencyGpu COMMAND FixedFunctionTest --residency)
-        set_tests_properties(FixedFunctionGpu BufferResidencyGpu PROPERTIES TIMEOUT 30
+        add_test(NAME WorldTargetGpu COMMAND FixedFunctionTest --world-target)
+        add_test(NAME TemporalBackendGpu COMMAND FixedFunctionTest --temporal-backend)
+        add_test(NAME TemporalShaderGpu COMMAND FixedFunctionTest --temporal)
+        foreach (name TemporalResolve TemporalUpscale)
+            add_executable(${name}Test ${name}Test.cpp)
+            target_include_directories(${name}Test PRIVATE "${WOWDECOMP_ROOT}")
+            target_link_libraries(${name}Test PRIVATE Vulkan::Vulkan)
+            target_compile_definitions(${name}Test PRIVATE
+                WOWDECOMP_TEMPORAL_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+            add_dependencies(${name}Test GxSlangShaders)
+            add_test(NAME ${name}Gpu COMMAND ${name}Test)
+            set_tests_properties(${name}Gpu PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+                ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+        endforeach ()
+        set_tests_properties(FixedFunctionGpu BufferResidencyGpu WorldTargetGpu TemporalBackendGpu TemporalShaderGpu PROPERTIES TIMEOUT 30
             ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
     endif ()
 endif ()
@@ -73,5 +115,225 @@ if (TARGET FixedFunctionTest AND WOWDECOMP_VULKAN_CLIENT_BUILD)
         Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
     add_dependencies(FfxAlignmentTest GxSlangShaders)
     add_test(NAME FfxAlignmentGpu COMMAND FfxAlignmentTest)
+    add_executable(TemporalLiveTest TemporalLiveTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp")
+    target_include_directories(TemporalLiveTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(TemporalLiveTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_link_libraries(TemporalLiveTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
+    add_dependencies(TemporalLiveTest GxSlangShaders)
+    add_test(NAME TemporalLiveGpu COMMAND TemporalLiveTest)
+    add_test(NAME TemporalLiveEngineeringGpu COMMAND TemporalLiveTest)
+    add_test(NAME TemporalUpscaleLiveGpu COMMAND TemporalLiveTest --upscale)
+    set_tests_properties(TemporalLiveGpu TemporalUpscaleLiveGpu PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+    set_tests_properties(TemporalLiveEngineeringGpu PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~;WOWDECOMP_VULKAN_WORLD_TARGET=1")
     set_tests_properties(FfxAlignmentGpu PROPERTIES TIMEOUT 90 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    add_executable(HdrLiveTest HdrLiveTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp")
+    target_include_directories(HdrLiveTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(HdrLiveTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1 WOWDECOMP_VULKAN_TESTING=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}"
+        WOWDECOMP_HDR_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Fixtures")
+    target_link_libraries(HdrLiveTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    add_dependencies(HdrLiveTest GxSlangShaders)
+    add_test(NAME HdrLiveGpu COMMAND HdrLiveTest)
+    set_tests_properties(HdrLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    add_executable(ShaderOverrideLiveTest ShaderOverrideLiveTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp")
+    target_include_directories(ShaderOverrideLiveTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(ShaderOverrideLiveTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1 WOWDECOMP_VULKAN_TESTING=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_link_libraries(ShaderOverrideLiveTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    add_dependencies(ShaderOverrideLiveTest GxSlangShaders)
+    add_test(NAME ShaderOverrideLiveGpu COMMAND ShaderOverrideLiveTest)
+    set_tests_properties(ShaderOverrideLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    add_executable(FarResourcesLiveTest FarResourcesLiveTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/FarResources.cpp")
+    target_include_directories(FarResourcesLiveTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(FarResourcesLiveTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1
+        WOWDECOMP_VULKAN_TESTING=1 WOWDECOMP_FAR_TESTING=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_link_libraries(FarResourcesLiveTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    set(accelerationProbe "${WOWDECOMP_VULKAN_SHADER_DIR}/acceleration-probe.comp.spv")
+    add_custom_command(OUTPUT "${accelerationProbe}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${WOWDECOMP_VULKAN_SHADER_DIR}"
+        COMMAND "${WOWDECOMP_SLANGC}" "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/AccelerationProbe.slang"
+            -entry computeMain -stage compute -target spirv -profile spirv_1_5 -matrix-layout-row-major -o "${accelerationProbe}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/AccelerationProbe.slang" "${WOWDECOMP_SLANGC}" VERBATIM)
+    add_custom_target(GxAccelerationProbe DEPENDS "${accelerationProbe}")
+    set(directionalProbe "${WOWDECOMP_VULKAN_SHADER_DIR}/directional-lighting-probe.comp.spv")
+    add_custom_command(OUTPUT "${directionalProbe}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${WOWDECOMP_VULKAN_SHADER_DIR}"
+        COMMAND "${WOWDECOMP_SLANGC}" "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/DirectionalLightingProbe.slang"
+            -I "${WOWDECOMP_ROOT}/Shaders/Overrides" -entry computeMain -stage compute -target spirv -profile spirv_1_5
+            -matrix-layout-row-major -o "${directionalProbe}"
+        COMMAND GxQualifySpirv "${directionalProbe}"
+        DEPENDS GxQualifySpirv "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/DirectionalLightingProbe.slang"
+            "${WOWDECOMP_ROOT}/Shaders/Overrides/shared/DirectionalLighting.slang"
+            "${WOWDECOMP_ROOT}/Shaders/Overrides/shared/ShadowCoverage.slang" "${WOWDECOMP_SLANGC}" VERBATIM)
+    add_custom_target(GxDirectionalProbe DEPENDS "${directionalProbe}")
+    add_dependencies(FarResourcesLiveTest GxSlangShaders GxAccelerationProbe GxDirectionalProbe)
+    add_test(NAME FarResourcesLiveGpu COMMAND FarResourcesLiveTest)
+    add_test(NAME RayQueryCapabilityGpu COMMAND FarResourcesLiveTest --ray-query-capability)
+    add_test(NAME AccelerationBuildGpu COMMAND FarResourcesLiveTest --acceleration-build)
+    add_test(NAME AccelerationQueryGpu COMMAND FarResourcesLiveTest --acceleration-query)
+    add_test(NAME SharedDirectionalQueryGpu COMMAND FarResourcesLiveTest --directional-query)
+    set_tests_properties(FarResourcesLiveGpu PROPERTIES TIMEOUT 120 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    set(farTerrainArchives ${ffxArchives})
+    foreach (library Services BLPFile Event ConsoleBase ShaderEffect Model2 FFX FrameScript lua pcre)
+        list(APPEND farTerrainArchives "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/lib${library}.a")
+    endforeach ()
+    add_executable(MapLowDetailTest MapLowDetailTest.cpp
+        "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/MapLowDetail.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/FVBBList.cpp")
+    target_include_directories(MapLowDetailTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(MapLowDetailTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_link_libraries(MapLowDetailTest PRIVATE GxVulkanShaders -Wl,--start-group ${farTerrainArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    target_link_options(MapLowDetailTest PRIVATE
+        "LINKER:--wrap=_Z13SFileReadFileP9SFileImplPvjPjP11SOVERLAPPEDj"
+        "LINKER:--wrap=_Z17AsyncFileReadWaitP12CAsyncObject")
+    add_dependencies(MapLowDetailTest GxSlangShaders)
+    add_test(NAME MapLowDetailGpu COMMAND MapLowDetailTest)
+    set_tests_properties(MapLowDetailGpu PROPERTIES TIMEOUT 60 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    add_executable(WindowStartupTest WindowStartupTest.cpp WindowConsoleHost.cpp
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice_CVar.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice_Console.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/Posix/Window.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/ConsoleBase/ConsoleVar.cpp")
+    target_include_directories(WindowStartupTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(WindowStartupTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1)
+    target_compile_options(WindowStartupTest PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(WindowStartupTest PRIVATE -Wl,--gc-sections
+        -Wl,--wrap=_Z14CreateGxDevice6EGxApiPFlPvjmlERK9CGxFormat)
+    target_link_libraries(WindowStartupTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives}
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/libDB.a"
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/libConsoleBase.a"
+        -Wl,--end-group Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
+    add_test(NAME WindowStartup COMMAND WindowStartupTest)
+    set_tests_properties(WindowStartup PROPERTIES TIMEOUT 30 ENVIRONMENT "SDL_VIDEODRIVER=dummy" RUN_SERIAL TRUE)
+
+    add_executable(WindowPlacementTest WindowPlacementTest.cpp WindowConsoleHost.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/ConsoleBase/ConsoleVar.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/ConsoleBase/ConsoleCommand.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/Os/SDL/Gui.cpp")
+    target_include_directories(WindowPlacementTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(WindowPlacementTest PRIVATE WOWDECOMP_ARCH_64=1)
+    target_compile_options(WindowPlacementTest PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(WindowPlacementTest PRIVATE -Wl,--gc-sections)
+    target_link_libraries(WindowPlacementTest PRIVATE -Wl,--start-group ${ffxArchives} -Wl,--end-group PkgConfig::SDL2 curl dl m)
+    add_test(NAME WindowPlacement COMMAND WindowPlacementTest)
+    set_tests_properties(WindowPlacement PROPERTIES TIMEOUT 30 ENVIRONMENT "SDL_VIDEODRIVER=dummy")
+
+    add_executable(WindowSettingsTest WindowSettingsTest.cpp
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/ConsoleDevice_Console.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/ConsoleDevice/Posix/Window.cpp")
+    target_include_directories(WindowSettingsTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(WindowSettingsTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_link_libraries(WindowSettingsTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
+    add_dependencies(WindowSettingsTest GxSlangShaders)
+    add_test(NAME WindowSettingsGpu COMMAND WindowSettingsTest)
+    set_tests_properties(WindowSettingsGpu PROPERTIES TIMEOUT 60 ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
+
+    add_executable(NativeSceneSettingsTest NativeSceneSettingsTest.cpp WindowConsoleHost.cpp
+        "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/WorldParam_CVar.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/ConsoleBase/ConsoleVar.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/ConsoleBase/ConsoleCommand.cpp")
+    target_include_directories(NativeSceneSettingsTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(NativeSceneSettingsTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1)
+    target_compile_options(NativeSceneSettingsTest PRIVATE -ffunction-sections -fdata-sections -UNDEBUG)
+    target_link_options(NativeSceneSettingsTest PRIVATE -Wl,--gc-sections)
+    target_link_libraries(NativeSceneSettingsTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives} -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 curl dl m)
+    add_test(NAME NativeSceneSettings COMMAND NativeSceneSettingsTest)
+
+    add_executable(NativeHdrSettingsTest NativeHdrSettingsTest.cpp
+        "${WOWDECOMP_ROOT}/WoW/Source/Ui/NativeVideoOptions.cpp"
+        "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/WorldParam_CVar.cpp")
+    target_include_directories(NativeHdrSettingsTest PRIVATE "${WOWDECOMP_ROOT}" "${WOWDECOMP_VULKAN_CLIENT_BUILD}/WoW/Source/Ui")
+    target_compile_definitions(NativeHdrSettingsTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_VULKAN=1)
+    target_compile_options(NativeHdrSettingsTest PRIVATE -ffunction-sections -fdata-sections -UNDEBUG)
+    target_link_options(NativeHdrSettingsTest PRIVATE -Wl,--gc-sections)
+    target_link_libraries(NativeHdrSettingsTest PRIVATE GxVulkanShaders -Wl,--start-group ${ffxArchives}
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/libConsoleBase.a"
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/liblua.a" -Wl,--end-group
+        Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    add_test(NAME NativeHdrSettings COMMAND NativeHdrSettingsTest)
+
+    add_executable(NativeVideoOptionsTest NativeVideoOptionsTest.cpp)
+    target_include_directories(NativeVideoOptionsTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_link_libraries(NativeVideoOptionsTest PRIVATE -Wl,--start-group
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/liblua.a" ${ffxArchives} -Wl,--end-group PkgConfig::SDL2 curl dl m)
+    add_test(NAME NativeVideoOptions COMMAND NativeVideoOptionsTest
+        "${CMAKE_CURRENT_SOURCE_DIR}/test_native_video_options.lua"
+        "${WOWDECOMP_ROOT}/WoW/Source/Ui/NativeVideoOptions.lua")
+endif ()
+
+set(WOWDECOMP_WORLD_ASSETS "" CACHE PATH "External read-only game Data for synchronous production world acceptance")
+if (WOWDECOMP_WORLD_ASSETS AND WOWDECOMP_VULKAN_CLIENT_BUILD AND TARGET Vulkan::Vulkan)
+    file(GLOB worldClientSources CONFIGURE_DEPENDS "${WOWDECOMP_ROOT}/WoW/Source/*.cpp")
+    file(GLOB worldClientArchives "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/*.a")
+    add_executable(TerrainDistanceWorldTest TerrainDistanceWorldTest.cpp ${worldClientSources}
+        "${WOWDECOMP_ROOT}/WoW/Source/Posix/BotCheck.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/CGxDeviceVulkan.cpp")
+    target_include_directories(TerrainDistanceWorldTest PRIVATE "${WOWDECOMP_ROOT}" "${WOWDECOMP_ROOT}/ThirdParty/freetype/include")
+    target_compile_definitions(TerrainDistanceWorldTest PRIVATE WOWDECOMP_ARCH_64=1 WOWDECOMP_POSIX=1 WOWDECOMP_VULKAN=1 WOWDECOMP_VULKAN_TESTING=1
+        WOWDECOMP_TEST_RECEIVER_SOURCE_ROOT="${WOWDECOMP_ROOT}/Shaders/Overrides"
+        WOWDECOMP_VULKAN_SHADER_DIR="${WOWDECOMP_VULKAN_SHADER_DIR}")
+    target_compile_options(TerrainDistanceWorldTest PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(TerrainDistanceWorldTest PRIVATE -Wl,--gc-sections "LINKER:--wrap=connect"
+        "LINKER:--wrap=_Z16FarAdtRenderTileP11CMapAreaLow")
+    target_link_libraries(TerrainDistanceWorldTest PRIVATE GxVulkanShaders -Wl,--start-group ${worldClientArchives} -Wl,--end-group
+        "${WOWDECOMP_VULKAN_CLIENT_BUILD}/lib/libXvidDecoder.so" Vulkan::Vulkan PkgConfig::SDL2 Threads::Threads curl dl m)
+    add_dependencies(TerrainDistanceWorldTest GxSlangShaders)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terrain-world")
+    add_test(NAME TerrainDistanceWorldGpu COMMAND TerrainDistanceWorldTest --elwynn-distance)
+    add_test(NAME TerrainDistanceNorthrendGpu COMMAND TerrainDistanceWorldTest --northrend-distance)
+    add_test(NAME RasterWorldFeaturesGpu COMMAND TerrainDistanceWorldTest --raster-features)
+    add_test(NAME WorldRayVisibilityDiagnosticGpu COMMAND TerrainDistanceWorldTest --rt-visibility)
+    add_test(NAME TerrainDirectionalSliceGpu COMMAND TerrainDistanceWorldTest --terrain-ray-shadows)
+    add_test(NAME TerrainDirectionalFallbackGpu COMMAND TerrainDistanceWorldTest --terrain-ray-fallback)
+    add_test(NAME TerrainDirectionalPressureGpu COMMAND TerrainDistanceWorldTest --terrain-ray-pressure)
+    set_tests_properties(TerrainDistanceWorldGpu TerrainDistanceNorthrendGpu RasterWorldFeaturesGpu WorldRayVisibilityDiagnosticGpu TerrainDirectionalSliceGpu TerrainDirectionalFallbackGpu TerrainDirectionalPressureGpu PROPERTIES TIMEOUT 180
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terrain-world"
+        ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~;WOWDECOMP_TEST_WORLD_ASSETS=${WOWDECOMP_WORLD_ASSETS}")
+else ()
+    message(STATUS "Synchronous production world acceptance unverified: configure WOWDECOMP_WORLD_ASSETS and native client archives")
+endif ()
+
+add_executable(DeviceSelectionTest DeviceSelectionTest.cpp "${WOWDECOMP_ROOT}/Engine/Source/Gx/DeviceSelection.cpp")
+target_include_directories(DeviceSelectionTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_definitions(DeviceSelectionTest PRIVATE WOWDECOMP_VULKAN=1)
+target_compile_options(DeviceSelectionTest PRIVATE -UNDEBUG)
+add_test(NAME DeviceSelection COMMAND DeviceSelectionTest)
+if (TARGET Vulkan::Vulkan)
+    add_executable(PresentModeTest PresentModeTest.cpp "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxFormat.cpp")
+    target_include_directories(PresentModeTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_link_libraries(PresentModeTest PRIVATE Vulkan::Vulkan)
+    add_test(NAME PresentMode COMMAND PresentModeTest)
+    add_executable(DeviceEnumerationTest DeviceEnumerationTest.cpp "${WOWDECOMP_ROOT}/Engine/Source/Gx/DeviceSelection.cpp")
+    target_include_directories(DeviceEnumerationTest PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_definitions(DeviceEnumerationTest PRIVATE WOWDECOMP_VULKAN=1)
+    target_compile_options(DeviceEnumerationTest PRIVATE -UNDEBUG)
+    target_link_libraries(DeviceEnumerationTest PRIVATE Vulkan::Vulkan)
+    add_test(NAME DeviceEnumeration COMMAND DeviceEnumerationTest)
+    set_tests_properties(DeviceEnumeration PROPERTIES TIMEOUT 30 LABELS "GPU"
+        ENVIRONMENT "VK_LOADER_LAYERS_DISABLE=~implicit~")
 endif ()

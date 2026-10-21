@@ -1,7 +1,9 @@
 #include <cmath>
 #include <cstddef>
+#include "Engine/Source/Gxu/GxuFontMsdf.h"
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include "Engine/Source/Gxu/GxuFontFont.h"
 #include "Engine/Source/Base/ConvertUTF.h"
 #include "Engine/Source/Gxu/GxuFontFace.h"
@@ -75,6 +77,7 @@ int32_t CGxFont::UpdateDimensions() {
     }
 
     this->m_pixelSize = pixelSize;
+    this->m_isMsdf = GxuFontMsdfEnabled() && GxuFontMsdfSupported() && FT_IS_SCALABLE(face) && !(this->m_fontFlags & 2);
 
     int32_t units = face->ascender + abs(face->descender);
 
@@ -100,6 +103,10 @@ int32_t CGxFont::UpdateDimensions() {
     return result;
 }
 
+uint32_t CGxFont::AtlasCellHeight() const {
+    return m_cellHeight + (m_isMsdf ? 2 * GxuMsdf::Border : 0);
+}
+
 // VERIFY: c831afcc auto
 // OFFSET: 0x006C2480
 bool CGxFont::GetGlyphData(GLYPHBITMAPDATA* data, uint32_t code) {
@@ -114,6 +121,20 @@ bool CGxFont::GetGlyphData(GLYPHBITMAPDATA* data, uint32_t code) {
         padding = 2;
     }
 
+    if (this->m_isMsdf) {
+        GxuMsdf::Glyph glyph;
+        if (!GxuMsdf::GenerateGlyph(face, this->m_pixelSize, code, this->m_baseline, padding, glyph)) return false;
+        data->m_data = SMemAlloc(glyph.rgba.size(), __FILE__, __LINE__, 0);
+        if (!data->m_data) return false;
+        memcpy(data->m_data, glyph.rgba.data(), glyph.rgba.size());
+        data->m_dataSize = glyph.rgba.size();
+        data->m_glyphWidth = glyph.width; data->m_glyphHeight = glyph.height;
+        data->m_glyphCellWidth = glyph.cellWidth; data->m_glyphPitch = glyph.AtlasWidth() * 4;
+        data->m_glyphAdvance = glyph.advance; data->m_glyphBearing = glyph.bearing;
+        data->m_yOffset = glyph.yOffset; data->m_yStart = glyph.yStart;
+        data->m_isMsdf = true;
+        return true;
+    }
     return IGxuFontGlyphRenderGlyph(face, this->m_pixelSize, code, this->m_baseline, data, this->m_fontFlags & 2, padding);
 }
 
@@ -355,8 +376,8 @@ CHARCODEDESC* CGxFont::NewCodeDesc(uint32_t code) {
 
         if (!current->m_texture || !TextureGetGxTex(current->m_texture, 1, nullptr)) {
             cache = current;
+            cache->Initialize(this, this->AtlasCellHeight());
             cache->CreateTexture(this->m_fontFlags & 4);
-            cache->Initialize(this, this->m_cellHeight);
             desc = cache->AllocateNewGlyph(&data);
             break;
         }
@@ -380,10 +401,10 @@ CHARCODEDESC* CGxFont::NewCodeDesc(uint32_t code) {
             cache = &this->m_textureCache[textureNumber];
             TEXTURECACHEROW* row = &cache->m_textureRows.m_data[rowNumber];
 
-            row->EvictGlyph(oldest);
+            row->EvictGlyph(oldest, data.AtlasWidth());
             this->RegisterEvictNotice(textureNumber);
 
-            desc = row->CreateNewDesc(&data, rowNumber, this->m_cellHeight);
+            desc = row->CreateNewDesc(&data, rowNumber, this->AtlasCellHeight());
 
             if (desc) {
                 desc->m_rowNumber = rowNumber;

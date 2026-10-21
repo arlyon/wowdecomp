@@ -1,4 +1,5 @@
 // Native D3D core; Windows keeps its original translation unit.
+#include "AdapterIdentity.h"
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -2086,7 +2087,7 @@ void CGxDeviceD3d::ISetPresentParms(D3DPRESENT_PARAMETERS& d3dpp, const CGxForma
     if (format.m_window) {
         D3DDISPLAYMODE displayMode;
 
-        if (FAILED(this->m_d3d->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &displayMode))) {
+        if (FAILED(this->m_d3d->GetAdapterDisplayMode(this->m_adapterOrdinal, &displayMode))) {
             displayMode.Format = this->m_desktopDisplayMode.Format;
         }
 
@@ -2141,7 +2142,7 @@ void CGxDeviceD3d::ISetPresentParms(D3DPRESENT_PARAMETERS& d3dpp, const CGxForma
 
     DWORD qualityLevels;
 
-    if (FAILED(this->m_d3d->CheckDeviceMultiSampleType(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.BackBufferFormat, format.m_window, d3dpp.MultiSampleType, &qualityLevels)) || qualityLevels <= 1) {
+    if (FAILED(this->m_d3d->CheckDeviceMultiSampleType(this->m_adapterOrdinal, D3DDEVTYPE_HAL, d3dpp.BackBufferFormat, format.m_window, d3dpp.MultiSampleType, &qualityLevels)) || qualityLevels <= 1) {
         qualityLevels = 1;
     }
 
@@ -2239,7 +2240,7 @@ void CGxDeviceD3d::ISetCaps(const CGxFormat& format) {
 
     for (uint32_t i = 0; i < GxTexFormats_Last; i++) {
         if (i) {
-            this->m_caps.m_texFmt[i] = this->m_d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, this->m_devAdapterFormat, 0, D3DRTYPE_TEXTURE, s_GxTexFmtToD3dFmt[i]) == D3D_OK;
+            this->m_caps.m_texFmt[i] = this->m_d3d->CheckDeviceFormat(this->m_adapterOrdinal, D3DDEVTYPE_HAL, this->m_devAdapterFormat, 0, D3DRTYPE_TEXTURE, s_GxTexFmtToD3dFmt[i]) == D3D_OK;
         } else {
             this->m_caps.m_texFmt[0] = 0;
         }
@@ -2252,11 +2253,11 @@ void CGxDeviceD3d::ISetCaps(const CGxFormat& format) {
         s_gxAttribToD3dAttribType[2] = D3DDECLTYPE_D3DCOLOR;
     }
 
-    this->m_caps.m_rttFormat[GxTex_Argb8888] = this->m_d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_TEXTURE, D3DFMT_A8R8G8B8) == D3D_OK;
-    this->m_caps.m_rttFormat[GxTex_Rgb565] = this->m_d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_TEXTURE, D3DFMT_R5G6B5) == D3D_OK;
-    this->m_caps.m_rttFormat[GxTex_Gr1616F] = this->m_d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_TEXTURE, D3DFMT_G16R16F) == D3D_OK;
-    this->m_caps.m_rttFormat[GxTex_R32F] = this->m_d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_TEXTURE, D3DFMT_R32F) == D3D_OK;
-    this->m_caps.m_rttFormat[GxTex_D24X8] = this->m_d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_TEXTURE, D3DFMT_D24X8) == D3D_OK;
+    this->m_caps.m_rttFormat[GxTex_Argb8888] = this->m_d3d->CheckDeviceFormat(this->m_adapterOrdinal, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_TEXTURE, D3DFMT_A8R8G8B8) == D3D_OK;
+    this->m_caps.m_rttFormat[GxTex_Rgb565] = this->m_d3d->CheckDeviceFormat(this->m_adapterOrdinal, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_TEXTURE, D3DFMT_R5G6B5) == D3D_OK;
+    this->m_caps.m_rttFormat[GxTex_Gr1616F] = this->m_d3d->CheckDeviceFormat(this->m_adapterOrdinal, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_TEXTURE, D3DFMT_G16R16F) == D3D_OK;
+    this->m_caps.m_rttFormat[GxTex_R32F] = this->m_d3d->CheckDeviceFormat(this->m_adapterOrdinal, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_TEXTURE, D3DFMT_R32F) == D3D_OK;
+    this->m_caps.m_rttFormat[GxTex_D24X8] = this->m_d3d->CheckDeviceFormat(this->m_adapterOrdinal, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_TEXTURE, D3DFMT_D24X8) == D3D_OK;
 
     this->m_caps.m_colorWrite = (this->m_d3dCaps.PrimitiveMiscCaps & D3DPMISCCAPS_COLORWRITEENABLE) != 0;
     this->m_caps.m_hwCursor = this->m_d3dCaps.CursorCaps & D3DCURSORCAPS_COLOR;
@@ -2342,9 +2343,24 @@ int32_t CGxDeviceD3d::ICreateD3dDevice(const CGxFormat& format) {
 
     DWORD behaviorFlags = hwTnL ? D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE : D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE;
 
-    if (FAILED(this->m_d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, this->m_hwnd, behaviorFlags, &d3dpp, &this->m_d3dDevice))) {
+    if (FAILED(this->m_d3d->CreateDevice(this->m_adapterOrdinal, D3DDEVTYPE_HAL, this->m_hwnd, behaviorFlags, &d3dpp, &this->m_d3dDevice))) {
         this->m_d3dDevice = nullptr;
         return 0;
+    }
+
+    D3DDEVICE_CREATION_PARAMETERS created{};
+    if (FAILED(this->m_d3dDevice->GetCreationParameters(&created)) || created.AdapterOrdinal != this->m_adapterOrdinal) {
+        this->m_d3dDevice->Release();
+        this->m_d3dDevice = nullptr;
+        return 0;
+    }
+    auto adapters = GxDxvk::EnumerateAdapters(*this->m_d3d);
+    auto descriptors = GxDxvk::Descriptors(adapters);
+    size_t selected = descriptors.size();
+    for (size_t i = 0; i < adapters.size(); ++i) if (adapters[i].ordinal == created.AdapterOrdinal) selected = i;
+    if (selected < descriptors.size()) {
+        descriptors[selected].present = descriptors[selected].swapchain = true;
+        descriptors[selected].reason += "; D3D CreateDevice succeeded on this COM instance and ordinal";
     }
 
     this->m_devAdapterFormat = d3dpp.BackBufferFormat;
@@ -2371,6 +2387,8 @@ int32_t CGxDeviceD3d::ICreateD3dDevice(const CGxFormat& format) {
 
     g_theGxDevicePtr->ShaderCreate(CGxDevice::s_uiVertexShader, GxSh_Vertex, "Shaders\\Vertex", "UI", 2);
     g_theGxDevicePtr->ShaderCreate(&CGxDevice::s_uiPixelShader, GxSh_Pixel, "Shaders\\Pixel", "UI", 1);
+
+    GxReportDeviceSelection("dxvk", std::move(descriptors), selected);
 
     return 1;
 }
@@ -2477,6 +2495,8 @@ int32_t CGxDeviceD3d::DeviceWM(EGxWM wm, uintptr_t param1, uintptr_t param2) {
 // VERIFY: 53945590 manual
 // OFFSET: 0x006903B0
 void CGxDeviceD3d::IDestroyD3d() {
+    if (GxGetDeviceSelection().activeBackend == "dxvk")
+        GxReportDeviceSelection("", {}, 0);
     for (uint32_t i = 0; i < 2; i++) {
         if (CGxDevice::s_uiVertexShader[i]) {
             g_theGxDevicePtr->ShaderDestroy(CGxDevice::s_uiVertexShader[i]);
@@ -2511,14 +2531,16 @@ void CGxDeviceD3d::IDestroyD3d() {
 // VERIFY: cbd2d003 manual
 // OFFSET: 0x00690680
 int32_t CGxDeviceD3d::ICreateD3d() {
-    if (CGxDeviceD3d::ILoadD3dLib(this->m_d3dLib, this->m_d3d) && SUCCEEDED(this->m_d3d->GetDeviceCaps(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, &this->m_d3dCaps))) {
+    if (!CGxDeviceD3d::ILoadD3dLib(this->m_d3dLib, this->m_d3d)) return 0;
+    this->m_adapterOrdinal = GxDxvk::SelectOrdinal(*this->m_d3d, GxGetDeviceSelection().effectiveAdapter);
+    if (this->m_adapterOrdinal != UINT32_MAX && SUCCEEDED(this->m_d3d->GetDeviceCaps(this->m_adapterOrdinal, D3DDEVTYPE_HAL, &this->m_d3dCaps))) {
         if (this->m_desktopDisplayMode.Format) {
             return 1;
         }
 
         D3DDISPLAYMODE displayMode;
 
-        if (SUCCEEDED(this->m_d3d->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &displayMode))) {
+        if (SUCCEEDED(this->m_d3d->GetAdapterDisplayMode(this->m_adapterOrdinal, &displayMode))) {
             this->m_desktopDisplayMode = displayMode;
             return 1;
         }
@@ -3067,7 +3089,7 @@ void CGxDeviceD3d::ICreateReadbackSurface() {
     if (this->m_format.m_window) {
         D3DDISPLAYMODE displayMode;
 
-        if (SUCCEEDED(this->m_d3d->GetAdapterDisplayMode(0, &displayMode))) {
+        if (SUCCEEDED(this->m_d3d->GetAdapterDisplayMode(this->m_adapterOrdinal, &displayMode))) {
             format = displayMode.Format;
         } else {
             format = this->m_desktopDisplayMode.Format;
@@ -3323,7 +3345,7 @@ void CGxDeviceD3d::DeviceReadPixels(CiRect& rect, TSGrowableArray<CImVector>& pi
 // VERIFY: dd2f1dd0 manual
 // OFFSET: 0x0069FAA0
 int32_t CGxDeviceD3d::ICheckDepthStencilFormat(D3DFORMAT format) {
-    return SUCCEEDED(this->m_d3d->CheckDeviceFormat(0, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_SURFACE, format)) && SUCCEEDED(this->m_d3d->CheckDepthStencilMatch(0, D3DDEVTYPE_HAL, this->m_devAdapterFormat, this->m_devAdapterFormat, format));
+    return SUCCEEDED(this->m_d3d->CheckDeviceFormat(this->m_adapterOrdinal, D3DDEVTYPE_HAL, this->m_devAdapterFormat, D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_SURFACE, format)) && SUCCEEDED(this->m_d3d->CheckDepthStencilMatch(this->m_adapterOrdinal, D3DDEVTYPE_HAL, this->m_devAdapterFormat, this->m_devAdapterFormat, format));
 }
 
 // VERIFY: 18e824b7 manual

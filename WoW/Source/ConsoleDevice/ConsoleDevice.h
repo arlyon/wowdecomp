@@ -47,4 +47,9 @@ void __fastcall StereoChangedCallback();
 bool UpdateGxCVars();
 void ValidateFormatMonitor(CGxFormat& format);
 
+#if !defined(_WIN32)
+struct OsWindowPlacement;
+bool ConsoleDeviceResolveWindowFormat(CGxFormat& format, const OsWindowPlacement& placement);
+#endif
+
 #endif

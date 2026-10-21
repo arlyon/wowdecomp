@@ -1,0 +1,6 @@
+msdfgen v1.13 (core only)
+https://github.com/Chlumsky/msdfgen
+commit 1874bcf7d9624ccc85b4bc9a85d78116f690f35b
+Source files copied without modifications. MIT license: LICENSE.txt.
+The local CMakeLists.txt deliberately builds only core; MSDFGEN_PUBLIC is
+explicitly empty for this static build (no generated msdfgen-config.h needed).

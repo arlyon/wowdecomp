@@ -13,9 +13,97 @@ wowdecomp_configure_platform()
 find_package(Threads REQUIRED)
 enable_testing()
 
+add_executable(M2RayCastersTest M2RayCastersTest.cpp
+    "${WOWDECOMP_ROOT}/Engine/Source/Storm/Source/Posix/DebugLog.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Base/Status.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Model2/M2ShadowMesh.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Model2/ShadowSelection.cpp")
+target_include_directories(M2RayCastersTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_definitions(M2RayCastersTest PRIVATE __stdcall= __fastcall=)
+target_compile_options(M2RayCastersTest PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+target_link_options(M2RayCastersTest PRIVATE -Wl,--gc-sections)
+if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+    target_compile_definitions(M2RayCastersTest PRIVATE WOWDECOMP_ARCH_64=1)
+else ()
+    target_compile_definitions(M2RayCastersTest PRIVATE WOWDECOMP_ARCH_32=1)
+endif ()
+target_link_libraries(M2RayCastersTest PRIVATE Tempest BlizzardCore Storm BlizzardCore Threads::Threads)
+add_test(NAME M2RayCasters COMMAND M2RayCastersTest)
+
+add_executable(RayQueryCapabilityTest RayQueryCapabilityTest.cpp)
+target_include_directories(RayQueryCapabilityTest PRIVATE "${WOWDECOMP_ROOT}")
+add_test(NAME RayQueryCapability COMMAND RayQueryCapabilityTest)
+
+add_executable(M2LightingSourceTest M2LightingSourceTest.cpp
+    "${WOWDECOMP_ROOT}/Engine/Source/Model2/M2Light.cpp"
+    "${WOWDECOMP_ROOT}/Engine/Source/Model2/M2Model.cpp")
+target_include_directories(M2LightingSourceTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_options(M2LightingSourceTest PRIVATE -ffunction-sections -fdata-sections)
+target_compile_definitions(M2LightingSourceTest PRIVATE __stdcall= __fastcall=)
+if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+    target_compile_definitions(M2LightingSourceTest PRIVATE WOWDECOMP_ARCH_64=1)
+else ()
+    target_compile_definitions(M2LightingSourceTest PRIVATE WOWDECOMP_ARCH_32=1)
+endif ()
+target_link_options(M2LightingSourceTest PRIVATE -Wl,--gc-sections)
+target_link_libraries(M2LightingSourceTest PRIVATE Tempest BlizzardCore Storm BlizzardCore Threads::Threads)
+add_test(NAME M2LightingSource COMMAND M2LightingSourceTest)
+
+add_executable(AssetInventoryTest AssetInventoryTest.cpp)
+target_include_directories(AssetInventoryTest PRIVATE "${WOWDECOMP_ROOT}")
+add_test(NAME AssetInventory COMMAND AssetInventoryTest)
+
+add_executable(ShadowContractsTest ShadowContractsTest.cpp)
+target_include_directories(ShadowContractsTest PRIVATE "${WOWDECOMP_ROOT}")
+add_test(NAME ShadowContracts COMMAND ShadowContractsTest)
+add_test(NAME ShadowContractsClosedCompile COMMAND "${CMAKE_COMMAND}"
+    "-DCOMPILER=${CMAKE_CXX_COMPILER}" "-DROOT=${WOWDECOMP_ROOT}"
+    "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/ShadowContractsCompile.cpp"
+    "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/shadow-contract-compile"
+    -P "${WOWDECOMP_ROOT}/cmake/CheckShadowContracts.cmake")
+
 add_executable(CoordinateTest CoordinateTest.cpp "${WOWDECOMP_ROOT}/Engine/Source/Base/Coordinate.cpp")
 target_include_directories(CoordinateTest PRIVATE "${WOWDECOMP_ROOT}")
 add_test(NAME Coordinate COMMAND CoordinateTest)
+
+foreach (name FarAdtProducer FarAdtPreparation)
+    add_executable(${name}Test ${name}Test.cpp
+        "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/FarAdtProducer.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/FarResources.cpp")
+    if (name STREQUAL "FarAdtPreparation")
+        target_sources(${name}Test PRIVATE
+            "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/FarAdtPrepared.cpp"
+            "${WOWDECOMP_ROOT}/WoW/Source/WorldClient/FarAdtPreparation.cpp")
+    endif ()
+    target_include_directories(${name}Test PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_options(${name}Test PRIVATE -UNDEBUG)
+    target_compile_definitions(${name}Test PRIVATE WOWDECOMP_FAR_TESTING=1)
+    if (NOT MSVC)
+        target_compile_definitions(${name}Test PRIVATE __stdcall= __fastcall=)
+    endif ()
+    target_link_libraries(${name}Test PRIVATE Threads::Threads)
+    add_test(NAME ${name} COMMAND ${name}Test)
+endforeach ()
+add_executable(FarTerrainTest FarTerrainTest.cpp)
+target_include_directories(FarTerrainTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_options(FarTerrainTest PRIVATE -UNDEBUG)
+target_link_libraries(FarTerrainTest PRIVATE Tempest)
+add_test(NAME FarTerrain COMMAND FarTerrainTest)
+
+add_executable(NightDarknessTest NightDarknessTest.cpp)
+target_include_directories(NightDarknessTest PRIVATE "${WOWDECOMP_ROOT}")
+add_test(NAME NightDarkness COMMAND NightDarknessTest)
+add_executable(TimePreviewTest TimePreviewTest.cpp
+    "${WOWDECOMP_ROOT}/WoW/Source/Game/GameTime.cpp"
+    "${WOWDECOMP_ROOT}/WoW/Common/WowTime.cpp")
+target_include_directories(TimePreviewTest PRIVATE "${WOWDECOMP_ROOT}")
+target_compile_options(TimePreviewTest PRIVATE -ffunction-sections -fdata-sections)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_definitions(TimePreviewTest PRIVATE __stdcall=)
+endif ()
+target_link_options(TimePreviewTest PRIVATE -Wl,--gc-sections)
+target_link_libraries(TimePreviewTest PRIVATE Storm)
+add_test(NAME TimePreview COMMAND TimePreviewTest)
 
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Os" Os)
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/Tempest" Tempest)
@@ -52,6 +140,16 @@ target_link_options(StormThreadTest PRIVATE "-Wl,--wrap=pthread_create")
 add_test(NAME StormThread COMMAND StormThreadTest)
 set_tests_properties(StormThread PROPERTIES TIMEOUT 20)
 add_subdirectory("${WOWDECOMP_ROOT}/ThirdParty" ThirdParty EXCLUDE_FROM_ALL)
+# Exercise bundled FreeType without requiring the optional MSDF renderer.
+find_file(WOWDECOMP_FONT_TEST_FACE DejaVuSans.ttf
+    PATHS /usr/share/fonts/dejavu-sans-fonts /usr/share/fonts/truetype/dejavu)
+if (NOT WOWDECOMP_FONT_TEST_FACE)
+    message(FATAL_ERROR "Set WOWDECOMP_FONT_TEST_FACE to an installed DejaVuSans.ttf for the composite-glyph regression")
+endif ()
+add_executable(GxuFontFreetypeTest "${WOWDECOMP_ROOT}/Tools/Fonts/GxuFontFreetypeTest.cpp")
+target_link_libraries(GxuFontFreetypeTest PRIVATE freetype)
+add_test(NAME GxuFontFreetype COMMAND GxuFontFreetypeTest "${WOWDECOMP_FONT_TEST_FACE}")
+set_tests_properties(GxuFontFreetype PROPERTIES TIMEOUT 30)
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/BlizzardCore" BlizzardCore)
 target_include_directories(BlizzardCore PUBLIC "${WOWDECOMP_ROOT}")
 add_subdirectory("${WOWDECOMP_ROOT}/Engine/Source/SoundEngine" SoundEngine)
@@ -83,9 +181,18 @@ target_link_libraries(FileBackendTest PRIVATE BlizzardCore Storm)
 target_link_options(FileBackendTest PRIVATE "-Wl,--wrap=_ZN8Blizzard4File12SetLastErrorEi")
 add_test(NAME FileBackend COMMAND FileBackendTest)
 set_tests_properties(FileBackend PROPERTIES TIMEOUT 20)
+add_executable(RendererAssetInventory "${WOWDECOMP_ROOT}/Tools/Vulkan/RendererAssetInventory.cpp")
+target_include_directories(RendererAssetInventory PRIVATE "${WOWDECOMP_ROOT}")
+target_link_libraries(RendererAssetInventory PRIVATE BlizzardCore Storm BlizzardCore Threads::Threads)
+add_executable(RendererAssetInventoryTest RendererAssetInventoryTest.cpp)
+target_include_directories(RendererAssetInventoryTest PRIVATE "${WOWDECOMP_ROOT}")
+target_link_libraries(RendererAssetInventoryTest PRIVATE BlizzardCore Storm BlizzardCore Threads::Threads)
+add_dependencies(RendererAssetInventoryTest RendererAssetInventory)
+add_test(NAME RendererAssetInventory COMMAND RendererAssetInventoryTest "$<TARGET_FILE:RendererAssetInventory>")
+
 add_executable(MpqReadTest MpqReadTest.cpp)
 target_compile_definitions(MpqReadTest PRIVATE WOWDECOMP_ARCH_64=1)
-target_link_libraries(MpqReadTest PRIVATE BlizzardCore Storm BlizzardCore)
+target_link_libraries(MpqReadTest PRIVATE BlizzardCore Storm BlizzardCore Threads::Threads)
 add_test(NAME MpqRead COMMAND MpqReadTest)
 set_tests_properties(MpqRead PROPERTIES TIMEOUT 20)
 add_executable(BlizzardTlsTest BlizzardTlsTest.cpp)
@@ -219,7 +326,8 @@ endif ()
 # Linux section GC isolates these functions, like the socket contract tests above.
 foreach (backend dxvk vulkan both)
     add_executable(GxBackend-${backend} GxBackendTest.cpp
-        "${WOWDECOMP_ROOT}/Engine/Source/Gx/Gx.cpp")
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/Gx.cpp"
+        "${WOWDECOMP_ROOT}/Engine/Source/Gx/DeviceSelection.cpp")
     target_include_directories(GxBackend-${backend} PRIVATE "${WOWDECOMP_ROOT}")
     target_link_libraries(GxBackend-${backend} PRIVATE Storm)
     target_compile_options(GxBackend-${backend} PRIVATE -ffunction-sections -fdata-sections)

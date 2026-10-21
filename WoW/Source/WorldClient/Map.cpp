@@ -1,4 +1,5 @@
 #include "Map.h"
+#include "FarAdtService.h"
 #include "Engine/Source/ShaderEffect/ShadowCache.h"
 #if defined(_MSC_VER)
 #include <malloc.h>
@@ -1991,6 +1992,7 @@ void CMap::PrepareMapDoodadDefs() {
 // VERIFY: d6c4755a manual
 // OFFSET: 0x007B5950
 void CMap::PreUpdateAreas(bool addToScene) {
+    FarAdtPump();
     int32_t maxY = CWorld::gbChunkRect.maxY >> 4;
     int32_t minX = CWorld::gbChunkRect.minX >> 4;
     int32_t minY = CWorld::gbChunkRect.minY >> 4;
@@ -5898,6 +5900,7 @@ void CMap::RenderFootprints() {
 // VERIFY: 331b297f manual
 // OFFSET: 0x007C3830
 void CMap::Unload() {
+    FarAdtReset();
     CMap::PurgeMaps();
     CMap::s_lowDetail.Unload();
 

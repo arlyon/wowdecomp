@@ -1,0 +1,3 @@
+TITLE "Controlled invalid domain LUT"
+LUT_3D_SIZE 2
+DOMAIN_MAX 2 2 2

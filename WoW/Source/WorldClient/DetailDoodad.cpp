@@ -241,7 +241,7 @@ void CDetailDoodad::InitializeShaderConstants() {
 
     C3Vector sunDir(0.0f, 0.0f, 0.0f);
     CM2Lighting lighting(sunDir);
-    lighting.AddLight(&CMap::s_mapLight->m_light);
+    lighting.AddWorldDirectionalLight(&CMap::s_mapLight->m_light);
 
     if (lighting.GetSunLight(sunDir, consts.m_sunAmbient, consts.m_sunDiffuse, consts.m_sunSpecular)) {
         C33Matrix rotation(view);

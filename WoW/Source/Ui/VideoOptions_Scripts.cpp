@@ -469,6 +469,10 @@ static int32_t Script_SetupFullscreenScale(lua_State* L) {
 // VERIFY: de05e80f manual
 // OFFSET: 0x0054F570
 static int32_t Script_SetScreenResolution(lua_State* L) {
+#if !defined(_WIN32)
+    // Stock callers remain safe, but cannot select scene or window dimensions.
+    return 0;
+#else
     SetupFormats();
 
     uint32_t index = 0;
@@ -494,6 +498,7 @@ static int32_t Script_SetScreenResolution(lua_State* L) {
     }
 
     return 0;
+#endif
 }
 
 // VERIFY: 64c2ee40 manual

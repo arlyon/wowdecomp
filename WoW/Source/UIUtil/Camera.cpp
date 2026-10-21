@@ -1,4 +1,6 @@
 #include "Camera.h"
+#include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+#include "Engine/Source/Gx/Gx.h"
 #include "Engine/Source/Base/Coordinate.h"
 #include <cmath>
 #include <cstring>
@@ -1108,6 +1110,7 @@ void CGCamera::SetTarget(CGObject_C* target, int32_t freeLook) {
     }
 
     int32_t immediate = !(this->m_state & 0x10) || newTarget;
+    if ((newTarget || (!target && previous)) && g_theGxDevicePtr) g_theGxDevicePtr->SceneInvalidateHistory();
 
     if (!(this->m_state & 0x10) || newTarget || moved) {
         uint32_t time = OsGetAsyncTimeMs();
@@ -1777,6 +1780,7 @@ void CGCamera::OnVehicleCameraDestroyed() {
 // VERIFY: a21be849 auto
 // OFFSET: 0x005FE320
 void CGCamera::ResetModelCamera() {
+    if (g_theGxDevicePtr) g_theGxDevicePtr->SceneInvalidateHistory();
     this->m_someTime = OsGetAsyncTimeMs();
     this->GetScene()->SetTime(0);
     this->m_model->SetBoneSequence(0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 1.0f, 0, 1);

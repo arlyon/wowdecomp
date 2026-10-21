@@ -90,6 +90,19 @@ TSExplicitList<CMapChunkBuf, offsetof(CMapChunkBuf, m_freeLink)> CMapRenderChunk
 CGxBatch CMapRenderChunk::s_chunkBatch;
 
 // STATIC: 0x00D1D058
+namespace {
+// A terrain batch owns its pose even when the backing pool is shared.
+class ChunkMotionScope {
+public:
+    explicit ChunkMotionScope(const CMapRenderChunk* chunk) {
+        g_theGxDevicePtr->SceneSetMotionOwner(chunk, true);
+    }
+    ~ChunkMotionScope() { g_theGxDevicePtr->SceneSetMotionOwner(nullptr, false); }
+    ChunkMotionScope(const ChunkMotionScope&) = delete;
+    ChunkMotionScope& operator=(const ChunkMotionScope&) = delete;
+};
+}
+
 int32_t CMapRenderChunk::s_bPoolsDirty;
 
 // STATIC: 0x00D1D05C
@@ -326,7 +339,7 @@ void CMapRenderChunk::AddBatch(CMapChunk* chunk1, CMapChunk* chunk2, C3Vector* p
 // VERIFY: c9761f91 auto
 // OFFSET: 0x007B7BD0
 void CMapRenderChunk::SelectLights(CM2Lighting* lighting) {
-    lighting->AddLight(&CMap::s_mapLight->m_light);
+    lighting->AddWorldDirectionalLight(&CMap::s_mapLight->m_light);
 
     DayNight::DNInfo* info = DayNight::GetInfo();
     C3Vector fogColor;
@@ -564,6 +577,7 @@ CMapChunkBufBlock::~CMapChunkBufBlock() {
 // VERIFY: a8d77235 manual
 // OFFSET: 0x007B9D60
 CMapRenderChunk::~CMapRenderChunk() {
+    if (g_theGxDevicePtr) g_theGxDevicePtr->SceneForgetMotionOwner(this);
     this->FreeBuf();
     this->FreeLayers();
 
@@ -719,6 +733,7 @@ void CMapRenderChunk::RenderSetup(int32_t a2) {
 // VERIFY: 9923f02a manual
 // OFFSET: 0x007D3010
 void CMapRenderChunk::RenderSolid() {
+    const ChunkMotionScope motion(this);
     C44Matrix tex0;
     GxXformSet(GxXform_Tex0, tex0);
     C44Matrix tex1;
@@ -752,6 +767,7 @@ void CMapRenderChunk::RenderSolidPixelShader() {
 // VERIFY: 90367efa manual
 // OFFSET: 0x007D3240
 void CMapRenderChunk::RenderSolidVertexPixelShader() {
+    const ChunkMotionScope motion(this);
     GxRsSet(GxRs_BlendingMode, 0);
     GxUpdateAlphaRef(GxRs_AlphaRef);
 
@@ -1998,7 +2014,7 @@ void CMapRenderChunk::InitializeVertexShaderConstants(const C44Matrix& world, co
 
     C3Vector sunDir(0.0f, 0.0f, 0.0f);
     CM2Lighting lighting(sunDir);
-    lighting.AddLight(&CMap::s_mapLight->m_light);
+    lighting.AddWorldDirectionalLight(&CMap::s_mapLight->m_light);
 
     if (lighting.GetSunLight(sunDir, consts.m_sunAmbient, consts.m_sunDiffuse, consts.m_sunSpecular)) {
         C33Matrix rotation(consts.m_worldView);
@@ -2145,6 +2161,7 @@ void CMapRenderChunk::ComputeTexMatrices(C44Matrix& layerMatrix, C44Matrix& alph
 // VERIFY: 0307c652 manual
 // OFFSET: 0x007D0760
 void CMapRenderChunk::RenderMultiPassAdditive(CMapRenderChunk* renderChunk) {
+    const ChunkMotionScope motion(renderChunk);
     C44Matrix layerMatrix;
     C44Matrix alphaMatrix;
     C3Vector offset = CWorldScene::s_activeWorldView - renderChunk->m_vec1;
@@ -2223,6 +2240,7 @@ void CMapRenderChunk::RenderMultiPassAdditive(CMapRenderChunk* renderChunk) {
 // VERIFY: 18189b69 manual
 // OFFSET: 0x007D0D70
 void CMapRenderChunk::RenderMultiPassAlpha(CMapRenderChunk* renderChunk) {
+    const ChunkMotionScope motion(renderChunk);
     C44Matrix layerMatrix;
     C44Matrix alphaMatrix;
     C3Vector offset = CWorldScene::s_activeWorldView - renderChunk->m_vec1;
@@ -2301,6 +2319,7 @@ void CMapRenderChunk::RenderMultiPassAlpha(CMapRenderChunk* renderChunk) {
 // VERIFY: 48db2dd7 manual
 // OFFSET: 0x007D13F0
 void CMapRenderChunk::RenderMultiPassPixelShaderBigAlpha(CMapRenderChunk* renderChunk) {
+    const ChunkMotionScope motion(renderChunk);
     C44Matrix layerMatrix;
     C44Matrix alphaMatrix;
     C3Vector offset = CWorldScene::s_activeWorldView - renderChunk->m_vec1;
@@ -2396,6 +2415,7 @@ void CMapRenderChunk::RenderMultiPassPixelShaderBigAlpha(CMapRenderChunk* render
 // VERIFY: fd0515a3 manual
 // OFFSET: 0x007D1AD0
 void CMapRenderChunk::RenderMultiPassPixelShader(CMapRenderChunk* renderChunk) {
+    const ChunkMotionScope motion(renderChunk);
     C44Matrix layerMatrix;
     C44Matrix alphaMatrix;
     C3Vector offset = CWorldScene::s_activeWorldView - renderChunk->m_vec1;
@@ -2467,6 +2487,7 @@ void CMapRenderChunk::RenderMultiPassPixelShader(CMapRenderChunk* renderChunk) {
 // VERIFY: 136fc4a9 manual
 // OFFSET: 0x007D20A0
 void CMapRenderChunk::RenderMultiPassVertexPixelShaderBigAlpha(CMapRenderChunk* renderChunk) {
+    const ChunkMotionScope motion(renderChunk);
     SVertexShaderConstants& consts = CMapRenderChunk::s_vertexShaderConsts;
     C4Vector white;
     white.x = 1.0f;
@@ -2559,6 +2580,7 @@ void CMapRenderChunk::RenderMultiPassVertexPixelShaderBigAlpha(CMapRenderChunk* 
 // VERIFY: a31b22da manual
 // OFFSET: 0x007D2520
 void CMapRenderChunk::RenderMultiPassVertexPixelShader(CMapRenderChunk* renderChunk) {
+    const ChunkMotionScope motion(renderChunk);
     SVertexShaderConstants& consts = CMapRenderChunk::s_vertexShaderConsts;
     C4Vector white;
     white.x = 1.0f;
@@ -2627,6 +2649,7 @@ void CMapRenderChunk::RenderMultiPassVertexPixelShader(CMapRenderChunk* renderCh
 // VERIFY: 22069b93 manual
 // OFFSET: 0x007D28B0
 void CMapRenderChunk::RenderSinglePassPixelShader() {
+    const ChunkMotionScope motion(this);
     GxRsSet(GxRs_BlendingMode, GxBlend_Opaque);
     GxUpdateAlphaRef(GxRs_AlphaRef);
 
@@ -2686,6 +2709,7 @@ void CMapRenderChunk::RenderSinglePassPixelShader() {
 // VERIFY: cad126b2 manual
 // OFFSET: 0x007D2D70
 void CMapRenderChunk::RenderSinglePassVertexPixelShader() {
+    const ChunkMotionScope motion(this);
     SVertexShaderConstants& consts = CMapRenderChunk::s_vertexShaderConsts;
 
     GxRsSet(GxRs_BlendingMode, GxBlend_Opaque);

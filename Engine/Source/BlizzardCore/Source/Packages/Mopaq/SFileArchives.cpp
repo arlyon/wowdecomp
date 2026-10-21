@@ -33,7 +33,9 @@
 Blizzard::Lock::Atomic System_SFile::s_nextArchiveId = { static_cast<int32_t>(0x80000000) };
 
 // STATIC: 0x00B32508
-uint32_t System_SFile::s_lastError;
+static_assert(sizeof(std::atomic<uint32_t>) == sizeof(uint32_t));
+static_assert(alignof(std::atomic<uint32_t>) == alignof(uint32_t));
+std::atomic<uint32_t> System_SFile::s_lastError{0};
 
 // STATIC: 0x00B38A6C
 Blizzard::Util::Digest<16> System_SFile::s_emptyMd5;

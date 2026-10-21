@@ -15,6 +15,7 @@
 #if !defined(_WIN32)
 #include <cstring>
 #include <stdexcept>
+#include "Engine/Source/Gx/DeviceSelection.h"
 #endif
 
 // STATIC: 0x00A2D57C
@@ -127,6 +128,15 @@ static int (*s_drawListSorters[GxuSorts_Last])(const void*, const void*) = { Dra
 // OFFSET: 0x008C8DE0
 EGxApi GxDefaultApi() {
 #if !defined(_WIN32)
+    // Startup resolves saved preferences and environment overrides before any
+    // adapter probes. Use that same policy result for probes and creation.
+    const auto& selection = GxGetDeviceSelection();
+    if (!selection.backends.empty()) {
+#if defined(WOWDECOMP_VULKAN)
+        if (selection.effectiveBackend == "vulkan") return GxApi_Vulkan;
+#endif
+        return GxApi_D3d9;
+    }
     if (const char* backend = std::getenv("WOWDECOMP_GX_BACKEND")) {
         if (std::strcmp(backend, "dxvk") == 0) {
 #if defined(WOWDECOMP_DXVK)

@@ -1,3 +1,4 @@
+#include "WoW/Source/Ui/LegacyDisplayCompatibility.h"
 #include "GameUI.h"
 #include <cmath>
 #include <cstdarg>
@@ -1620,6 +1621,9 @@ static int32_t Script_GetCVar(lua_State* L) {
         return 0;
     }
 
+#if !defined(_WIN32)
+    if (PushLegacyDisplayValue(L, lua_tolstring(L, 1, nullptr))) return 1;
+#endif
     CVar* var = CVar::LookupRegistered(lua_tolstring(L, 1, nullptr));
 
     if (!var || (var->m_flags & 0x40)) {
@@ -1658,6 +1662,9 @@ static int32_t Script_GetCVarDefault(lua_State* L) {
         return 0;
     }
 
+#if !defined(_WIN32)
+    if (PushLegacyDisplayValue(L, lua_tolstring(L, 1, nullptr))) return 1;
+#endif
     CVar* var = CVar::LookupRegistered(lua_tolstring(L, 1, nullptr));
 
     if (!var || (var->m_flags & 0x40)) {
@@ -1744,6 +1751,9 @@ static int32_t Script_SetCVar(lua_State* L) {
     }
 
     const char* name = lua_tolstring(L, 1, nullptr);
+#if !defined(_WIN32)
+    if (ConsoleIsRetiredDisplayCVar(name)) return 0;
+#endif
     CVar* var = CVar::LookupRegistered(name);
 
     if (!var || (var->m_flags & 0x40)) {

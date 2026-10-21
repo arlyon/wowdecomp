@@ -3,23 +3,71 @@ if (NOT EXISTS "${WOWDECOMP_SLANGC}")
     message(FATAL_ERROR "Set WOWDECOMP_SLANGC to slangc; authored Vulkan shaders are compiled from Slang")
 endif ()
 set(WOWDECOMP_VULKAN_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/vulkan-shaders")
-set(GX_FIXED_SHADER "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shaders/FixedFunction.slang")
+set(WOWDECOMP_VULKAN_OVERRIDE_DIR "${WOWDECOMP_ROOT}/Shaders/Overrides" CACHE PATH "Default local maintained shader override root (WOWDECOMP_SHADER_ROOT overrides at runtime)")
+if (NOT TARGET GxQualifySpirv)
+    add_executable(GxQualifySpirv "${WOWDECOMP_ROOT}/Tools/Vulkan/QualifySpirv.cpp")
+    target_include_directories(GxQualifySpirv PRIVATE "${WOWDECOMP_ROOT}")
+    target_compile_features(GxQualifySpirv PRIVATE cxx_std_17)
+endif ()
 set(GX_SLANG_OUTPUTS)
-foreach (stage vertex fragment)
-    if (stage STREQUAL "vertex")
-        set(entry vertexMain)
-        set(extension vert)
+foreach (variant fixed-companion font-msdf-companion fixed fixed-temporal fixed-fogless fixed-temporal-fogless fixed-hdr fixed-temporal-hdr font-msdf font-msdf-temporal font-msdf-hdr font-msdf-temporal-hdr temporal-resolve temporal-upscale hdr-world)
+    set(defines)
+    if (variant MATCHES "^fixed")
+        set(source "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shaders/FixedFunction.slang")
+        if (variant MATCHES "^fixed-temporal")
+            set(defines -DGX_TEMPORAL=1)
+        endif ()
+    elseif (variant MATCHES "^font-msdf")
+        set(source "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shaders/FontMsdf.slang")
+        if (variant MATCHES "^font-msdf-temporal")
+            set(defines -DGX_FONT_TEMPORAL=1)
+        endif ()
+    elseif (variant STREQUAL "temporal-resolve")
+        set(source "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shaders/TemporalResolve.slang")
+    elseif (variant STREQUAL "hdr-world")
+        set(source "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shaders/HdrScene.slang")
     else ()
-        set(entry pixelMain)
-        set(extension frag)
+        set(source "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shaders/TemporalUpscale.slang")
     endif ()
-    set(output "${WOWDECOMP_VULKAN_SHADER_DIR}/fixed.${extension}.spv")
-    add_custom_command(OUTPUT "${output}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${WOWDECOMP_VULKAN_SHADER_DIR}"
-        COMMAND "${WOWDECOMP_SLANGC}" "${GX_FIXED_SHADER}" -entry "${entry}" -stage "${stage}"
-            -target spirv -profile spirv_1_3 -matrix-layout-row-major -o "${output}"
-        DEPENDS "${GX_FIXED_SHADER}" "${WOWDECOMP_SLANGC}"
-        VERBATIM)
-    list(APPEND GX_SLANG_OUTPUTS "${output}")
+    if (variant MATCHES "-fogless$")
+        list(APPEND defines -DGX_FOG_EXPORT=0)
+    endif ()
+    if (variant MATCHES "-hdr$" OR variant MATCHES "-companion$")
+        list(APPEND defines -DGX_HDR_OUTPUT=1)
+    endif ()
+    if (variant MATCHES "-companion$")
+        list(APPEND defines -DGX_HDR_ENCODED=1)
+    endif ()
+    foreach (stage vertex fragment)
+        if (variant MATCHES "-fogless$" AND stage STREQUAL "fragment")
+            continue() # Only a vertex interface variant; no alternate pixel logic.
+        endif ()
+        if (stage STREQUAL "vertex")
+            set(entry vertexMain)
+            set(extension vert)
+        else ()
+            set(entry pixelMain)
+            set(extension frag)
+        endif ()
+        set(output "${WOWDECOMP_VULKAN_SHADER_DIR}/${variant}.${extension}.spv")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${WOWDECOMP_VULKAN_SHADER_DIR}"
+            COMMAND "${WOWDECOMP_SLANGC}" "${source}" ${defines} -entry "${entry}" -stage "${stage}"
+                -target spirv -profile spirv_1_3 -matrix-layout-row-major -o "${output}"
+            COMMAND GxQualifySpirv "${output}"
+            DEPENDS "${source}" "${WOWDECOMP_SLANGC}" GxQualifySpirv
+                "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shaders/HdrToneMapping.slang"
+            VERBATIM)
+        list(APPEND GX_SLANG_OUTPUTS "${output}")
+    endforeach ()
 endforeach ()
+set(worldShadowSource "${WOWDECOMP_ROOT}/Engine/Source/Gx/CGxDeviceVulkan/Shaders/WorldShadowVisibility.slang")
+set(worldShadowOutput "${WOWDECOMP_VULKAN_SHADER_DIR}/world-shadow-visibility.comp.spv")
+add_custom_command(OUTPUT "${worldShadowOutput}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${WOWDECOMP_VULKAN_SHADER_DIR}"
+    COMMAND "${WOWDECOMP_SLANGC}" "${worldShadowSource}" -entry computeMain -stage compute
+        -I "${WOWDECOMP_ROOT}/Shaders/Overrides" -target spirv -profile spirv_1_5 -matrix-layout-row-major -o "${worldShadowOutput}"
+    COMMAND GxQualifySpirv "${worldShadowOutput}"
+    DEPENDS GxQualifySpirv "${worldShadowSource}" "${WOWDECOMP_ROOT}/Shaders/Overrides/shared/ShadowCoverage.slang" "${WOWDECOMP_SLANGC}" VERBATIM)
+list(APPEND GX_SLANG_OUTPUTS "${worldShadowOutput}")
 add_custom_target(GxSlangShaders DEPENDS ${GX_SLANG_OUTPUTS})

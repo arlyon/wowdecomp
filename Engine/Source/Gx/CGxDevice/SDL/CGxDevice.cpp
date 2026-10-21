@@ -5,6 +5,7 @@
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #if defined(WOWDECOMP_DXVK)
 #include "Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h"
+#include "Engine/Source/Gx/CGxDeviceD3d/Native/AdapterIdentity.h"
 #endif
 #include "Engine/Source/Os/SDL/Window.h"
 #if defined(WOWDECOMP_VULKAN)
@@ -62,8 +63,9 @@ int32_t CGxDevice::DeviceAdapterID(uint16_t& vendorID, uint16_t& deviceID,
     HINSTANCE library = nullptr;
     LPDIRECT3D9 d3d = nullptr;
     if (!CGxDeviceD3d::ILoadD3dLib(library, d3d)) return 0;
+    const UINT ordinal = GxDxvk::SelectOrdinal(*d3d, GxGetDeviceSelection().effectiveAdapter);
     D3DADAPTER_IDENTIFIER9 identifier{};
-    const bool valid = SUCCEEDED(d3d->GetAdapterIdentifier(0, 0, &identifier));
+    const bool valid = SUCCEEDED(d3d->GetAdapterIdentifier(ordinal, 0, &identifier));
     if (valid) {
         vendorID = static_cast<uint16_t>(identifier.VendorId);
         deviceID = static_cast<uint16_t>(identifier.DeviceId);
@@ -91,8 +93,9 @@ int32_t CGxDevice::DeviceAdapterInfer(uint16_t& deviceID) {
     HINSTANCE library = nullptr;
     LPDIRECT3D9 d3d = nullptr;
     if (!CGxDeviceD3d::ILoadD3dLib(library, d3d)) return 0;
+    const UINT ordinal = GxDxvk::SelectOrdinal(*d3d, GxGetDeviceSelection().effectiveAdapter);
     D3DCAPS9 caps{};
-    const bool valid = SUCCEEDED(d3d->GetDeviceCaps(0, D3DDEVTYPE_HAL, &caps));
+    const bool valid = SUCCEEDED(d3d->GetDeviceCaps(ordinal, D3DDEVTYPE_HAL, &caps));
     if (valid && (caps.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT)) {
         if (caps.MaxSimultaneousTextures > 2 && static_cast<uint16_t>(caps.PixelShaderVersion) >= 0x200) deviceID = 3;
         else if (caps.MaxSimultaneousTextures > 2 && static_cast<uint16_t>(caps.PixelShaderVersion) >= 0x101) deviceID = 2;
@@ -139,6 +142,7 @@ int32_t CGxDevice::D3dAdapterFormats(TSGrowableArray<CGxFormat>& formats) {
     HINSTANCE library = nullptr;
     LPDIRECT3D9 d3d = nullptr;
     if (!CGxDeviceD3d::ILoadD3dLib(library, d3d)) return 0;
+    const UINT ordinal = GxDxvk::SelectOrdinal(*d3d, GxGetDeviceSelection().effectiveAdapter);
     const D3DFORMAT colors[] = {D3DFMT_R5G6B5, D3DFMT_X8R8G8B8, D3DFMT_A8R8G8B8};
     const D3DFORMAT depths[] = {D3DFMT_D16, D3DFMT_D24X8, D3DFMT_D24S8, D3DFMT_D32};
     const CGxFormat::Format depthFormats[] = {
@@ -150,10 +154,10 @@ int32_t CGxDevice::D3dAdapterFormats(TSGrowableArray<CGxFormat>& formats) {
         D3DMULTISAMPLE_12_SAMPLES, D3DMULTISAMPLE_14_SAMPLES, D3DMULTISAMPLE_16_SAMPLES
     };
     for (D3DFORMAT color : colors) {
-        const UINT count = d3d->GetAdapterModeCount(0, color);
+        const UINT count = d3d->GetAdapterModeCount(ordinal, color);
         for (UINT i = 0; i < count; ++i) {
             D3DDISPLAYMODE display;
-            if (FAILED(d3d->EnumAdapterModes(0, color, i, &display))) continue;
+            if (FAILED(d3d->EnumAdapterModes(ordinal, color, i, &display))) continue;
             CGxFormat format;
             std::memset(&format, 0, sizeof(format));
             format.m_size = {static_cast<int32_t>(display.Width), static_cast<int32_t>(display.Height)};
@@ -165,12 +169,12 @@ int32_t CGxDevice::D3dAdapterFormats(TSGrowableArray<CGxFormat>& formats) {
                 default: continue;
             }
             for (size_t depth = 0; depth < 4; ++depth) {
-                if (FAILED(d3d->CheckDeviceFormat(0, D3DDEVTYPE_HAL, display.Format,
+                if (FAILED(d3d->CheckDeviceFormat(ordinal, D3DDEVTYPE_HAL, display.Format,
                         D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_SURFACE, depths[depth]))) continue;
                 format.m_depthFormat = depthFormats[depth];
                 for (D3DMULTISAMPLE_TYPE sample : samples) {
-                    if (FAILED(d3d->CheckDeviceMultiSampleType(0, D3DDEVTYPE_HAL, display.Format, FALSE, sample, nullptr)) ||
-                        FAILED(d3d->CheckDeviceMultiSampleType(0, D3DDEVTYPE_HAL, depths[depth], FALSE, sample, nullptr))) continue;
+                    if (FAILED(d3d->CheckDeviceMultiSampleType(ordinal, D3DDEVTYPE_HAL, display.Format, FALSE, sample, nullptr)) ||
+                        FAILED(d3d->CheckDeviceMultiSampleType(ordinal, D3DDEVTYPE_HAL, depths[depth], FALSE, sample, nullptr))) continue;
                     format.m_multisampleCount = sample == D3DMULTISAMPLE_NONE ? 1 : static_cast<uint32_t>(sample);
                     if (!CGxDevice::FormatExists(formats, format)) *formats.New() = format;
                 }

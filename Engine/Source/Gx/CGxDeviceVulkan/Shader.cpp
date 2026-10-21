@@ -1,4 +1,5 @@
 #include "Shader.h"
+#include "Engine/Source/Gx/CGxDevice/Types.h"
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -215,30 +216,145 @@ ShaderPair LinkShaders(const MOJOSHADER_parseData& vertex,
     return result;
 }
 
-std::vector<float> ShaderUniforms(const MOJOSHADER_parseData& shader,
-    const float* registers, size_t registerCount) {
-    std::vector<float> result;
-    for (int i = 0; i < shader.uniform_count; ++i) {
-        const auto& uniform = shader.uniforms[i];
-        if (uniform.constant) continue; // Literal arrays are embedded in the generated shader.
-        const size_t count = static_cast<size_t>(std::max(uniform.array_count, 1));
-        if (uniform.type != MOJOSHADER_UNIFORM_FLOAT)
-            throw std::runtime_error("Unsupported integer/bool application shader constants");
-        if (!registers || uniform.index < 0 || static_cast<size_t>(uniform.index) > registerCount ||
-            count > registerCount - static_cast<size_t>(uniform.index))
-            throw std::out_of_range("Shader uniform exceeds the Gx register file");
-        const size_t packedOffset = result.size();
-        result.insert(result.end(), registers + uniform.index * 4, registers + (uniform.index + count) * 4);
-        // Relative arrays can span DEF instructions. D3D's immutable constants
-        // override the application's register file even through dynamic indexing.
-        for (int c = 0; c < shader.constant_count; ++c) {
-            const auto& constant = shader.constants[c];
-            if (constant.type == MOJOSHADER_UNIFORM_FLOAT && constant.index >= uniform.index &&
-                static_cast<size_t>(constant.index - uniform.index) < count)
-                std::copy_n(constant.value.f, 4, result.begin() + packedOffset + (constant.index - uniform.index) * 4);
+static bool ShaderUsesLocation(const std::vector<uint32_t>& code,uint32_t location,uint32_t storageClass) {
+    if(code.size()<5 || code[0]!=0x07230203u) throw std::runtime_error("Invalid SPIR-V interface header");
+    std::vector<uint32_t> inputs,decorated;
+    for(size_t i=5;i<code.size();) {
+        const auto words=code[i]>>16,op=code[i]&0xffffu;
+        if(!words || words>code.size()-i) throw std::runtime_error("Invalid SPIR-V interface instruction");
+        // Decoration groups/alternate decoration encodings are not resolved
+        // here. Unknown interface provenance must retain the export, not turn
+        // an unfamiliar module into a false absence certificate.
+        if(op==73 || op==74 || op==75 || op==332 || op==5632 || op==5633) return true;
+        if(op==59 && words>=4 && code[i+3]==storageClass) inputs.push_back(code[i+2]); // OpVariable
+        if(op==71 && words>=4 && code[i+2]==30 && code[i+3]==location) decorated.push_back(code[i+1]);
+        // Do not guess the storage class of an unfamiliar interface block.
+        if(op==72 && words>=5 && code[i+3]==30 && code[i+4]==location) return true;
+        i+=words;
+    }
+    for(auto id:inputs) if(std::find(decorated.begin(),decorated.end(),id)!=decorated.end()) return true;
+    return false;
+}
+bool ShaderUsesInputLocation(const std::vector<uint32_t>& code,uint32_t location) { return ShaderUsesLocation(code,location,1); }
+bool ShaderUsesOutputLocation(const std::vector<uint32_t>& code,uint32_t location) { return ShaderUsesLocation(code,location,3); }
+std::string PruneVertexFogOutput(std::string source) {
+    const std::regex field(R"(\[\[vk::location\(10\)\]\]\s*float\s+(\w+)\s*:\s*FOG\s*;)");
+    std::smatch match;
+    if(!std::regex_search(source,match,field)) throw std::runtime_error("Unrecognised unused vertex FOG ABI");
+    const auto name=match[1].str();source=std::regex_replace(source,field,"");
+    if(name=="m_gx_fog") {
+        // Our generated zero-filled compatibility padding has no bytecode alias.
+        if(source.find("output."+name)!=std::string::npos) throw std::runtime_error("Unexpected padded FOG reference");
+        return source;
+    }
+    if(name.rfind("m_",0)!=0) throw std::runtime_error("Unrecognised vertex FOG field name");
+    const auto alias="#define "+name.substr(2)+" output."+name;
+    const auto offset=source.find(alias);
+    if(offset==std::string::npos || source.find(alias,offset+alias.size())!=std::string::npos)
+        throw std::runtime_error("Unrecognised unused vertex FOG alias");
+    source.replace(offset,alias.size(),"float gx_unusedFog;\n#define "+name.substr(2)+" gx_unusedFog");
+    if(source.find("output."+name)!=std::string::npos) throw std::runtime_error("Unexpected vertex FOG reference");
+    return source;
+}
+
+std::string ShaderOutputBoundary(std::string source, bool decode) {
+    // Wrap only the generated entry's final colour. Do not inspect or alter its
+    // lighting arithmetic, original clips, alpha or resource bindings.
+    const std::regex entry(R"(main_Output main\((main_Input input)?\))");
+    std::smatch match;
+    size_t offset = std::string::npos;
+    std::string args;
+    for (std::sregex_iterator i(source.begin(), source.end(), entry), end; i != end; ++i) {
+        offset = size_t(i->position());
+        args = (*i)[1].str();
+    }
+    if (offset == std::string::npos) throw std::runtime_error("Unsupported HDR pixel entry ABI");
+    const auto structure = source.rfind("struct main_Output", offset);
+    const auto end = source.find("};", structure);
+    if (structure == std::string::npos || end > offset) throw std::runtime_error("Unsupported HDR output structure");
+    const auto fields = source.substr(structure, end - structure);
+    const std::regex colour(R"(\bfloat4\s+(\w+)\s*:\s*SV_Target0\s*;)");
+    if (!std::regex_search(fields, match, colour)) throw std::runtime_error("HDR requires float4 colour at target0");
+    const auto field = match[1].str();
+    if (std::regex_search(fields, std::regex(R"(SV_Target(?:[2-9]|[0-9]{2,})\b)")))
+        throw std::runtime_error("HDR companion target2 collision or unsupported output");
+    std::string explicitFields;
+    const std::regex target(R"((\[\[vk::location\([01]\)\]\]\s*)?(float4\s+\w+\s*:\s*SV_Target([01])\s*;))");
+    size_t cursor = 0;
+    for (std::sregex_iterator i(fields.begin(), fields.end(), target), finish; i != finish; ++i) {
+        explicitFields += fields.substr(cursor, size_t(i->position()) - cursor);
+        if (!(*i)[1].matched) explicitFields += "[[vk::location(" + (*i)[3].str() + ")]] ";
+        explicitFields += i->str();
+        cursor = size_t(i->position() + i->length());
+    }
+    explicitFields += fields.substr(cursor);
+    explicitFields += "[[vk::location(2)]] float4 gx_classicColour : SV_Target2;\n";
+    source.replace(structure, end - structure, explicitFields);
+    offset += explicitFields.size() - fields.size();
+    source.replace(offset, std::string("main_Output main").size(), "main_Output gx_hdrLegacyOutput");
+    source += "\nfloat gx_hdrDecode(float c) { if (!isfinite(c)) return 0; c=max(c,0); return c<=.04045 ? c/12.92 : pow((c+.055)/1.055,2.4); }\n"
+        "main_Output main(" + args + ") { main_Output output=gx_hdrLegacyOutput(" + (args.empty() ? "" : "input") + ");\n"
+        "output.gx_classicColour=output." + field + ";\n" +
+        (decode ? "output." + field + ".rgb=float3(gx_hdrDecode(output." + field + ".r),gx_hdrDecode(output." + field + ".g),gx_hdrDecode(output." + field + ".b));\n" : "") + "return output; }\n";
+    return source;
+}
+
+ShaderBindings LegacyShaderBindings(const MOJOSHADER_parseData& shader) {
+    ShaderBindings result;
+    if (shader.shader_type == MOJOSHADER_TYPE_VERTEX) {
+        for (int i = 0; i < shader.attribute_count; ++i) {
+            const auto& a = shader.attributes[i];
+            int location = -1;
+            if (a.index == 0) {
+                if (a.usage == MOJOSHADER_USAGE_POSITION) location = GxVA_Position;
+                if (a.usage == MOJOSHADER_USAGE_BLENDWEIGHT) location = GxVA_BlendWeight;
+                if (a.usage == MOJOSHADER_USAGE_BLENDINDICES) location = GxVA_BlendIndices;
+                if (a.usage == MOJOSHADER_USAGE_NORMAL) location = GxVA_Normal;
+            }
+            if (a.usage == MOJOSHADER_USAGE_COLOR && a.index >= 0 && a.index < 2) location = GxVA_Color0 + a.index;
+            if (a.usage == MOJOSHADER_USAGE_TEXCOORD && a.index >= 0 && a.index < 8) location = GxVA_TexCoord0 + a.index;
+            if (location < 0) throw std::runtime_error("Unsupported Gx shader vertex semantic");
+            result.attributes.push_back(location);
         }
     }
+    for (int i = 0; i < shader.sampler_count; ++i) {
+        const int slot = shader.samplers[i].index;
+        if (slot < 0 || slot >= 16) throw std::runtime_error("Shader sampler exceeds the Gx binding interface");
+        result.samplers.push_back(slot);
+    }
+    for (int i = 0; i < shader.uniform_count; ++i) {
+        const auto& uniform = shader.uniforms[i];
+        if (uniform.constant) continue;
+        if (uniform.type != MOJOSHADER_UNIFORM_FLOAT)
+            throw std::runtime_error("Unsupported integer/bool application shader constants");
+        result.registers.push_back({uniform.index, static_cast<size_t>(std::max(uniform.array_count, 1))});
+    }
+    for (int i = 0; i < shader.constant_count; ++i) {
+        const auto& c = shader.constants[i];
+        if (c.type == MOJOSHADER_UNIFORM_FLOAT)
+            result.literals.push_back({c.index, {c.value.f[0],c.value.f[1],c.value.f[2],c.value.f[3]}});
+    }
     return result;
+}
+std::vector<float> ShaderUniforms(const ShaderBindings& bindings,
+    const float* registers, size_t registerCount) {
+    std::vector<float> result;
+    for (const auto& range : bindings.registers) {
+        if (!registers || range.first < 0 || static_cast<size_t>(range.first) > registerCount ||
+            !range.count || range.count > registerCount - static_cast<size_t>(range.first))
+            throw std::out_of_range("Shader uniform exceeds the Gx register file");
+        const size_t packedOffset = result.size();
+        result.insert(result.end(), registers + range.first * 4, registers + (range.first + range.count) * 4);
+        // Relative arrays preserve D3D's immutable DEF values over application registers.
+        for (const auto& literal : bindings.literals)
+            if (literal.index >= range.first && static_cast<size_t>(literal.index - range.first) < range.count)
+                std::copy(literal.value.begin(), literal.value.end(), result.begin() + packedOffset + (literal.index - range.first) * 4);
+    }
+    return result;
+}
+std::vector<float> ShaderUniforms(const MOJOSHADER_parseData& shader,
+    const float* registers, size_t registerCount) {
+    return ShaderUniforms(LegacyShaderBindings(shader), registers, registerCount);
 }
 
 }

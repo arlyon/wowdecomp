@@ -11,6 +11,23 @@
 class CM2Light;
 class CM2Scene;
 
+struct M2DirectionalHarmonics {
+    C3Vector red{0.0f, 0.0f, 0.0f}, green{0.0f, 0.0f, 0.0f}, blue{0.0f, 0.0f, 0.0f};
+    C3Vector luminanceDirection{0.0f, 0.0f, 0.0f}, totalColor{0.0f, 0.0f, 0.0f};
+};
+
+// Source-owned inputs, not a lit/no-sun reconstruction. Preserve the legacy
+// aggregate below for raster parity; new visibility must not shadow local lights.
+// Colours retain the original art-channel convention, not physical radiance.
+struct M2ShadowLighting {
+    uint32_t worldSourceCount = 0;
+    bool conflictingWorldDirections = false;
+    C3Vector worldDirection{0.0f, 0.0f, 0.0f};
+    C3Vector worldDiffuse{0.0f, 0.0f, 0.0f}, worldSpecular{0.0f, 0.0f, 0.0f};
+    C3Vector ambient{0.0f, 0.0f, 0.0f}, unshadowedSpecular{0.0f, 0.0f, 0.0f};
+    M2DirectionalHarmonics unshadowedDirectional;
+};
+
 class CM2Light {
     public:
     /* 0000 */ CM2Scene* m_scene;
@@ -64,6 +81,7 @@ class CM2Lighting {
     /* 00B4 */ float m_fogDensity;
     /* 00B8 */ C3Vector m_fogColor;
     /* 00C4 */ C4Plane m_liquidPlane;
+    M2ShadowLighting m_shadowLighting{};
 
     CM2Lighting();
     CM2Lighting(const CAaSphere& sphere);
@@ -72,6 +90,7 @@ class CM2Lighting {
     void AddAmbient(const C3Vector& color);
     void AddDiffuse(const C3Vector& color, const C3Vector& dir);
     void AddLight(CM2Light* light);
+    void AddWorldDirectionalLight(CM2Light* light);
     void CameraSpace();
     int32_t GetPointLight(uint32_t index, C3Vector& pos, C3Vector& color, C3Vector& attenuation);
     int32_t GetSunLight(C3Vector& dir, C3Vector& ambient, C3Vector& diffuse, C3Vector& specular);

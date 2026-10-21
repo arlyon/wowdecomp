@@ -46,6 +46,11 @@ float GxuFontGetOneToOneHeight(CGxFont* face);
 C3Vector GxuFontGetStringPosition(CGxString* string);
 void GxuFontGetTextExtent(CGxFont* face, const char* text, uint32_t numBytes, float fontHeight, float* extent, float shadowWidth, float scale, float unused, uint32_t flags);
 float GxuFontGetWrappedTextHeight(CGxFont* face, const char* text, float fontHeight, float blockWidth, const C2Vector& shadowOffset, float scale, float spacing, uint32_t flags);
+// Preference is enabled by default; unsupported devices/faces retain Classic.
+// Changing it clears glyph atlases and string geometry on the render thread.
+bool GxuFontMsdfSupported();
+bool GxuFontMsdfEnabled();
+void GxuFontSetMsdfEnabled(bool enabled);
 void GxuFontInitialize();
 void GxuFontRemoveShadow(CGxString* string);
 void GxuFontRenderBatch(CGxStringBatch* batch);

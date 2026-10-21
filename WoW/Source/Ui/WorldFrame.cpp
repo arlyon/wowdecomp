@@ -17,6 +17,8 @@
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Gx/CGxTexFlags.h"
 #include "Engine/Source/Gx/Gx.h"
+#include "WoW/Source/WorldClient/WorldParam.h"
+#include "Engine/Source/ConsoleBase/ConsoleVar.h"
 #include "Engine/Source/Gxu/Gxu.h"
 #include "Engine/Source/Model2/M2Scene.h"
 #include "Engine/Source/Os/Time.h"
@@ -85,6 +87,7 @@
 #include "WoW/Source/WorldClient/MapEntity.h"
 #include "WoW/Source/WorldClient/MapWeather.h"
 #include "WoW/Source/WorldClient/World.h"
+#include "WoW/Source/WorldClient/WorldShadowScene.h"
 #include <cfloat>
 #include <cmath>
 #include "WoW/Source/Ui/SpellBookFrame.h"
@@ -1671,7 +1674,12 @@ void CGWorldFrame::OnWorldRender() {
     g_theGxDevicePtr->RsPush();
     GxRsSet(GxRs_Multisample, 1);
     CGWorldFrame::UpdateScreenEffectParams();
-    FFX::Start();
+    g_theGxDevicePtr->SceneRequestHdrLut(CWorldParam::cvar_nativeHDRLut ? CWorldParam::cvar_nativeHDRLut->m_stringValue.m_str : "");
+    const bool hdrRequested = CWorldParam::cvar_nativeHDR && CWorldParam::cvar_nativeHDR->m_intValue != 0;
+    const float hdrEV = CWorldParam::cvar_nativeHDRExposure ? CWorldParam::cvar_nativeHDRExposure->m_floatValue : 0.f;
+    const bool hdr = g_theGxDevicePtr->SceneSetHdr(hdrRequested, hdrEV) && hdrRequested;
+    // Legacy FFX/glow copies SDR screen textures, not float scene transport.
+    if (!hdr) FFX::Start();
 
     CRect fullViewport = { 0.0f, 0.0f, 1.0f, 1.0f };
 
@@ -1721,8 +1729,25 @@ void CGWorldFrame::OnWorldRender() {
         this->m_namePlateFlags &= ~0x2;
     }
 
+    const float sceneScale = CWorldParam::cvar_nativeSceneScale ? CWorldParam::cvar_nativeSceneScale->m_floatValue : 1.f;
+    if (!g_theGxDevicePtr->SceneSetRenderScale(sceneScale) && sceneScale != 1.f) {
+        CGxDevice::Log("Independent scene scaling is unavailable; restoring native scene resolution.");
+        CWorldParam::cvar_nativeSceneScale->Set(1, true, true, false, true);
+        g_theGxDevicePtr->SceneSetRenderScale(1.f);
+    }
+    bool temporal = CWorldParam::cvar_nativeAA && CWorldParam::cvar_nativeAA->m_intValue != 0;
+    if (temporal && !g_theGxDevicePtr->SceneTemporalSupported()) {
+        CGxDevice::Log("Temporal AA is unavailable on this graphics device; using raster rendering.");
+        CWorldParam::cvar_nativeAA->Set(0, true, true, false, true);
+        temporal = false;
+    }
+    g_theGxDevicePtr->SceneConfigureTerrainShadows(CWorldParam::cvar_nativeTerrainRayShadows && CWorldParam::cvar_nativeTerrainRayShadows->m_intValue != 0);
+    g_theGxDevicePtr->SceneConfigureShadows(CWorldParam::cvar_nativeRayTracing && CWorldParam::cvar_nativeRayTracing->m_intValue != 0,
+        !CWorldParam::cvar_nativeRayStrict || CWorldParam::cvar_nativeRayStrict->m_intValue != 0);
+    const bool separateWorld = g_theGxDevicePtr->SceneBeginWorld(temporal, reinterpret_cast<uintptr_t>(this->m_camera));
     CShaderEffect::UpdateProjMatrix();
     CWorld::Render(this->m_camera->m_position, this->m_elapsedSec);
+    const C44Matrix shadowProjection = g_theGxDevicePtr->m_projNative;
     CMap::RenderFootprints();
     ClntObjMgrEnumVisibleObjects(UnitPostAnimateProc, this);
     CGUnit_C::NamePlateSetResortAll(false);
@@ -1738,6 +1763,7 @@ void CGWorldFrame::OnWorldRender() {
     CM2Scene* scene = World::s_m2Scene;
 
     if (!scene) {
+        if (separateWorld) g_theGxDevicePtr->SceneEndWorld();
         return;
     }
 
@@ -1779,6 +1805,20 @@ void CGWorldFrame::OnWorldRender() {
     GxuSortDrawList(GxuCat_1, GxuSort_B2F, *World::GetCamPos());
     GxuFlushDrawList(GxuCat_1, *World::GetCamPos());
     DayNight::RenderGlares();
+    if (separateWorld) {
+        // FFX resets the viewport. Preserve the world overlay's pre-effect coordinates.
+        float left, right, bottom, top, nearDepth, farDepth;
+        GxXformViewport(left, right, bottom, top, nearDepth, farDepth);
+        if (g_theGxDevicePtr->SceneShadowsRequested() && !g_theGxDevicePtr->SceneTerrainShadowsRequested())
+            g_theGxDevicePtr->SceneSetShadowFrame(CollectWorldShadowScene(*World::GetCamPos(),shadowProjection));
+        g_theGxDevicePtr->SceneFinishTerrainShadows();
+        if (!hdr) {
+            g_theGxDevicePtr->ScenePauseWorldMotion();
+            FFX::Finish();
+        }
+        g_theGxDevicePtr->SceneEndWorld();
+        GxXformSetViewport(left, right, bottom, top, nearDepth, farDepth);
+    }
     PlayerNameUpdateLate();
 
     if (CWorld::enables & 0x20000000) {
@@ -1789,7 +1829,7 @@ void CGWorldFrame::OnWorldRender() {
     SmartScreenRectClearGrid(1);
     CGChatBubbleFrame::OnWorldRender(this);
     GxXformSetViewport(minX, maxX, minY, maxY, minZ, maxZ);
-    FFX::Finish();
+    if (!separateWorld && !hdr) FFX::Finish();
     CVehiclePassenger_C::PostRenderUpdateAll();
 }
 
